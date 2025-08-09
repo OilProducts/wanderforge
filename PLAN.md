@@ -1,0 +1,183 @@
+# Wanderforge Technical Plan
+
+Author: Chris • Language: C++20 • Graphics: Vulkan • OS: Linux first, Windows/macOS supported
+
+This document is a self-contained plan to build an experimental, planetary-scale voxel sandbox with falling-sand style voxel simulation. It consolidates decisions, constraints, phases, and detailed steps to reach a playable, extensible prototype.
+
+## Vision & Scope
+
+- Planet you can circumnavigate in ~20 minutes of running (≈7.2 km circumference at 6 m/s).
+- Default 10 cm voxels for common materials; optional 5 cm / 2.5 cm micro-tiers for rare/fine simulations.
+- “Blocky” visuals first (fast meshing, easy to debug); optional smooth view-only mesher later.
+- Falling-sand style per-voxel physics (granular flow, water, lava, heat, basic reactions).
+- Desktop-class hardware target (Ryzen 9800X3D + RTX 4090); keep scalable to mid-range.
+
+## Design Pillars
+
+- Sparse everywhere, dense where it matters: store the world procedurally + sparse edits; keep dense 3D grids only in “simulation islands”.
+- Chunked world with paletted storage and fast greedy meshing; recompute only dirty regions.
+- GPU-first CA (cellular automata) for active voxels using compute shaders with propose+commit.
+- Deterministic, versioned formats for repeatability; seed-locked base world.
+- Cross-platform Vulkan with minimal, well-chosen dependencies.
+
+## Scale & Budgets
+
+- Circumference ≈ 7.2 km; radius ≈ 1.15 km; 10 cm voxels → 72,000 cells around equator.
+- Chunks: 64³ voxels (6.4 m cube). Typical chunk after greedy meshing ≤ 15k triangles.
+- Simulation islands: 12–16 m boxes at 10 cm (≈1.7–4.1 M cells); refine sub-boxes to 5 cm/2.5 cm when needed.
+- Frame budgets (target): CA compute 6–9 ms; meshing 1–3 ms amortized; rendering 4–6 ms; IO async.
+
+## World Representation
+
+- Base world (read-only): procedural SDF/heightfield on a cube-sphere with biome/material IDs.
+- Delta store (authoritative edits): sparse map keyed by `(chunk_key, local_index)`.
+- Runtime chunks (visual/cache): 64×64×64 paletted voxels with bitmasks (air/solid/fluid/granular); meshed on demand.
+- Simulation islands: dense GPU-resident volumes spawned where activity happens and retired when calm.
+
+## Data Model & Storage
+
+- Chunk64 (64³):
+  - Palette (≤ 256 materials), packed indices (1/2/4/8 bpp) via a bit-array.
+  - Bitmasks: occupancy, fluid, granular.
+  - Internal tiling: 8×8×8 tiles to match GPU shared-memory patterns.
+- Region files: 32×32 chunk tiles per file (face-local for a cube-sphere face); table-of-contents + compressed chunk blobs (zstd/LZ4).
+- Delta journal: append-only edit log periodically compacted into region chunk blobs.
+
+## Simulation Model (Falling-Sand CA)
+
+- Active set only: build/maintain a queue of cells to update (plus neighbors) to minimize work.
+- Two-phase tick:
+  - Propose: each active cell picks a destination (down/diagonals/lateral spill); writes a move ticket.
+  - Commit: atomically claim destinations; resolve conflicts; apply reactions (lava+water→stone), swaps (sand↔water).
+- Island lifecycle:
+  - Bake-in (sample base+delta into dense buffers) → simulate K ticks → bake-out (diff → deltas) → retire or migrate.
+- Radial gravity: per-island “down” aligned to gravity direction at island center.
+- Refinement bubbles: temporary 2×/4× sub-grids (5 cm / 2.5 cm) in high-complexity zones; deterministic up/down mapping.
+
+## Vulkan Architecture (Minimum Viable)
+
+- Instance with validation + `VK_EXT_debug_utils` (debug messenger). On macOS use MoltenVK and portability enumeration.
+- Physical/Logical device selection: prefer discrete GPU; create graphics + compute queues.
+- Windowing: GLFW surface, swapchain, image views, render pass (clear-only initially), frame sync (semaphores/fences).
+- Memory: Vulkan Memory Allocator (VMA) for buffers/images.
+- Pipelines: graphics pipeline (clear/fullscreen), compute pipelines (for CA, later); shader compilation via glslang or shaderc.
+- Command infrastructure: per-frame command buffers, transient pools, utils for staging copies and async compute.
+
+## Dependencies
+
+- Required: `glfw` (window/surface), `Vulkan SDK` (or system Vulkan), `VMA` (amalgamated header), `glslang/shaderc`.
+- Helpful soon: `glm` (math), `volk` (loader convenience), `fmt` or `spdlog` (logging), `zstd`/`lz4` (region compression).
+
+## Phases, Deliverables, and Acceptance
+
+### Phase 1 — Vulkan Plumbing & Window (1–2 weeks)
+- Deliverables:
+  - Instance with validation and debug messenger; device/queues; command pool; swapchain; per-frame sync.
+  - GLFW window; render loop that clears and presents every frame.
+  - VMA wired for buffer/image allocations; shader compilation toolchain.
+- Acceptance:
+  - Runs on Linux; builds on Windows/macOS (MoltenVK). Validation toggle via build type. Prints chosen GPU/queues.
+- Notes:
+  - Add minimal `.vk` utilities: error macros, scoped command submitters, pipeline barrier helpers.
+
+### Phase 2 — Math, Planet Frame, Base Sampler (2 weeks)
+- Deliverables:
+  - `int3/float3` types, transforms; 64-bit world coordinates.
+  - Cube-sphere mapping utilities; deterministic noise stack.
+  - `BaseSample sample_base(Int3 p) -> {material, density}` across rock/soil/water/lava/air.
+- Acceptance:
+  - CPU tool to ray-march the planet surface; visualize a ring of voxels/chunks for sanity.
+
+### Phase 3 — Chunk Store, Region IO, Greedy Meshing (2–3 weeks)
+- Deliverables:
+  - `Chunk64` with palette/bitmasks/packed indices; internal 8×8×8 tiles.
+  - Region file format and async IO; dirty-chunk tracking.
+  - CPU greedy mesher producing indexed meshes; triplanar texturing.
+  - Renderer with frustum culling and per-material draw lists.
+- Acceptance:
+  - Walk around a static planet; smooth chunk streaming at 60 fps; typical chunk ≤ 15k tris.
+
+### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
+- Deliverables:
+  - Sparse delta map keyed by `(chunk, localIndex)`; read-path overlays base; write-path persists edits and marks dirty neighbors.
+- Acceptance:
+  - Dig/place tools; changed chunks remesh locally; edits persist across runs.
+
+### Phase 5 — Simulation Islands v1 (10 cm) (2–3 weeks)
+- Deliverables:
+  - Island manager; dense buffers (occ, material, temp, vel/flags); active queues; move requests.
+  - Bake-in/out between islands and world; DMA staging paths.
+- Acceptance:
+  - Spawn/migrate/retire islands around activity; bake-out writes deltas and triggers remesh.
+
+### Phase 6 — CA Kernel v1: Sand + Water (2–3 weeks)
+- Deliverables:
+  - Two compute passes (propose/commit) over active cells with conflict resolution and basic swaps.
+  - Radial gravity via per-island basis.
+- Acceptance:
+  - Piles form with believable slope; water fills and flows; sand displaces water; stable 60 fps for 1–2 M active cells on 4090.
+
+### Phase 7 — Thermal + Lava + Fire (2 weeks)
+- Deliverables:
+  - Temperature diffusion; thresholds for ignite/melt/solidify; lava as viscous fluid and heat source; simple reaction table.
+- Acceptance:
+  - Lava+water produces stone; wood near lava ignites and burns out with plausible timing.
+
+### Phase 8 — Refinement Bubbles (5 cm / 2.5 cm) (2–3 weeks)
+- Deliverables:
+  - Sub-grid allocation and simulation for narrow flows; deterministic up/down mapping between tiers.
+- Acceptance:
+  - Fine features improve without blowing global cost; visual continuity maintained.
+
+### Phase 9 — Visual LOD & Far-Field Planet (1–2 weeks)
+- Deliverables:
+  - Far mesh (low-poly cube-sphere with displaced elevation); near/far transition and optional clipmaps.
+- Acceptance:
+  - 2–4 km view distance at 60 fps; minimal popping.
+
+### Phase 10 — Save/Load, Journaling, Robustness (1 week)
+- Deliverables:
+  - Region index; dirty-bit tracking; delta journaling and periodic compaction; versioned headers; seed locking.
+- Acceptance:
+  - Large sessions survive restarts; compaction keeps disk usage stable.
+
+### Phase 11 — Tools & Profiling (1 week initial, ongoing)
+- Deliverables:
+  - ImGui overlay: GPU timings, active counts, island list, memory; heatmaps for activity/temperature/slope; determinism toggles.
+- Acceptance:
+  - Clear diagnosis of perf/memory; reproducible simulation under fixed RNG seeds.
+
+## Engineering Practices
+
+- Build: `CMake` 3.16+, `C++20`, warnings-as-errors in CI later; Linux primary; Windows/macOS toolchains checked.
+- Logging: concise startup dump of GPU/queues/features; validation errors promoted.
+- Determinism: version fields for data; fixed RNG derived from `(cell, tick)` when needed.
+- Async compute: CA on compute queue; graphics on graphics queue; timeline semaphores for sync.
+- Mesh streaming: indirect draws; persistently mapped buffers; material-batched submissions.
+
+## Risks & Mitigations
+
+- Bandwidth-bound CA: use shared-memory tiles (8³), SoA layouts, active-set throttling.
+- LOD cracks: start blocky; add Transvoxel or octree-aware dual contouring later for smooth.
+- Edit storms: prioritize dirty-region queues; amortize meshing; move to compute meshing if CPU stalls.
+- Cross-platform Vulkan quirks: gate features via `VK_KHR_portability_enumeration`; keep optional layers/extensions guarded.
+
+## Immediate Next Action
+
+- Finish Phase 1: add GLFW window + debug messenger + swapchain and clear every frame, with validation in Debug builds. Then proceed to Phase 2’s math/planet frame.
+
+---
+
+Appendix A — Minimal Structures (Sketches)
+
+- `enum Material : uint16_t { MAT_AIR=0, MAT_ROCK, MAT_DIRT, MAT_WOOD, MAT_WATER, MAT_LAVA, MAT_FIRE, MAT_STONE };`
+- `struct VoxelState { uint16_t mat; uint8_t temp; uint8_t flags; };`
+- `struct BitArray { /* packed indices 1/2/4/8 bpp for 64³ */ };`
+- `struct Chunk64 { palette, indices, occ/fluid/granular bitsets, dirty_mesh; }`
+- `struct Island { origin_vox, dim; SSBOs: occBits, matIdx, temp, velFlags; active lists; move buffer; }`
+
+Appendix B — CA Passes (Toy)
+
+- Pass 1 Propose: for each active cell, select destination (down/diag/lateral), write `(dst, ticket)`.
+- Pass 2 Commit: atomically claim `dst` (min ticket wins); apply reactions and swaps; update occupancy and material buffers.
+
