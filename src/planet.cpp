@@ -34,6 +34,20 @@ Float3 direction_from_face_uv(int face, float u, float v) {
     return normalize(p);
 }
 
+bool face_uv_from_direction(Float3 dir, int& face, float& u, float& v) {
+    face = face_from_direction(dir);
+    Float3 right = FACE_RIGHT[face];
+    Float3 up    = FACE_UP[face];
+    Float3 fwd   = FACE_FORWARD[face];
+    float cF = dot(dir, fwd);
+    if (std::fabs(cF) < 1e-8f) { u = v = 0.0f; return false; }
+    float cR = dot(dir, right);
+    float cU = dot(dir, up);
+    u = cR / cF;
+    v = cU / cF;
+    return true;
+}
+
 Float3 direction_from_lat_lon(double lat_rad, double lon_rad) {
     float cl = std::cos(lat_rad), sl = std::sin(lat_rad);
     float co = std::cos(lon_rad), so = std::sin(lon_rad);
@@ -79,12 +93,9 @@ BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
 
     // Elevation via FBM on the angular direction; cave noise via 3D fbm
     Float3 dir = (r > 0) ? pos_m / r : Float3{0,1,0};
-    // Scale angular coords to a pseudo 3D position by mapping direction to cube face uv
-    int face = face_from_direction(dir);
-    // Project dir back to face uv approximately using dot products
-    Float3 right = FACE_RIGHT[face], up = FACE_UP[face], fwd = FACE_FORWARD[face];
-    float u = dot(dir, right);
-    float v = dot(dir, up);
+    // Exact cube-sphere inverse mapping to get face-local (u,v)
+    int face = 0; float u = 0.0f, v = 0.0f;
+    (void)face_uv_from_direction(dir, face, u, v);
 
     // Terrain FBM parameters
     float elev = fbm({u*128.0f, v*128.0f, 0.0f}, 5, 2.0f, 0.5f, cfg.seed); // [-1,1]

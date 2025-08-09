@@ -28,6 +28,10 @@ int face_from_direction(Float3 dir);
 // Given a face index and local [-1,1] uv on that face, return unit direction on the sphere
 Float3 direction_from_face_uv(int face, float u, float v);
 
+// Inverse mapping: given a direction, return face and face-UV in [-1,1].
+// Returns true on success (non-zero forward component).
+bool face_uv_from_direction(Float3 dir, int& face, float& u, float& v);
+
 // Spherical helpers (latitude φ in radians [-pi/2, pi/2], longitude λ in radians [-pi, pi])
 Float3 direction_from_lat_lon(double lat_rad, double lon_rad);
 
