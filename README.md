@@ -4,7 +4,7 @@ An experimental game project in early planning. The original LLM-aided planning 
 
 ## Status
 
-- Pre-production. No runnable code yet.
+- Bootstrapped: CMake + C++20 + minimal Vulkan device enumeration.
 
 ## What’s Here
 
@@ -21,11 +21,34 @@ See `ROADMAP.md` for the deeper technical direction and phased plan. All details
 
 ## Getting Started
 
-There’s no build or run flow yet. As the implementation starts, this section will cover:
+### Prerequisites
 
-- Prerequisites and toolchains
-- Build and run commands
-- Project layout and conventions
+- A C++20 compiler (`g++` or `clang++`).
+- CMake 3.16+.
+- Vulkan SDK or system Vulkan headers/runtime.
+  - Linux (Debian/Ubuntu): `sudo apt install libvulkan-dev vulkan-tools`
+  - Linux (Fedora): `sudo dnf install vulkan-loader-devel vulkan-tools`
+  - Windows/macOS: install the Vulkan SDK from LunarG (MoltenVK on macOS).
+
+### Build
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+### Run
+
+```
+./build/wanderforge
+```
+
+This prints detected Vulkan devices. Build with `-DCMAKE_BUILD_TYPE=Debug` to try enabling validation layers (if installed).
+
+### Notes
+
+- If using the Vulkan SDK, ensure the `VULKAN_SDK` environment variable is set (Windows/macOS) and your runtime is properly installed.
+- On macOS you need MoltenVK; the SDK includes it.
 
 ## Contributing
 
@@ -34,4 +57,3 @@ Early days—no external contributions yet. Feedback and ideas are welcome; issu
 ## License
 
 TBD.
-
