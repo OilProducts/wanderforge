@@ -84,15 +84,16 @@ This document is a self-contained plan to build an experimental, planetary-scale
    - 2025-08-09: Added shader tool detection and a minimal graphics pipeline. If `glslc`/`glslangValidator` are present, the app compiles shaders and draws a colored triangle; otherwise it runs clear-only.
    - 2025-08-09: Added a minimal compute pipeline and no-op dispatch each frame (when `noop.comp.spv` is present). Phase 1 acceptance criteria met and verified.
 
-### Phase 2 — Math, Planet Frame, Base Sampler (2 weeks)
+### Phase 2 — Math, Planet Frame, Base Sampler (Completed)
 - Deliverables:
   - `int3/float3` types, transforms; 64-bit world coordinates.
   - Cube-sphere mapping utilities; deterministic noise stack.
   - `BaseSample sample_base(Int3 p) -> {material, density}` across rock/soil/water/lava/air.
 - Acceptance:
   - CPU tool to ray-march the planet surface; visualize a ring of voxels/chunks for sanity.
- - Progress:
-   - 2025-08-09: Added math/noise, cube-sphere mapping, base sampler, and `wf_ringmap` PPM tool to visualize an equatorial strip.
+- Progress:
+  - 2025-08-09: Added math/noise, cube-sphere mapping, base sampler, and `wf_ringmap` PPM tool to visualize an equatorial strip.
+  - 2025-08-09: Added exact inverse mapping (`face_uv_from_direction`). Phase 2 acceptance criteria met.
 
 ### Phase 3 — Chunk Store, Region IO, Greedy Meshing (2–3 weeks)
 - Deliverables:

@@ -56,13 +56,21 @@ This opens a window; if shader tools (`glslc` or `glslangValidator`) are availab
 
 ## Voxels On A Sphere (Cube‑Sphere)
 
-- Mapping: We represent the planet as a unit sphere sampled via a cube‑sphere projection. A direction selects a face (`face_from_direction`), and face‑local UV in `[-1,1]²` maps back to a unit direction (`direction_from_face_uv`).
-- World grid: Voxel coordinates are integer steps in meters at 10 cm resolution. Chunks are `64³` voxels (≈6.4 m cubes). For early streaming keys we use `FaceChunkKey {face,i,j,k}` from `face_chunk_from_voxel` — `i,j` are face‑local and `k` is a radial shell index.
-- Conversions: Helpers convert between spherical positions and voxel grid:
-  - `voxel_from_lat_lon_h(cfg, lat, lon, height_m)`
-  - `lat_lon_h_from_voxel(cfg, voxel, out_lat, out_lon, out_h)`
-- Base world: `sample_base(cfg, voxel)` procedurally classifies air/water/dirt/rock using deterministic value‑noise/FBM (seeded), with a sea level and sparse caves. This forms the read‑only baseline; edits will be stored separately as sparse deltas and meshed locally (Phase 3).
-- Visualize: Generate a simple equatorial/latitude strip to sanity‑check materials near the surface:
+- Plain‑English picture: Imagine a cube gently wrapped around a ball. To locate a point on the planet, we shoot a line from the center to that point. Whichever cube side the line passes through is the “face,” and the spot on that face is a simple 2D coordinate. This avoids the nasty stretching near the poles you’d get with a latitude/longitude grid.
+
+- Mapping (how code does it): a 3D direction picks a face (`face_from_direction`). We convert between face‑local coordinates and directions with
+  - `direction_from_face_uv(face, u, v)` and
+  - `face_uv_from_direction(dir)` (exact inverse).
+
+- World grid: Voxels are 10 cm cubes in a 3D grid. We group them into `64³` chunks (~6.4 m boxes). For streaming/indexing we use `FaceChunkKey {face,i,j,k}` where `i,j` are along the face and `k` steps outward from the center (radial shells).
+
+- Conversions (for tools and gameplay):
+  - `voxel_from_lat_lon_h(cfg, lat, lon, height_m)` → voxel index from latitude, longitude, and height above “sea level”.
+  - `lat_lon_h_from_voxel(cfg, voxel, out_lat, out_lon, out_h)` → back to spherical coordinates.
+
+- Base world (what’s in a voxel): `sample_base(cfg, voxel)` uses deterministic noise (seeded FBM) to assign materials like air, water, dirt, and rock, with a configurable sea level and sparse caves. This is the read‑only baseline; later, edits are stored as sparse deltas and meshed locally.
+
+- See it yourself: generate a thin strip image around the planet’s surface:
   - `./build/wf_ringmap 1024 256 0 ring.ppm` (equator)
   - `./build/wf_ringmap 1024 256 45 ring_45.ppm` (45° latitude)
 
