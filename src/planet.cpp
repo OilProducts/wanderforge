@@ -34,6 +34,44 @@ Float3 direction_from_face_uv(int face, float u, float v) {
     return normalize(p);
 }
 
+Float3 direction_from_lat_lon(double lat_rad, double lon_rad) {
+    float cl = std::cos(lat_rad), sl = std::sin(lat_rad);
+    float co = std::cos(lon_rad), so = std::sin(lon_rad);
+    return normalize(Float3{ cl * co, sl, cl * so });
+}
+
+Int3 voxel_from_lat_lon_h(const PlanetConfig& cfg, double lat_rad, double lon_rad, double height_m) {
+    Float3 dir = direction_from_lat_lon(lat_rad, lon_rad);
+    double r = cfg.radius_m + height_m;
+    Float3 p = { dir.x * (float)r, dir.y * (float)r, dir.z * (float)r };
+    return Int3{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
+}
+
+void lat_lon_h_from_voxel(const PlanetConfig& cfg, Int3 voxel, double& lat_rad, double& lon_rad, double& height_m) {
+    Float3 p = to_float3(voxel, float(cfg.voxel_size_m));
+    float r = length(p);
+    if (r <= 0.0f) { lat_rad = 0.0; lon_rad = 0.0; height_m = -cfg.radius_m; return; }
+    Float3 d = p / r;
+    lat_rad = std::asin(d.y);
+    lon_rad = std::atan2(d.z, d.x);
+    height_m = double(r) - cfg.radius_m;
+}
+
+FaceChunkKey face_chunk_from_voxel(const PlanetConfig& cfg, Int3 voxel, int chunk_vox) {
+    Float3 p = to_float3(voxel, float(cfg.voxel_size_m));
+    float r = length(p);
+    Float3 d = (r > 0.0f) ? p / r : Float3{1,0,0};
+    int face = face_from_direction(d);
+    Float3 right = FACE_RIGHT[face], up = FACE_UP[face];
+    double s = double(dot(p, right));
+    double t = double(dot(p, up));
+    double chunk_m = double(chunk_vox) * cfg.voxel_size_m;
+    std::int64_t i = (std::int64_t)std::floor(s / chunk_m);
+    std::int64_t j = (std::int64_t)std::floor(t / chunk_m);
+    std::int64_t k = (std::int64_t)std::floor(double(r) / chunk_m);
+    return FaceChunkKey{face, i, j, k};
+}
+
 BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
     // Convert voxel (integer grid at 10cm) to meters and spherical radius
     Float3 pos_m = to_float3(voxel, float(cfg.voxel_size_m));
@@ -84,4 +122,3 @@ BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
 }
 
 } // namespace wf
-

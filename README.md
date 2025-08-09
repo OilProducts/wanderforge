@@ -61,6 +61,18 @@ This opens a window; if shader tools (`glslc` or `glslangValidator`) are availab
  - If CMake errors about GLFW not found, install the GLFW dev package listed above and re-run `cmake -S . -B build`.
  - If you provide `vk_mem_alloc.h`, the app will use VMA for memory allocation; otherwise it runs without it.
 
+### Optional: CPU Ring Visualizer
+
+Generate a simple PPM image of a thin ring around the equator using the procedural base sampler (no Vulkan required):
+
+```
+cmake --build build --target wf_ringmap --config Release
+./build/wf_ringmap 1024 256 0 ring.ppm   # equator
+./build/wf_ringmap 1024 256 45 ring_45.ppm # 45° latitude
+```
+
+Open `ring.ppm` with any image viewer to inspect surface, water, and cave distribution near the equator.
+
 ## Contributing
 
 Early days—no external contributions yet. Feedback and ideas are welcome; issues can be used to capture discussion once the repository structure is in place.

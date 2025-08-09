@@ -28,8 +28,18 @@ int face_from_direction(Float3 dir);
 // Given a face index and local [-1,1] uv on that face, return unit direction on the sphere
 Float3 direction_from_face_uv(int face, float u, float v);
 
+// Spherical helpers (latitude φ in radians [-pi/2, pi/2], longitude λ in radians [-pi, pi])
+Float3 direction_from_lat_lon(double lat_rad, double lon_rad);
+
+// World <-> Voxel conversions
+Int3 voxel_from_lat_lon_h(const PlanetConfig& cfg, double lat_rad, double lon_rad, double height_m);
+void lat_lon_h_from_voxel(const PlanetConfig& cfg, Int3 voxel, double& lat_rad, double& lon_rad, double& height_m);
+
+// Face-local chunk grid mapping for early streaming prototypes
+struct FaceChunkKey { int face; std::int64_t i; std::int64_t j; std::int64_t k; };
+FaceChunkKey face_chunk_from_voxel(const PlanetConfig& cfg, Int3 voxel, int chunk_vox = 64);
+
 // Sample the base world (procedural, read-only).
 BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel);
 
 } // namespace wf
-
