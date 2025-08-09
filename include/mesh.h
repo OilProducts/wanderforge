@@ -16,5 +16,8 @@ struct Mesh {
     std::vector<uint32_t> indices;
 };
 
-} // namespace wf
+// Meshing APIs
+void mesh_chunk_naive(const struct Chunk64& c, Mesh& out, float voxel_size_m);
+void mesh_chunk_greedy(const struct Chunk64& c, Mesh& out, float voxel_size_m);
 
+} // namespace wf

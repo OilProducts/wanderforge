@@ -103,6 +103,9 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - Renderer with frustum culling and per-material draw lists.
 - Acceptance:
   - Walk around a static planet; smooth chunk streaming at 60 fps; typical chunk ≤ 15k tris.
+ - Progress:
+   - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
+   - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:

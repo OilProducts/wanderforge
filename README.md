@@ -102,7 +102,14 @@ cmake --build build --target wf_chunk_demo --config Release
 ./build/wf_chunk_demo
 ```
 
-This prints vertex/triangle counts for a simple synthetic scene (flat ground with a small pillar). Greedy meshing and GPU meshing will follow in Phase 3.
+This prints vertex/triangle counts for a simple synthetic scene (flat ground with a small pillar), comparing naive vs. greedy meshing:
+
+```
+Naive  -> Vertices: 66688, Tris: 33344
+Greedy -> Vertices:     72, Tris:    36
+```
+
+Greedy meshing drastically reduces geometry by merging coplanar faces. GPU meshing will follow in Phase 3.
 
 ## Contributing
 

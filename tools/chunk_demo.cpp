@@ -21,8 +21,10 @@ int main() {
         }
     }
 
-    Mesh m;
-    wf::mesh_chunk_naive(c, m, 0.10f);
-    std::printf("Vertices: %zu, Triangles: %zu\n", m.vertices.size(), m.indices.size() / 3);
+    Mesh m1, m2;
+    wf::mesh_chunk_naive(c, m1, 0.10f);
+    wf::mesh_chunk_greedy(c, m2, 0.10f);
+    std::printf("Naive  -> Vertices: %zu, Tris: %zu\n", m1.vertices.size(), m1.indices.size() / 3);
+    std::printf("Greedy -> Vertices: %zu, Tris: %zu\n", m2.vertices.size(), m2.indices.size() / 3);
     return 0;
 }
