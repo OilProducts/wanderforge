@@ -82,6 +82,7 @@ This document is a self-contained plan to build an experimental, planetary-scale
  - Progress:
    - 2025-08-09: Implemented GLFW window, Vulkan instance with debug messenger, device/queues, swapchain, image views, render pass, framebuffers, command buffers, sync, and clear-present loop. GPU/queue info printed at startup. Optional VMA detection added (uses `vk_mem_alloc.h` if present).
    - 2025-08-09: Added shader tool detection and a minimal graphics pipeline. If `glslc`/`glslangValidator` are present, the app compiles shaders and draws a colored triangle; otherwise it runs clear-only.
+   - 2025-08-09: Added a minimal compute pipeline and no-op dispatch each frame (when `noop.comp.spv` is present).
 
 ### Phase 2 — Math, Planet Frame, Base Sampler (2 weeks)
 - Deliverables:

@@ -66,6 +66,9 @@ VulkanApp::~VulkanApp() {
 
     cleanup_swapchain();
 
+    if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
+    if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
+
     #ifdef WF_HAVE_VMA
     if (vma_allocator_) {
         vmaDestroyAllocator(vma_allocator_);
@@ -115,6 +118,7 @@ void VulkanApp::init_vulkan() {
     create_surface();
     pick_physical_device();
     create_logical_device();
+    create_compute_pipeline();
 #ifdef WF_HAVE_VMA
     // Create optional VMA allocator
     {
@@ -372,6 +376,12 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     throw_if_failed(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer failed");
 
+    // No-op compute dispatch before rendering
+    if (pipeline_compute_) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_compute_);
+        vkCmdDispatch(cmd, 1, 1, 1);
+    }
+
     VkClearValue clear{ { {0.02f, 0.02f, 0.06f, 1.0f} } };
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = render_pass_;
@@ -521,6 +531,36 @@ void VulkanApp::create_graphics_pipeline() {
     }
     vkDestroyShaderModule(device_, vs, nullptr);
     vkDestroyShaderModule(device_, fs, nullptr);
+}
+
+void VulkanApp::create_compute_pipeline() {
+    // Load no-op compute shader
+    const std::string base = std::string(WF_SHADER_DIR);
+    const std::string csPath = base + "/noop.comp.spv";
+    VkShaderModule cs = load_shader_module(csPath);
+    if (!cs) {
+        std::cout << "Compute shader not found (" << csPath << "). Compute disabled." << std::endl;
+        return;
+    }
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = cs;
+    stage.pName = "main";
+
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_compute_) != VK_SUCCESS) {
+        vkDestroyShaderModule(device_, cs, nullptr);
+        return;
+    }
+
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = stage;
+    ci.layout = pipeline_layout_compute_;
+    if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline_compute_) != VK_SUCCESS) {
+        std::cerr << "Failed to create compute pipeline." << std::endl;
+        vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE;
+    }
+    vkDestroyShaderModule(device_, cs, nullptr);
 }
 
 } // namespace wf

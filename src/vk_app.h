@@ -27,6 +27,7 @@ private:
     void create_image_views();
     void create_render_pass();
     void create_graphics_pipeline();
+    void create_compute_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
     void create_sync_objects();
@@ -67,6 +68,10 @@ private:
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
+
+    // Compute pipeline (no-op dispatch)
+    VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_compute_ = VK_NULL_HANDLE;
 
     // Commands & sync
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
