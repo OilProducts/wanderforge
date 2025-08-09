@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <cstdio>
 #include <optional>
 #include <set>
 
@@ -453,7 +454,7 @@ VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
 }
 
 void VulkanApp::create_graphics_pipeline() {
-#ifdef WF_SHADER_DIR
+#include "wf_config.h"
     const std::string base = std::string(WF_SHADER_DIR);
     const std::string vsPath = base + "/triangle.vert.spv";
     const std::string fsPath = base + "/triangle.frag.spv";
@@ -520,7 +521,6 @@ void VulkanApp::create_graphics_pipeline() {
     }
     vkDestroyShaderModule(device_, vs, nullptr);
     vkDestroyShaderModule(device_, fs, nullptr);
-#endif
 }
 
 } // namespace wf

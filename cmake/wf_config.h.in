@@ -1,0 +1,4 @@
+#pragma once
+
+#define WF_SHADER_DIR "@WF_SHADER_DIR_PATH@"
+
