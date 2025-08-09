@@ -28,9 +28,15 @@ For a consolidated, actionable plan, see `PLAN.md`.
 - A C++20 compiler (`g++` or `clang++`).
 - CMake 3.16+.
 - Vulkan SDK or system Vulkan headers/runtime.
-  - Linux (Debian/Ubuntu): `sudo apt install libvulkan-dev vulkan-tools`
-  - Linux (Fedora): `sudo dnf install vulkan-loader-devel vulkan-tools`
+  - Debian/Ubuntu: `sudo apt install libvulkan-dev vulkan-tools`
+  - Fedora: `sudo dnf install vulkan-loader-devel vulkan-tools`
   - Windows/macOS: install the Vulkan SDK from LunarG (MoltenVK on macOS).
+- GLFW 3.3+ development headers (window + Vulkan surface creation).
+  - Debian/Ubuntu: `sudo apt install libglfw3-dev`
+  - Fedora: `sudo dnf install glfw-devel`
+  - Arch: `sudo pacman -S glfw-x11` (or `glfw-wayland`)
+  - macOS (Homebrew): `brew install glfw`
+  - Windows (vcpkg): `vcpkg install glfw3`
 
 ### Build
 
@@ -51,6 +57,7 @@ This prints detected Vulkan devices. Build with `-DCMAKE_BUILD_TYPE=Debug` to tr
 
 - If using the Vulkan SDK, ensure the `VULKAN_SDK` environment variable is set (Windows/macOS) and your runtime is properly installed.
 - On macOS you need MoltenVK; the SDK includes it.
+ - If CMake errors about GLFW not found, install the GLFW dev package listed above and re-run `cmake -S . -B build`.
 
 ## Contributing
 

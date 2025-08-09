@@ -60,7 +60,7 @@ if (WF_HAVE_GLFW)
     target_link_libraries(wanderforge PRIVATE ${WF_GLFW_LIBRARIES})
   endif()
 else()
-  message(STATUS "GLFW not found. Build will fail for Phase 1 run. See README for install steps.")
+  message(FATAL_ERROR "GLFW not found. Install glfw development package (e.g., libglfw3-dev on Ubuntu, glfw-devel on Fedora). See README Prerequisites.")
 endif()
 
 target_compile_definitions(wanderforge PRIVATE
@@ -77,4 +77,3 @@ if (APPLE)
     MACOSX_RPATH ON
   )
 endif()
-

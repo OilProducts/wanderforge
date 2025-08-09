@@ -2,6 +2,7 @@
 
 #include <GLFW/glfw3.h>
 #include <cassert>
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <optional>
@@ -398,4 +399,3 @@ void VulkanApp::recreate_swapchain() {
 }
 
 } // namespace wf
-
