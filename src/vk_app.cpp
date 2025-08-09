@@ -448,13 +448,34 @@ void VulkanApp::recreate_swapchain() {
     create_framebuffers();
 }
 
-VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return VK_NULL_HANDLE;
+static bool read_file_all(const std::string& p, std::vector<char>& out) {
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return false;
     fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
-    std::vector<char> buf(len);
-    if (fread(buf.data(), 1, buf.size(), f) != buf.size()) { fclose(f); return VK_NULL_HANDLE; }
+    out.resize(len);
+    size_t rd = fread(out.data(), 1, out.size(), f);
     fclose(f);
+    return rd == out.size();
+}
+
+VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
+    std::vector<char> buf;
+    // Try provided path
+    if (!read_file_all(path, buf)) {
+        // Fallbacks: try common relative paths
+        size_t slash = path.find_last_of('/');
+        std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        const char* candidates[] = {
+            (std::string("build/shaders/") + base).c_str(),
+            (std::string("shaders/") + base).c_str(),
+            (std::string("shaders_build/") + base).c_str()
+        };
+        bool ok = false;
+        for (const char* cand : candidates) {
+            if (read_file_all(cand, buf)) { ok = true; break; }
+        }
+        if (!ok) return VK_NULL_HANDLE;
+    }
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = buf.size();
     ci.pCode = reinterpret_cast<const uint32_t*>(buf.data());
@@ -473,7 +494,7 @@ void VulkanApp::create_graphics_pipeline() {
     if (!vs || !fs) {
         if (vs) vkDestroyShaderModule(device_, vs, nullptr);
         if (fs) vkDestroyShaderModule(device_, fs, nullptr);
-        std::cerr << "Shaders not found (" << vsPath << ", " << fsPath << "). Triangle disabled.\n";
+        std::cout << "[info] Shaders not found (" << vsPath << ", " << fsPath << "). Triangle disabled." << std::endl;
         return;
     }
 
@@ -539,7 +560,7 @@ void VulkanApp::create_compute_pipeline() {
     const std::string csPath = base + "/noop.comp.spv";
     VkShaderModule cs = load_shader_module(csPath);
     if (!cs) {
-        std::cout << "Compute shader not found (" << csPath << "). Compute disabled." << std::endl;
+        std::cout << "[info] Compute shader not found (" << csPath << "). Compute disabled." << std::endl;
         return;
     }
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
