@@ -91,6 +91,8 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - `BaseSample sample_base(Int3 p) -> {material, density}` across rock/soil/water/lava/air.
 - Acceptance:
   - CPU tool to ray-march the planet surface; visualize a ring of voxels/chunks for sanity.
+ - Progress:
+   - 2025-08-09: Added math/noise, cube-sphere mapping, base sampler, and `wf_ringmap` PPM tool to visualize an equatorial strip.
 
 ### Phase 3 — Chunk Store, Region IO, Greedy Meshing (2–3 weeks)
 - Deliverables:

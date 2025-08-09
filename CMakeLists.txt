@@ -137,6 +137,13 @@ else()
   set(WF_SHADER_DIR_PATH "${CMAKE_SOURCE_DIR}/shaders_build")
 endif()
 
+# CPU tools (no Vulkan/GLFW required)
+add_executable(wf_ringmap
+  tools/ringmap.cpp
+  src/planet.cpp
+)
+target_include_directories(wf_ringmap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 # Generate configuration header with paths and options
 set(WF_CONFIG_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${WF_CONFIG_DIR})
