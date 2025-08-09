@@ -77,3 +77,21 @@ if (APPLE)
     MACOSX_RPATH ON
   )
 endif()
+
+# Optional: Vulkan Memory Allocator (header-only). Define WF_HAVE_VMA if header found.
+find_path(VMA_INCLUDE_DIR NAMES vk_mem_alloc.h PATH_SUFFIXES include)
+if (VMA_INCLUDE_DIR)
+  message(STATUS "Found VMA header at: ${VMA_INCLUDE_DIR}")
+  target_include_directories(wanderforge PRIVATE ${VMA_INCLUDE_DIR})
+  target_compile_definitions(wanderforge PRIVATE WF_HAVE_VMA)
+endif()
+
+# Optional: shader tools (used for development workflows)
+find_program(WF_GLSLANG_VALIDATOR NAMES glslangValidator QUIET)
+find_program(WF_GLSLC NAMES glslc QUIET)
+if (WF_GLSLANG_VALIDATOR)
+  message(STATUS "Found glslangValidator: ${WF_GLSLANG_VALIDATOR}")
+endif()
+if (WF_GLSLC)
+  message(STATUS "Found glslc: ${WF_GLSLC}")
+endif()

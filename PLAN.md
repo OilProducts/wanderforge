@@ -79,6 +79,8 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - Runs on Linux; builds on Windows/macOS (MoltenVK). Validation toggle via build type. Prints chosen GPU/queues.
 - Notes:
   - Add minimal `.vk` utilities: error macros, scoped command submitters, pipeline barrier helpers.
+ - Progress:
+   - 2025-08-09: Implemented GLFW window, Vulkan instance with debug messenger, device/queues, swapchain, image views, render pass, framebuffers, command buffers, sync, and clear-present loop. GPU/queue info printed at startup. Optional VMA detection added (uses `vk_mem_alloc.h` if present).
 
 ### Phase 2 — Math, Planet Frame, Base Sampler (2 weeks)
 - Deliverables:
@@ -180,4 +182,3 @@ Appendix B — CA Passes (Toy)
 
 - Pass 1 Propose: for each active cell, select destination (down/diag/lateral), write `(dst, ticket)`.
 - Pass 2 Commit: atomically claim `dst` (min ticket wins); apply reactions and swaps; update occupancy and material buffers.
-

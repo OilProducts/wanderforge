@@ -78,7 +78,11 @@ private:
     std::vector<const char*> enabled_layers_;
     std::vector<const char*> enabled_instance_exts_;
     std::vector<const char*> enabled_device_exts_;
+
+#ifdef WF_HAVE_VMA
+    // Optional: Vulkan Memory Allocator
+    struct VmaAllocator_T* vma_allocator_ = nullptr;
+#endif
 };
 
 } // namespace wf
-

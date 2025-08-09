@@ -37,6 +37,7 @@ For a consolidated, actionable plan, see `PLAN.md`.
   - Arch: `sudo pacman -S glfw-x11` (or `glfw-wayland`)
   - macOS (Homebrew): `brew install glfw`
   - Windows (vcpkg): `vcpkg install glfw3`
+ - Optional: Vulkan Memory Allocator (header-only). If available, place `vk_mem_alloc.h` in your include path (e.g., `include/third_party/`) or install a package providing it; the build auto-detects and enables it.
 
 ### Build
 
@@ -58,6 +59,7 @@ This prints detected Vulkan devices. Build with `-DCMAKE_BUILD_TYPE=Debug` to tr
 - If using the Vulkan SDK, ensure the `VULKAN_SDK` environment variable is set (Windows/macOS) and your runtime is properly installed.
 - On macOS you need MoltenVK; the SDK includes it.
  - If CMake errors about GLFW not found, install the GLFW dev package listed above and re-run `cmake -S . -B build`.
+ - If you provide `vk_mem_alloc.h`, the app will use VMA for memory allocation; otherwise it runs without it.
 
 ## Contributing
 

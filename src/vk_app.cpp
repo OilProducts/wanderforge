@@ -1,6 +1,9 @@
 #include "vk_app.h"
 
 #include <GLFW/glfw3.h>
+#ifdef WF_HAVE_VMA
+#include <vk_mem_alloc.h>
+#endif
 #include <cassert>
 #include <algorithm>
 #include <cstring>
@@ -62,6 +65,13 @@ VulkanApp::~VulkanApp() {
 
     cleanup_swapchain();
 
+    #ifdef WF_HAVE_VMA
+    if (vma_allocator_) {
+        vmaDestroyAllocator(vma_allocator_);
+        vma_allocator_ = nullptr;
+    }
+    #endif
+
     for (auto f : fences_in_flight_) vkDestroyFence(device_, f, nullptr);
     for (auto s : sem_render_finished_) vkDestroySemaphore(device_, s, nullptr);
     for (auto s : sem_image_available_) vkDestroySemaphore(device_, s, nullptr);
@@ -104,12 +114,34 @@ void VulkanApp::init_vulkan() {
     create_surface();
     pick_physical_device();
     create_logical_device();
+#ifdef WF_HAVE_VMA
+    // Create optional VMA allocator
+    {
+        VmaAllocatorCreateInfo aci{};
+        aci.instance = instance_;
+        aci.physicalDevice = physical_device_;
+        aci.device = device_;
+        aci.vulkanApiVersion = VK_API_VERSION_1_0;
+        if (vmaCreateAllocator(&aci, &vma_allocator_) != VK_SUCCESS) {
+            std::cerr << "Warning: VMA allocator creation failed; continuing without VMA.\n";
+            vma_allocator_ = nullptr;
+        }
+    }
+#endif
     create_swapchain();
     create_image_views();
     create_render_pass();
     create_framebuffers();
     create_command_pool_and_buffers();
     create_sync_objects();
+
+    // Print basic GPU and queue info once
+    VkPhysicalDeviceProperties props{}; vkGetPhysicalDeviceProperties(physical_device_, &props);
+    std::cout << "GPU: " << props.deviceName << " API "
+              << VK_API_VERSION_MAJOR(props.apiVersion) << '.'
+              << VK_API_VERSION_MINOR(props.apiVersion) << '.'
+              << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
+    std::cout << "Queues: graphics=" << queue_family_graphics_ << ", present=" << queue_family_present_ << "\n";
 }
 
 void VulkanApp::create_instance() {
