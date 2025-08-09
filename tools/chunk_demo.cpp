@@ -5,6 +5,9 @@
 
 using namespace wf;
 
+// Forward declare mesher in namespace
+namespace wf { void mesh_chunk_naive(const Chunk64&, Mesh&, float); }
+
 int main() {
     Chunk64 c;
     // Simple test: fill a flat ground of rock at y<32, air above; add a small dirt pillar
@@ -19,9 +22,7 @@ int main() {
     }
 
     Mesh m;
-    extern void mesh_chunk_naive(const Chunk64&, Mesh&, float);
-    mesh_chunk_naive(c, m, 0.10f);
+    wf::mesh_chunk_naive(c, m, 0.10f);
     std::printf("Vertices: %zu, Triangles: %zu\n", m.vertices.size(), m.indices.size() / 3);
     return 0;
 }
-
