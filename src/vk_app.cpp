@@ -607,7 +607,8 @@ void VulkanApp::update_input(float dt) {
     float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
     float fwd[3] = { cp*cyaw, sp, cp*syaw };
     float up[3]  = { 0.0f, 1.0f, 0.0f };
-    float right[3] = { up[1]*fwd[2]-up[2]*fwd[1], up[2]*fwd[0]-up[0]*fwd[2], up[0]*fwd[1]-up[1]*fwd[0] };
+    // Right-handed basis: right = cross(fwd, up)
+    float right[3] = { fwd[1]*up[2]-fwd[2]*up[1], fwd[2]*up[0]-fwd[0]*up[2], fwd[0]*up[1]-fwd[1]*up[0] };
     float rl = std::sqrt(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
     if (rl > 0) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
 
