@@ -52,7 +52,13 @@ cmake --build build --config Release
 ./build/wanderforge
 ```
 
-This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws either a few demo chunks (loaded/generated via Region IO on face 0) or falls back to a simple triangle. Missing shader tools are treated as info-only and the app still runs (clear-only).
+This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a few demo chunks (loaded/generated via Region IO on face 0) with a simple free‑fly camera. Otherwise it falls back to a basic triangle, or clear‑only if no shaders.
+
+Controls (chunk view):
+- W/A/S/D: move forward/left/back/right
+- Q/E: move down/up
+- Right mouse drag: look around (yaw/pitch)
+- Shift: hold to move faster
 
 ## Voxels On A Sphere (Cube‑Sphere)
 

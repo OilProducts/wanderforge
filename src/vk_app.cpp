@@ -113,8 +113,13 @@ VulkanApp::~VulkanApp() {
 void VulkanApp::run() {
     init_window();
     init_vulkan();
+    last_time_ = glfwGetTime();
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        double now = glfwGetTime();
+        float dt = (float)std::max(0.0, now - last_time_);
+        last_time_ = now;
+        update_input(dt);
         draw_frame();
     }
 }
@@ -523,19 +528,20 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     if (pipeline_chunk_ && !render_chunks_.empty()) {
         // Push a simple MVP matrix
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        auto deg2rad = [](float d){ return d * 0.01745329252f; };
-        float fov = deg2rad(60.0f);
+        float fov = 60.0f * 0.01745329252f;
         float zn = 0.1f, zf = 1000.0f;
         float f = 1.0f / std::tan(fov * 0.5f);
         float P[16] = { f/aspect,0,0,0,  0,f,0,0,  0,0,(zf+zn)/(zn-zf),-1,  0,0,(2*zf*zn)/(zn-zf),0 };
-        // LookAt camera at (8,6,16) looking at (3,3,3)
-        float eye[3] = {8,6,16}, tgt[3] = {3,3,3}, upv[3] = {0,1,0};
-        auto sub3=[&](const float a[3], const float b[3]){ return std::array<float,3>{a[0]-b[0],a[1]-b[1],a[2]-b[2]}; };
-        auto norm=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
+        // Camera look-at from yaw/pitch/pos
+        auto norm3=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
         auto cross=[&](std::array<float,3> a,std::array<float,3> b){return std::array<float,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
-        auto fwd = norm(sub3(tgt, eye));
-        auto s = norm(cross(fwd, {upv[0],upv[1],upv[2]}));
+        float cy = std::cos(cam_yaw_), sy = std::sin(cam_yaw_);
+        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+        std::array<float,3> fwd = { cp*cy, sp, cp*sy };
+        std::array<float,3> upv = { 0.0f, 1.0f, 0.0f };
+        auto s = norm3(cross(fwd, upv));
         auto u = cross(s, fwd);
+        float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
         float V[16] = { s[0], u[0], -fwd[0], 0,
                         s[1], u[1], -fwd[1], 0,
                         s[2], u[2], -fwd[2], 0,
@@ -563,6 +569,46 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     vkCmdEndRenderPass(cmd);
 
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
+}
+
+void VulkanApp::update_input(float dt) {
+    // Close on Escape
+    if (glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        glfwSetWindowShouldClose(window_, GLFW_TRUE);
+    }
+
+    // Mouse look when RMB is held
+    int rmb = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT);
+    double cx, cy; glfwGetCursorPos(window_, &cx, &cy);
+    if (rmb == GLFW_PRESS) {
+        if (!rmb_down_) { rmb_down_ = true; last_cursor_x_ = cx; last_cursor_y_ = cy; }
+        double dx = cx - last_cursor_x_;
+        double dy = cy - last_cursor_y_;
+        last_cursor_x_ = cx; last_cursor_y_ = cy;
+        cam_yaw_   += (float)(dx * cam_sensitivity_);
+        cam_pitch_ -= (float)(dy * cam_sensitivity_);
+        const float maxp = 1.55334306f; // ~89 deg
+        if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
+    } else {
+        rmb_down_ = false;
+    }
+
+    // Compute basis from yaw/pitch
+    float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+    float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+    float fwd[3] = { cp*cyaw, sp, cp*syaw };
+    float up[3]  = { 0.0f, 1.0f, 0.0f };
+    float right[3] = { up[1]*fwd[2]-up[2]*fwd[1], up[2]*fwd[0]-up[0]*fwd[2], up[0]*fwd[1]-up[1]*fwd[0] };
+    float rl = std::sqrt(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
+    if (rl > 0) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
+
+    float speed = cam_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 3.0f : 1.0f);
+    if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { cam_pos_[0]+=fwd[0]*speed; cam_pos_[1]+=fwd[1]*speed; cam_pos_[2]+=fwd[2]*speed; }
+    if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { cam_pos_[0]-=fwd[0]*speed; cam_pos_[1]-=fwd[1]*speed; cam_pos_[2]-=fwd[2]*speed; }
+    if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { cam_pos_[0]-=right[0]*speed; cam_pos_[1]-=right[1]*speed; cam_pos_[2]-=right[2]*speed; }
+    if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { cam_pos_[0]+=right[0]*speed; cam_pos_[1]+=right[1]*speed; cam_pos_[2]+=right[2]*speed; }
+    if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
+    if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
 }
 
 void VulkanApp::draw_frame() {

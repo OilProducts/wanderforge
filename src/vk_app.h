@@ -35,6 +35,7 @@ private:
 
     void record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex);
     void draw_frame();
+    void update_input(float dt);
 
     void cleanup_swapchain();
     void recreate_swapchain();
@@ -114,6 +115,16 @@ private:
     // Optional: Vulkan Memory Allocator
     struct VmaAllocator_T* vma_allocator_ = nullptr;
 #endif
+
+    // Camera
+    float cam_yaw_ = 0.0f;   // radians
+    float cam_pitch_ = 0.0f; // radians
+    float cam_speed_ = 12.0f; // m/s
+    float cam_sensitivity_ = 0.0025f; // radians per pixel
+    float cam_pos_[3] = { 1165.0f, 12.0f, 0.0f }; // near face0 surface by default
+    double last_time_ = 0.0;
+    bool rmb_down_ = false;
+    double last_cursor_x_ = 0.0, last_cursor_y_ = 0.0;
 };
 
 } // namespace wf
