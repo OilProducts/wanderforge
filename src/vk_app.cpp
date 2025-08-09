@@ -225,6 +225,15 @@ void VulkanApp::init_vulkan() {
                 }
             }
         }
+
+        // Place camera slightly outside the loaded shell, looking inward
+        {
+            float R0f = (float)(k0 * chunk_m);
+            Float3 pos = forward * (R0f + 10.0f) + up * 4.0f; // 10m radially outward, 4m up
+            cam_pos_[0] = pos.x; cam_pos_[1] = pos.y; cam_pos_[2] = pos.z;
+            cam_yaw_ = 3.14159265f;   // look toward -forward (inward)
+            cam_pitch_ = -0.05f;
+        }
     }
 }
 void VulkanApp::create_instance() {
