@@ -27,6 +27,7 @@ private:
     void create_image_views();
     void create_render_pass();
     void create_graphics_pipeline();
+    void create_graphics_pipeline_chunk();
     void create_compute_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
@@ -65,13 +66,32 @@ private:
 
     // Render pass & framebuffers
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    VkImage depth_image_ = VK_NULL_HANDLE;
+    VkDeviceMemory depth_mem_ = VK_NULL_HANDLE;
+    VkImageView depth_view_ = VK_NULL_HANDLE;
+    VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout_chunk_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_chunk_ = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
 
     // Compute pipeline (no-op dispatch)
     VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
     VkPipeline pipeline_compute_ = VK_NULL_HANDLE;
+
+    // Geometry buffers for a demo chunk
+    VkBuffer chunk_vbuf_ = VK_NULL_HANDLE;
+    VkDeviceMemory chunk_vmem_ = VK_NULL_HANDLE;
+    VkBuffer chunk_ibuf_ = VK_NULL_HANDLE;
+    VkDeviceMemory chunk_imem_ = VK_NULL_HANDLE;
+    uint32_t chunk_index_count_ = 0;
+
+    // Helpers for buffers
+    uint32_t find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties);
+    void create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buf, VkDeviceMemory& mem, const void* data);
+    VkFormat find_depth_format();
+    void create_depth_resources();
 
     // Commands & sync
     VkCommandPool command_pool_ = VK_NULL_HANDLE;

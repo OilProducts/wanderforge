@@ -51,6 +51,7 @@ add_executable(wanderforge
   src/vk_app.cpp
   src/planet.cpp
   src/mesh_naive.cpp
+  src/mesh_greedy.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
@@ -103,6 +104,8 @@ set(WF_SHADER_SOURCES
   shaders/triangle.vert
   shaders/triangle.frag
   shaders/noop.comp
+  shaders/chunk.vert
+  shaders/chunk.frag
 )
 set(WF_SHADER_OUTPUTS)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
@@ -149,6 +152,7 @@ target_include_directories(wf_ringmap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/includ
 add_executable(wf_chunk_demo
   tools/chunk_demo.cpp
   src/mesh_naive.cpp
+  src/mesh_greedy.cpp
 )
 target_include_directories(wf_chunk_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

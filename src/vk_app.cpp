@@ -11,6 +11,10 @@
 #include <cstdio>
 #include <optional>
 #include <set>
+#include <vector>
+
+#include "chunk.h"
+#include "mesh.h"
 
 namespace wf {
 
@@ -65,6 +69,11 @@ VulkanApp::~VulkanApp() {
     vkDeviceWaitIdle(device_);
 
     cleanup_swapchain();
+
+    if (chunk_vbuf_) { vkDestroyBuffer(device_, chunk_vbuf_, nullptr); chunk_vbuf_ = VK_NULL_HANDLE; }
+    if (chunk_vmem_) { vkFreeMemory(device_, chunk_vmem_, nullptr); chunk_vmem_ = VK_NULL_HANDLE; }
+    if (chunk_ibuf_) { vkDestroyBuffer(device_, chunk_ibuf_, nullptr); chunk_ibuf_ = VK_NULL_HANDLE; }
+    if (chunk_imem_) { vkFreeMemory(device_, chunk_imem_, nullptr); chunk_imem_ = VK_NULL_HANDLE; }
 
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
@@ -136,6 +145,8 @@ void VulkanApp::init_vulkan() {
     create_swapchain();
     create_image_views();
     create_render_pass();
+    create_depth_resources();
+    create_graphics_pipeline_chunk();
     create_graphics_pipeline();
     create_framebuffers();
     create_command_pool_and_buffers();
@@ -148,8 +159,28 @@ void VulkanApp::init_vulkan() {
               << VK_API_VERSION_MINOR(props.apiVersion) << '.'
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
     std::cout << "Queues: graphics=" << queue_family_graphics_ << ", present=" << queue_family_present_ << "\n";
-}
 
+    // Build a simple demo chunk and upload it
+    {
+        Chunk64 c;
+        for (int z = 0; z < Chunk64::N; ++z) {
+            for (int y = 0; y < Chunk64::N; ++y) {
+                for (int x = 0; x < Chunk64::N; ++x) {
+                    uint16_t mat = (y < 32) ? MAT_ROCK : MAT_AIR;
+                    if (x == 20 && z == 20 && y < 40) mat = MAT_DIRT;
+                    c.set_voxel(x, y, z, mat);
+                }
+            }
+        }
+        Mesh m;
+        mesh_chunk_greedy(c, m, 0.10f);
+        chunk_index_count_ = (uint32_t)m.indices.size();
+        if (chunk_index_count_ > 0) {
+            create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, chunk_vbuf_, chunk_vmem_, m.vertices.data());
+            create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, chunk_ibuf_, chunk_imem_, m.indices.data());
+        }
+    }
+}
 void VulkanApp::create_instance() {
     // Query GLFW extensions
     uint32_t glfwCount = 0; const char** glfwExt = glfwGetRequiredInstanceExtensions(&glfwCount);
@@ -318,9 +349,22 @@ void VulkanApp::create_render_pass() {
     color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    // Depth attachment
+    VkAttachmentDescription depth{};
+    depth.format = find_depth_format();
+    depth.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth_format_ = depth.format;
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sub{};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1; sub.pColorAttachments = &colorRef;
+    sub.pDepthStencilAttachment = &depthRef;
 
     VkSubpassDependency dep{};
     dep.srcSubpass = VK_SUBPASS_EXTERNAL; dep.dstSubpass = 0;
@@ -328,8 +372,9 @@ void VulkanApp::create_render_pass() {
     dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
+    VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-    rpci.attachmentCount = 1; rpci.pAttachments = &color;
+    rpci.attachmentCount = 2; rpci.pAttachments = atts;
     rpci.subpassCount = 1; rpci.pSubpasses = &sub;
     rpci.dependencyCount = 1; rpci.pDependencies = &dep;
     throw_if_failed(vkCreateRenderPass(device_, &rpci, nullptr, &render_pass_), "vkCreateRenderPass failed");
@@ -338,13 +383,55 @@ void VulkanApp::create_render_pass() {
 void VulkanApp::create_framebuffers() {
     framebuffers_.resize(swapchain_image_views_.size());
     for (size_t i=0;i<swapchain_image_views_.size();++i) {
-        VkImageView attachments[] = { swapchain_image_views_[i] };
+        VkImageView attachments[] = { swapchain_image_views_[i], depth_view_ };
         VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fci.renderPass = render_pass_;
-        fci.attachmentCount = 1; fci.pAttachments = attachments;
+        fci.attachmentCount = 2; fci.pAttachments = attachments;
         fci.width = swapchain_extent_.width; fci.height = swapchain_extent_.height; fci.layers = 1;
         throw_if_failed(vkCreateFramebuffer(device_, &fci, nullptr, &framebuffers_[i]), "vkCreateFramebuffer failed");
     }
+}
+
+VkFormat VulkanApp::find_depth_format() {
+    VkFormat candidates[] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+    for (VkFormat f : candidates) {
+        VkFormatProperties props{};
+        vkGetPhysicalDeviceFormatProperties(physical_device_, f, &props);
+        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) return f;
+    }
+    return VK_FORMAT_D32_SFLOAT;
+}
+
+void VulkanApp::create_depth_resources() {
+    if (depth_image_) {
+        vkDestroyImageView(device_, depth_view_, nullptr); depth_view_ = VK_NULL_HANDLE;
+        vkDestroyImage(device_, depth_image_, nullptr); depth_image_ = VK_NULL_HANDLE;
+        vkFreeMemory(device_, depth_mem_, nullptr); depth_mem_ = VK_NULL_HANDLE;
+    }
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.extent = { swapchain_extent_.width, swapchain_extent_.height, 1 };
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.format = depth_format_ ? depth_format_ : find_depth_format();
+    depth_format_ = ici.format;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    throw_if_failed(vkCreateImage(device_, &ici, nullptr, &depth_image_), "vkCreateImage(depth) failed");
+    VkMemoryRequirements req{}; vkGetImageMemoryRequirements(device_, depth_image_, &req);
+    uint32_t mt = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    throw_if_failed(vkAllocateMemory(device_, &mai, nullptr, &depth_mem_), "vkAllocateMemory(depth) failed");
+    throw_if_failed(vkBindImageMemory(device_, depth_image_, depth_mem_, 0), "vkBindImageMemory(depth) failed");
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = depth_image_;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = depth_format_;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    vci.subresourceRange.baseMipLevel = 0; vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.baseArrayLayer = 0; vci.subresourceRange.layerCount = 1;
+    throw_if_failed(vkCreateImageView(device_, &vci, nullptr, &depth_view_), "vkCreateImageView(depth) failed");
 }
 
 void VulkanApp::create_command_pool_and_buffers() {
@@ -387,9 +474,46 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     rbi.renderPass = render_pass_;
     rbi.framebuffer = framebuffers_[imageIndex];
     rbi.renderArea.offset = {0,0}; rbi.renderArea.extent = swapchain_extent_;
-    rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+    VkClearValue clears[2];
+    clears[0] = clear;
+    clears[1].depthStencil = {1.0f, 0};
+    rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if (pipeline_triangle_) {
+    if (pipeline_chunk_ && chunk_vbuf_ && chunk_ibuf_ && chunk_index_count_ > 0) {
+        // Push a simple MVP matrix
+        float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
+        auto deg2rad = [](float d){ return d * 0.01745329252f; };
+        float fov = deg2rad(60.0f);
+        float zn = 0.1f, zf = 1000.0f;
+        float f = 1.0f / std::tan(fov * 0.5f);
+        float P[16] = { f/aspect,0,0,0,  0,f,0,0,  0,0,(zf+zn)/(zn-zf),-1,  0,0,(2*zf*zn)/(zn-zf),0 };
+        // LookAt camera at (8,6,16) looking at (3,3,3)
+        float eye[3] = {8,6,16}, tgt[3] = {3,3,3}, upv[3] = {0,1,0};
+        auto sub3=[&](const float a[3], const float b[3]){ return std::array<float,3>{a[0]-b[0],a[1]-b[1],a[2]-b[2]}; };
+        auto norm=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
+        auto cross=[&](std::array<float,3> a,std::array<float,3> b){return std::array<float,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
+        auto fwd = norm(sub3(tgt, eye));
+        auto s = norm(cross(fwd, {upv[0],upv[1],upv[2]}));
+        auto u = cross(s, fwd);
+        float V[16] = { s[0], u[0], -fwd[0], 0,
+                        s[1], u[1], -fwd[1], 0,
+                        s[2], u[2], -fwd[2], 0,
+                        -(s[0]*eye[0]+s[1]*eye[1]+s[2]*eye[2]),
+                        -(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]),
+                        fwd[0]*eye[0]+fwd[1]*eye[1]+fwd[2]*eye[2], 1 };
+        auto mul4=[&](const float A[16], const float B[16]){
+            float R[16]{};
+            for(int r=0;r<4;++r) for(int c=0;c<4;++c){ R[r*4+c]=A[r*4+0]*B[0*4+c]+A[r*4+1]*B[1*4+c]+A[r*4+2]*B[2*4+c]+A[r*4+3]*B[3*4+c]; }
+            return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
+        auto MVP = mul4(V, P);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
+        vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
+        VkDeviceSize offs = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &chunk_vbuf_, &offs);
+        vkCmdBindIndexBuffer(cmd, chunk_ibuf_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, chunk_index_count_, 1, 0, 0, 0);
+    } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
@@ -428,10 +552,15 @@ void VulkanApp::draw_frame() {
 }
 
 void VulkanApp::cleanup_swapchain() {
+    if (pipeline_chunk_) { vkDestroyPipeline(device_, pipeline_chunk_, nullptr); pipeline_chunk_ = VK_NULL_HANDLE; }
+    if (pipeline_layout_chunk_) { vkDestroyPipelineLayout(device_, pipeline_layout_chunk_, nullptr); pipeline_layout_chunk_ = VK_NULL_HANDLE; }
     if (pipeline_triangle_) { vkDestroyPipeline(device_, pipeline_triangle_, nullptr); pipeline_triangle_ = VK_NULL_HANDLE; }
     if (pipeline_layout_) { vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr); pipeline_layout_ = VK_NULL_HANDLE; }
     for (auto fb : framebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
     framebuffers_.clear();
+    if (depth_view_) { vkDestroyImageView(device_, depth_view_, nullptr); depth_view_ = VK_NULL_HANDLE; }
+    if (depth_image_) { vkDestroyImage(device_, depth_image_, nullptr); depth_image_ = VK_NULL_HANDLE; }
+    if (depth_mem_) { vkFreeMemory(device_, depth_mem_, nullptr); depth_mem_ = VK_NULL_HANDLE; }
     if (render_pass_) { vkDestroyRenderPass(device_, render_pass_, nullptr); render_pass_ = VK_NULL_HANDLE; }
     for (auto iv : swapchain_image_views_) vkDestroyImageView(device_, iv, nullptr);
     swapchain_image_views_.clear();
@@ -444,6 +573,8 @@ void VulkanApp::recreate_swapchain() {
     create_swapchain();
     create_image_views();
     create_render_pass();
+    create_depth_resources();
+    create_graphics_pipeline_chunk();
     create_graphics_pipeline();
     create_framebuffers();
 }
@@ -526,6 +657,10 @@ void VulkanApp::create_graphics_pipeline() {
     VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    ds.depthTestEnable = VK_TRUE; ds.depthWriteEnable = VK_TRUE; ds.depthCompareOp = VK_COMPARE_OP_LESS;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    ds.depthTestEnable = VK_TRUE; ds.depthWriteEnable = VK_TRUE; ds.depthCompareOp = VK_COMPARE_OP_LESS;
 
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_) != VK_SUCCESS) {
@@ -541,7 +676,7 @@ void VulkanApp::create_graphics_pipeline() {
     gpi.pViewportState = &vpstate;
     gpi.pRasterizationState = &rs;
     gpi.pMultisampleState = &ms;
-    gpi.pDepthStencilState = nullptr;
+    gpi.pDepthStencilState = &ds;
     gpi.pColorBlendState = &cb;
     gpi.layout = pipeline_layout_;
     gpi.renderPass = render_pass_;
@@ -554,6 +689,87 @@ void VulkanApp::create_graphics_pipeline() {
     vkDestroyShaderModule(device_, fs, nullptr);
 }
 
+void VulkanApp::create_graphics_pipeline_chunk() {
+    // Vertex-input pipeline for chunk rendering
+    const std::string base = std::string(WF_SHADER_DIR);
+    const std::string vsPath = base + "/chunk.vert.spv";
+    const std::string fsPath = base + "/chunk.frag.spv";
+    VkShaderModule vs = load_shader_module(vsPath);
+    VkShaderModule fs = load_shader_module(fsPath);
+    if (!vs || !fs) {
+        if (vs) vkDestroyShaderModule(device_, vs, nullptr);
+        if (fs) vkDestroyShaderModule(device_, fs, nullptr);
+        std::cout << "[info] Chunk shaders not found. Chunk rendering disabled." << std::endl;
+        return;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    // Only position attribute used; stride is sizeof(Vertex) from mesh.h (x,y,z,...)
+    VkVertexInputBindingDescription bind{};
+    bind.binding = 0; bind.stride = sizeof(float)*7; bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attrs[3]{};
+    attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[0].offset = 0;   // position
+    attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[1].offset = 12;  // normal
+    attrs[2].location = 2; attrs[2].binding = 0; attrs[2].format = VK_FORMAT_R16_UINT;          attrs[2].offset = 24;  // material id
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bind;
+    vi.vertexAttributeDescriptionCount = 3; vi.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport vp{}; vp.x = 0; vp.y = 0; vp.width = (float)swapchain_extent_.width; vp.height = (float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
+    VkRect2D sc{}; sc.offset = {0,0}; sc.extent = swapchain_extent_;
+    VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
+
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT; rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    // Push constant for MVP matrix
+    VkPushConstantRange pcr{}; pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; pcr.offset = 0; pcr.size = sizeof(float)*16;
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_chunk_) != VK_SUCCESS) {
+        vkDestroyShaderModule(device_, vs, nullptr);
+        vkDestroyShaderModule(device_, fs, nullptr);
+        return;
+    }
+
+    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gpi.stageCount = 2; gpi.pStages = stages;
+    gpi.pVertexInputState = &vi;
+    gpi.pInputAssemblyState = &ia;
+    gpi.pViewportState = &vpstate;
+    gpi.pRasterizationState = &rs;
+    gpi.pMultisampleState = &ms;
+    gpi.pDepthStencilState = &ds;
+    gpi.pColorBlendState = &cb;
+    gpi.layout = pipeline_layout_chunk_;
+    gpi.renderPass = render_pass_;
+    gpi.subpass = 0;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_chunk_) != VK_SUCCESS) {
+        std::cerr << "Failed to create chunk graphics pipeline.\n";
+        vkDestroyPipelineLayout(device_, pipeline_layout_chunk_, nullptr); pipeline_layout_chunk_ = VK_NULL_HANDLE;
+    }
+    vkDestroyShaderModule(device_, vs, nullptr);
+    vkDestroyShaderModule(device_, fs, nullptr);
+}
 void VulkanApp::create_compute_pipeline() {
     // Load no-op compute shader
     const std::string base = std::string(WF_SHADER_DIR);
@@ -582,6 +798,35 @@ void VulkanApp::create_compute_pipeline() {
         vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE;
     }
     vkDestroyShaderModule(device_, cs, nullptr);
+}
+
+uint32_t VulkanApp::find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProps{};
+    vkGetPhysicalDeviceMemoryProperties(physical_device_, &memProps);
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((typeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) return i;
+    }
+    return UINT32_MAX;
+}
+
+void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buf, VkDeviceMemory& mem, const void* data) {
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = size; bci.usage = usage; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    throw_if_failed(vkCreateBuffer(device_, &bci, nullptr, &buf), "vkCreateBuffer failed");
+    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device_, buf, &req);
+    uint32_t mt = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt == UINT32_MAX) {
+        std::cerr << "No host-visible memory type for buffers" << std::endl; std::abort();
+    }
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    throw_if_failed(vkAllocateMemory(device_, &mai, nullptr, &mem), "vkAllocateMemory failed");
+    throw_if_failed(vkBindBufferMemory(device_, buf, mem, 0), "vkBindBufferMemory failed");
+    if (data) {
+        void* p = nullptr; vkMapMemory(device_, mem, 0, size, 0, &p);
+        std::memcpy(p, data, (size_t)size);
+        vkUnmapMemory(device_, mem);
+    }
 }
 
 } // namespace wf
