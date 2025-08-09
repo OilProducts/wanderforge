@@ -50,6 +50,7 @@ add_executable(wanderforge
   src/main.cpp
   src/vk_app.cpp
   src/planet.cpp
+  src/mesh_naive.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
@@ -143,6 +144,13 @@ add_executable(wf_ringmap
   src/planet.cpp
 )
 target_include_directories(wf_ringmap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Mesh demo tool (CPU-only)
+add_executable(wf_chunk_demo
+  tools/chunk_demo.cpp
+  src/mesh_naive.cpp
+)
+target_include_directories(wf_chunk_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Generate configuration header with paths and options
 set(WF_CONFIG_DIR ${CMAKE_BINARY_DIR}/generated)

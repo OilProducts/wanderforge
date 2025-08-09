@@ -93,6 +93,17 @@ cmake --build build --target wf_ringmap --config Release
 
 Open `ring.ppm` with any image viewer to inspect surface, water, and cave distribution near the equator.
 
+### Optional: Chunk Meshing Demo (CPU)
+
+Build a tiny test chunk and run the naive mesher (no Vulkan required):
+
+```
+cmake --build build --target wf_chunk_demo --config Release
+./build/wf_chunk_demo
+```
+
+This prints vertex/triangle counts for a simple synthetic scene (flat ground with a small pillar). Greedy meshing and GPU meshing will follow in Phase 3.
+
 ## Contributing
 
 Early days—no external contributions yet. Feedback and ideas are welcome; issues can be used to capture discussion once the repository structure is in place.
