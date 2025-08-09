@@ -70,19 +70,19 @@ This document is a self-contained plan to build an experimental, planetary-scale
 
 ## Phases, Deliverables, and Acceptance
 
-### Phase 1 — Vulkan Plumbing & Window (1–2 weeks)
+### Phase 1 — Vulkan Plumbing & Window (Completed)
 - Deliverables:
   - Instance with validation and debug messenger; device/queues; command pool; swapchain; per-frame sync.
   - GLFW window; render loop that clears and presents every frame.
   - VMA wired for buffer/image allocations; shader compilation toolchain.
 - Acceptance:
   - Runs on Linux; builds on Windows/macOS (MoltenVK). Validation toggle via build type. Prints chosen GPU/queues.
-- Notes:
+ - Notes:
   - Add minimal `.vk` utilities: error macros, scoped command submitters, pipeline barrier helpers.
  - Progress:
    - 2025-08-09: Implemented GLFW window, Vulkan instance with debug messenger, device/queues, swapchain, image views, render pass, framebuffers, command buffers, sync, and clear-present loop. GPU/queue info printed at startup. Optional VMA detection added (uses `vk_mem_alloc.h` if present).
    - 2025-08-09: Added shader tool detection and a minimal graphics pipeline. If `glslc`/`glslangValidator` are present, the app compiles shaders and draws a colored triangle; otherwise it runs clear-only.
-   - 2025-08-09: Added a minimal compute pipeline and no-op dispatch each frame (when `noop.comp.spv` is present).
+   - 2025-08-09: Added a minimal compute pipeline and no-op dispatch each frame (when `noop.comp.spv` is present). Phase 1 acceptance criteria met and verified.
 
 ### Phase 2 — Math, Planet Frame, Base Sampler (2 weeks)
 - Deliverables:

@@ -49,6 +49,7 @@ endif()
 add_executable(wanderforge
   src/main.cpp
   src/vk_app.cpp
+  src/planet.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
