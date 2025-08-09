@@ -10,6 +10,7 @@ An experimental game project in early planning. The original LLM-aided planning 
 
 - `ROADMAP.md`: The detailed planning/roadmap document that guided the initial direction (kept intact).
 - `README.md`: This file. A concise overview that will grow with the project.
+- `PLAN.md`: A self-contained technical plan with phases, data model, and Vulkan approach.
 
 ## Project Goals (early sketch)
 
@@ -18,6 +19,7 @@ An experimental game project in early planning. The original LLM-aided planning 
 - Keep performance and memory budgets front-and-center.
 
 See `ROADMAP.md` for the deeper technical direction and phased plan. All details are subject to change as implementation begins.
+For a consolidated, actionable plan, see `PLAN.md`.
 
 ## Getting Started
 
