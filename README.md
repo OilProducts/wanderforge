@@ -111,6 +111,17 @@ Greedy -> Vertices:     72, Tris:    36
 
 Greedy meshing drastically reduces geometry by merging coplanar faces. GPU meshing will follow in Phase 3.
 
+### Optional: Region IO Demo (CPU)
+
+Save/load a chunk into a face-local region file (32×32 tiles per file):
+
+```
+cmake --build build --target wf_region_demo --config Release
+./build/wf_region_demo 0 0 0 0   # face=0, i=0, j=0, k=0
+```
+
+This writes `regions/face0/k0/r_0_0.wfr` and then reloads it, printing a quick round‑trip check. The format is versioned (`WFREGN1`) with a header + TOC; chunks are stored as raw, uncompressed blobs for now.
+
 ## Contributing
 
 Early days—no external contributions yet. Feedback and ideas are welcome; issues can be used to capture discussion once the repository structure is in place.

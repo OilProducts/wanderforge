@@ -52,6 +52,7 @@ add_executable(wanderforge
   src/planet.cpp
   src/mesh_naive.cpp
   src/mesh_greedy.cpp
+  src/region_io.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
@@ -155,6 +156,14 @@ add_executable(wf_chunk_demo
   src/mesh_greedy.cpp
 )
 target_include_directories(wf_chunk_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Region IO demo (CPU-only)
+add_executable(wf_region_demo
+  tools/region_demo.cpp
+  src/region_io.cpp
+  src/mesh_greedy.cpp
+)
+target_include_directories(wf_region_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Generate configuration header with paths and options
 set(WF_CONFIG_DIR ${CMAKE_BINARY_DIR}/generated)

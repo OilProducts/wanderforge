@@ -106,6 +106,7 @@ This document is a self-contained plan to build an experimental, planetary-scale
  - Progress:
    - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
    - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
+   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:
