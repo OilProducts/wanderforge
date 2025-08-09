@@ -52,7 +52,7 @@ cmake --build build --config Release
 ./build/wanderforge
 ```
 
-This prints detected Vulkan devices. Build with `-DCMAKE_BUILD_TYPE=Debug` to try enabling validation layers (if installed).
+This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a simple triangle. Otherwise it clears the background. Build with `-DCMAKE_BUILD_TYPE=Debug` to try enabling validation layers (if installed).
 
 ### Notes
 

@@ -95,3 +95,43 @@ endif()
 if (WF_GLSLC)
   message(STATUS "Found glslc: ${WF_GLSLC}")
 endif()
+
+# Compile shaders if tools available
+set(WF_SHADER_SOURCES
+  shaders/triangle.vert
+  shaders/triangle.frag
+  shaders/noop.comp
+)
+set(WF_SHADER_OUTPUTS)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
+function(wf_compile_shader SRC)
+  get_filename_component(NAME ${SRC} NAME)
+  set(OUT ${CMAKE_BINARY_DIR}/shaders/${NAME}.spv)
+  if (WF_GLSLC)
+    add_custom_command(OUTPUT ${OUT}
+      COMMAND ${WF_GLSLC} -O -o ${OUT} ${CMAKE_SOURCE_DIR}/${SRC}
+      DEPENDS ${CMAKE_SOURCE_DIR}/${SRC}
+      COMMENT "glslc ${SRC}")
+  elseif(WF_GLSLANG_VALIDATOR)
+    add_custom_command(OUTPUT ${OUT}
+      COMMAND ${WF_GLSLANG_VALIDATOR} -V -o ${OUT} ${CMAKE_SOURCE_DIR}/${SRC}
+      DEPENDS ${CMAKE_SOURCE_DIR}/${SRC}
+      COMMENT "glslangValidator ${SRC}")
+  else()
+    return()
+  endif()
+  set(WF_SHADER_OUTPUTS ${WF_SHADER_OUTPUTS} ${OUT} PARENT_SCOPE)
+endfunction()
+
+foreach(SRC ${WF_SHADER_SOURCES})
+  wf_compile_shader(${SRC})
+endforeach()
+
+if (WF_SHADER_OUTPUTS)
+  add_custom_target(wf_shaders ALL DEPENDS ${WF_SHADER_OUTPUTS})
+  add_dependencies(wanderforge wf_shaders)
+  target_compile_definitions(wanderforge PRIVATE WF_SHADER_DIR="\"${CMAKE_BINARY_DIR}/shaders\"")
+else()
+  message(STATUS "Shader tools not found; triangle/compute will be skipped (clear-only). Install glslc or glslangValidator.")
+  target_compile_definitions(wanderforge PRIVATE WF_SHADER_DIR="\"${CMAKE_SOURCE_DIR}/shaders_build\"")
+endif()

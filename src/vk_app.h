@@ -26,6 +26,7 @@ private:
     void create_swapchain();
     void create_image_views();
     void create_render_pass();
+    void create_graphics_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
     void create_sync_objects();
@@ -35,6 +36,7 @@ private:
 
     void cleanup_swapchain();
     void recreate_swapchain();
+    VkShaderModule load_shader_module(const std::string& path);
 
 private:
     // Window
@@ -62,6 +64,8 @@ private:
 
     // Render pass & framebuffers
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
 
     // Commands & sync

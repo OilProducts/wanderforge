@@ -131,6 +131,7 @@ void VulkanApp::init_vulkan() {
     create_swapchain();
     create_image_views();
     create_render_pass();
+    create_graphics_pipeline();
     create_framebuffers();
     create_command_pool_and_buffers();
     create_sync_objects();
@@ -377,7 +378,10 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     rbi.renderArea.offset = {0,0}; rbi.renderArea.extent = swapchain_extent_;
     rbi.clearValueCount = 1; rbi.pClearValues = &clear;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    // No draw yet; just clear
+    if (pipeline_triangle_) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
     vkCmdEndRenderPass(cmd);
 
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
@@ -413,6 +417,8 @@ void VulkanApp::draw_frame() {
 }
 
 void VulkanApp::cleanup_swapchain() {
+    if (pipeline_triangle_) { vkDestroyPipeline(device_, pipeline_triangle_, nullptr); pipeline_triangle_ = VK_NULL_HANDLE; }
+    if (pipeline_layout_) { vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr); pipeline_layout_ = VK_NULL_HANDLE; }
     for (auto fb : framebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
     framebuffers_.clear();
     if (render_pass_) { vkDestroyRenderPass(device_, render_pass_, nullptr); render_pass_ = VK_NULL_HANDLE; }
@@ -427,7 +433,94 @@ void VulkanApp::recreate_swapchain() {
     create_swapchain();
     create_image_views();
     create_render_pass();
+    create_graphics_pipeline();
     create_framebuffers();
+}
+
+VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return VK_NULL_HANDLE;
+    fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
+    std::vector<char> buf(len);
+    if (fread(buf.data(), 1, buf.size(), f) != buf.size()) { fclose(f); return VK_NULL_HANDLE; }
+    fclose(f);
+    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    ci.codeSize = buf.size();
+    ci.pCode = reinterpret_cast<const uint32_t*>(buf.data());
+    VkShaderModule mod = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(device_, &ci, nullptr, &mod) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return mod;
+}
+
+void VulkanApp::create_graphics_pipeline() {
+#ifdef WF_SHADER_DIR
+    const std::string base = std::string(WF_SHADER_DIR);
+    const std::string vsPath = base + "/triangle.vert.spv";
+    const std::string fsPath = base + "/triangle.frag.spv";
+    VkShaderModule vs = load_shader_module(vsPath);
+    VkShaderModule fs = load_shader_module(fsPath);
+    if (!vs || !fs) {
+        if (vs) vkDestroyShaderModule(device_, vs, nullptr);
+        if (fs) vkDestroyShaderModule(device_, fs, nullptr);
+        std::cerr << "Shaders not found (" << vsPath << ", " << fsPath << "). Triangle disabled.\n";
+        return;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport vp{}; vp.x = 0; vp.y = 0; vp.width = (float)swapchain_extent_.width; vp.height = (float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
+    VkRect2D sc{}; sc.offset = {0,0}; sc.extent = swapchain_extent_;
+    VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
+
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT; rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_) != VK_SUCCESS) {
+        vkDestroyShaderModule(device_, vs, nullptr);
+        vkDestroyShaderModule(device_, fs, nullptr);
+        return;
+    }
+
+    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gpi.stageCount = 2; gpi.pStages = stages;
+    gpi.pVertexInputState = &vi;
+    gpi.pInputAssemblyState = &ia;
+    gpi.pViewportState = &vpstate;
+    gpi.pRasterizationState = &rs;
+    gpi.pMultisampleState = &ms;
+    gpi.pDepthStencilState = nullptr;
+    gpi.pColorBlendState = &cb;
+    gpi.layout = pipeline_layout_;
+    gpi.renderPass = render_pass_;
+    gpi.subpass = 0;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_triangle_) != VK_SUCCESS) {
+        std::cerr << "Failed to create graphics pipeline.\n";
+        vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr); pipeline_layout_ = VK_NULL_HANDLE;
+    }
+    vkDestroyShaderModule(device_, vs, nullptr);
+    vkDestroyShaderModule(device_, fs, nullptr);
+#endif
 }
 
 } // namespace wf
