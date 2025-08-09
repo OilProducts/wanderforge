@@ -54,6 +54,18 @@ cmake --build build --config Release
 
 This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a simple triangle and issues a no-op compute dispatch each frame. Otherwise it clears the background. Build with `-DCMAKE_BUILD_TYPE=Debug` to try enabling validation layers (if installed).
 
+## Voxels On A Sphere (Cube‑Sphere)
+
+- Mapping: We represent the planet as a unit sphere sampled via a cube‑sphere projection. A direction selects a face (`face_from_direction`), and face‑local UV in `[-1,1]²` maps back to a unit direction (`direction_from_face_uv`).
+- World grid: Voxel coordinates are integer steps in meters at 10 cm resolution. Chunks are `64³` voxels (≈6.4 m cubes). For early streaming keys we use `FaceChunkKey {face,i,j,k}` from `face_chunk_from_voxel` — `i,j` are face‑local and `k` is a radial shell index.
+- Conversions: Helpers convert between spherical positions and voxel grid:
+  - `voxel_from_lat_lon_h(cfg, lat, lon, height_m)`
+  - `lat_lon_h_from_voxel(cfg, voxel, out_lat, out_lon, out_h)`
+- Base world: `sample_base(cfg, voxel)` procedurally classifies air/water/dirt/rock using deterministic value‑noise/FBM (seeded), with a sea level and sparse caves. This forms the read‑only baseline; edits will be stored separately as sparse deltas and meshed locally (Phase 3).
+- Visualize: Generate a simple equatorial/latitude strip to sanity‑check materials near the surface:
+  - `./build/wf_ringmap 1024 256 0 ring.ppm` (equator)
+  - `./build/wf_ringmap 1024 256 45 ring_45.ppm` (45° latitude)
+
 ### Notes
 
 - If using the Vulkan SDK, ensure the `VULKAN_SDK` environment variable is set (Windows/macOS) and your runtime is properly installed.
