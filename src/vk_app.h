@@ -80,12 +80,14 @@ private:
     VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
     VkPipeline pipeline_compute_ = VK_NULL_HANDLE;
 
-    // Geometry buffers for a demo chunk
-    VkBuffer chunk_vbuf_ = VK_NULL_HANDLE;
-    VkDeviceMemory chunk_vmem_ = VK_NULL_HANDLE;
-    VkBuffer chunk_ibuf_ = VK_NULL_HANDLE;
-    VkDeviceMemory chunk_imem_ = VK_NULL_HANDLE;
-    uint32_t chunk_index_count_ = 0;
+    struct RenderChunk {
+        VkBuffer vbuf = VK_NULL_HANDLE;
+        VkDeviceMemory vmem = VK_NULL_HANDLE;
+        VkBuffer ibuf = VK_NULL_HANDLE;
+        VkDeviceMemory imem = VK_NULL_HANDLE;
+        uint32_t index_count = 0;
+    };
+    std::vector<RenderChunk> render_chunks_;
 
     // Helpers for buffers
     uint32_t find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties);

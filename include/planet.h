@@ -35,6 +35,9 @@ bool face_uv_from_direction(Float3 dir, int& face, float& u, float& v);
 // Spherical helpers (latitude φ in radians [-pi/2, pi/2], longitude λ in radians [-pi, pi])
 Float3 direction_from_lat_lon(double lat_rad, double lon_rad);
 
+// Basis vectors for a cube face: right, up, forward (unit length)
+void face_basis(int face, Float3& right, Float3& up, Float3& forward);
+
 // World <-> Voxel conversions
 Int3 voxel_from_lat_lon_h(const PlanetConfig& cfg, double lat_rad, double lon_rad, double height_m);
 void lat_lon_h_from_voxel(const PlanetConfig& cfg, Int3 voxel, double& lat_rad, double& lon_rad, double& height_m);

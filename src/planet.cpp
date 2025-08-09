@@ -54,6 +54,12 @@ Float3 direction_from_lat_lon(double lat_rad, double lon_rad) {
     return normalize(Float3{ cl * co, sl, cl * so });
 }
 
+void face_basis(int face, Float3& right, Float3& up, Float3& forward) {
+    right = FACE_RIGHT[face];
+    up    = FACE_UP[face];
+    forward = FACE_FORWARD[face];
+}
+
 Int3 voxel_from_lat_lon_h(const PlanetConfig& cfg, double lat_rad, double lon_rad, double height_m) {
     Float3 dir = direction_from_lat_lon(lat_rad, lon_rad);
     double r = cfg.radius_m + height_m;

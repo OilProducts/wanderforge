@@ -52,7 +52,7 @@ cmake --build build --config Release
 ./build/wanderforge
 ```
 
-This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a simple triangle and issues a no-op compute dispatch each frame. Otherwise it clears the background. Build with `-DCMAKE_BUILD_TYPE=Debug` to try enabling validation layers (if installed).
+This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws either a few demo chunks (loaded/generated via Region IO on face 0) or falls back to a simple triangle. Missing shader tools are treated as info-only and the app still runs (clear-only).
 
 ## Voxels On A Sphere (Cube‑Sphere)
 

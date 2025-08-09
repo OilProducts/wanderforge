@@ -15,6 +15,8 @@
 
 #include "chunk.h"
 #include "mesh.h"
+#include "planet.h"
+#include "region_io.h"
 
 namespace wf {
 
@@ -70,10 +72,12 @@ VulkanApp::~VulkanApp() {
 
     cleanup_swapchain();
 
-    if (chunk_vbuf_) { vkDestroyBuffer(device_, chunk_vbuf_, nullptr); chunk_vbuf_ = VK_NULL_HANDLE; }
-    if (chunk_vmem_) { vkFreeMemory(device_, chunk_vmem_, nullptr); chunk_vmem_ = VK_NULL_HANDLE; }
-    if (chunk_ibuf_) { vkDestroyBuffer(device_, chunk_ibuf_, nullptr); chunk_ibuf_ = VK_NULL_HANDLE; }
-    if (chunk_imem_) { vkFreeMemory(device_, chunk_imem_, nullptr); chunk_imem_ = VK_NULL_HANDLE; }
+    for (auto& rc : render_chunks_) {
+        if (rc.vbuf) vkDestroyBuffer(device_, rc.vbuf, nullptr);
+        if (rc.vmem) vkFreeMemory(device_, rc.vmem, nullptr);
+        if (rc.ibuf) vkDestroyBuffer(device_, rc.ibuf, nullptr);
+        if (rc.imem) vkFreeMemory(device_, rc.imem, nullptr);
+    }
 
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
@@ -160,24 +164,61 @@ void VulkanApp::init_vulkan() {
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
     std::cout << "Queues: graphics=" << queue_family_graphics_ << ", present=" << queue_family_present_ << "\n";
 
-    // Build a simple demo chunk and upload it
+    // Load or generate a small grid of chunks via Region IO and upload them
     {
-        Chunk64 c;
-        for (int z = 0; z < Chunk64::N; ++z) {
-            for (int y = 0; y < Chunk64::N; ++y) {
-                for (int x = 0; x < Chunk64::N; ++x) {
-                    uint16_t mat = (y < 32) ? MAT_ROCK : MAT_AIR;
-                    if (x == 20 && z == 20 && y < 40) mat = MAT_DIRT;
-                    c.set_voxel(x, y, z, mat);
+        PlanetConfig cfg;
+        const int face = 0; // +X face
+        const int tile_span = 1; // loads (2*tile_span+1)^2 chunks centered at (0,0)
+        const int N = Chunk64::N;
+        const float s = (float)cfg.voxel_size_m;
+        const double chunk_m = (double)N * cfg.voxel_size_m;
+        const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
+        Float3 right, up, forward; face_basis(face, right, up, forward);
+
+        for (int dj = -tile_span; dj <= tile_span; ++dj) {
+            for (int di = -tile_span; di <= tile_span; ++di) {
+                FaceChunkKey key{face, di, dj, k0};
+                Chunk64 c;
+                if (!RegionIO::load_chunk(key, c)) {
+                    // Generate from base sampler
+                    for (int z = 0; z < N; ++z) {
+                        for (int y = 0; y < N; ++y) {
+                            for (int x = 0; x < N; ++x) {
+                                double s0 = (double)di * chunk_m + (x + 0.5) * cfg.voxel_size_m;
+                                double t0 = (double)dj * chunk_m + (y + 0.5) * cfg.voxel_size_m;
+                                double r0 = (double)k0 * chunk_m + (z + 0.5) * cfg.voxel_size_m;
+                                Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
+                                Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
+                                auto sb = sample_base(cfg, v);
+                                c.set_voxel(x, y, z, sb.material);
+                            }
+                        }
+                    }
+                    RegionIO::save_chunk(key, c);
+                }
+
+                Mesh m;
+                mesh_chunk_greedy(c, m, s);
+                if (!m.indices.empty()) {
+                    // Transform vertices from face-local chunk to world space
+                    float S0 = (float)(di * chunk_m);
+                    float T0 = (float)(dj * chunk_m);
+                    float R0 = (float)(k0 * chunk_m);
+                    for (auto& vert : m.vertices) {
+                        Float3 lp{vert.x, vert.y, vert.z};
+                        Float3 wp = right * (S0 + lp.x) + up * (T0 + lp.y) + forward * (R0 + lp.z);
+                        Float3 ln{vert.nx, vert.ny, vert.nz};
+                        Float3 wn = right * ln.x + up * ln.y + forward * ln.z;
+                        vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
+                        vert.nx = wn.x; vert.ny = wn.y; vert.nz = wn.z;
+                    }
+                    RenderChunk rc;
+                    rc.index_count = (uint32_t)m.indices.size();
+                    create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, m.vertices.data());
+                    create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, m.indices.data());
+                    render_chunks_.push_back(rc);
                 }
             }
-        }
-        Mesh m;
-        mesh_chunk_greedy(c, m, 0.10f);
-        chunk_index_count_ = (uint32_t)m.indices.size();
-        if (chunk_index_count_ > 0) {
-            create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, chunk_vbuf_, chunk_vmem_, m.vertices.data());
-            create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, chunk_ibuf_, chunk_imem_, m.indices.data());
         }
     }
 }
@@ -479,7 +520,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     clears[1].depthStencil = {1.0f, 0};
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if (pipeline_chunk_ && chunk_vbuf_ && chunk_ibuf_ && chunk_index_count_ > 0) {
+    if (pipeline_chunk_ && !render_chunks_.empty()) {
         // Push a simple MVP matrix
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         auto deg2rad = [](float d){ return d * 0.01745329252f; };
@@ -509,10 +550,12 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
         vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
-        VkDeviceSize offs = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &chunk_vbuf_, &offs);
-        vkCmdBindIndexBuffer(cmd, chunk_ibuf_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, chunk_index_count_, 1, 0, 0, 0);
+        for (const auto& rc : render_chunks_) {
+            VkDeviceSize offs = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &rc.vbuf, &offs);
+            vkCmdBindIndexBuffer(cmd, rc.ibuf, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, rc.index_count, 1, 0, 0, 0);
+        }
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
