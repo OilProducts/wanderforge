@@ -12,8 +12,18 @@ void ChunkRenderer::init(VkDevice device, VkRenderPass renderPass, VkExtent2D ex
     // Load shaders
     std::string vsPath = shader_dir_ + "/chunk.vert.spv";
     std::string fsPath = shader_dir_ + "/chunk.frag.spv";
-    VkShaderModule vs = wf::vk::load_shader_module(device_, vsPath);
-    VkShaderModule fs = wf::vk::load_shader_module(device_, fsPath);
+    std::vector<std::string> vsFallbacks = {
+        std::string("build/shaders/") + "chunk.vert.spv",
+        std::string("shaders/") + "chunk.vert.spv",
+        std::string("shaders_build/") + "chunk.vert.spv"
+    };
+    std::vector<std::string> fsFallbacks = {
+        std::string("build/shaders/") + "chunk.frag.spv",
+        std::string("shaders/") + "chunk.frag.spv",
+        std::string("shaders_build/") + "chunk.frag.spv"
+    };
+    VkShaderModule vs = wf::vk::load_shader_module(device_, vsPath, vsFallbacks);
+    VkShaderModule fs = wf::vk::load_shader_module(device_, fsPath, fsFallbacks);
     if (!vs || !fs) {
         if (vs) vkDestroyShaderModule(device_, vs, nullptr);
         if (fs) vkDestroyShaderModule(device_, fs, nullptr);
