@@ -108,8 +108,20 @@ void mesh_chunk_greedy_neighbors(const Chunk64& c,
                             cell = {0, 0};
                         }
                     } else if (!a_in && b_in) {
-                        // Negative chunk boundary (d == 0): ownership rule — neighbor (negative side) will emit; skip here
-                        cell = {0, 0};
+                        // Negative chunk boundary (d == 0): consult neighbor to decide seam face; if no neighbor, do not emit (avoid outer walls)
+                        bool has_nb = (axis == 0) ? (negX != nullptr)
+                                      : (axis == 1) ? (negY != nullptr)
+                                                    : (negZ != nullptr);
+                        if (has_nb) {
+                            bool b_sol = c.is_solid(bx, by, bz);
+                            bool a_sol = false;
+                            if (axis == 0)      a_sol = get_neighbor_solid(negX, Chunk64::N - 1, by, bz);
+                            else if (axis == 1) a_sol = get_neighbor_solid(negY, bx, Chunk64::N - 1, bz);
+                            else                a_sol = get_neighbor_solid(negZ, bx, by, Chunk64::N - 1);
+                            if (b_sol != a_sol && b_sol) { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
+                        } else {
+                            cell = {0, 0};
+                        }
                     }
                     mask[u + v * U] = cell;
                 }
