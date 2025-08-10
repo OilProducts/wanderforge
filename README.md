@@ -46,20 +46,42 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
+### Shaders and Tools
+
+The app compiles GLSL 450 shaders to SPIR‑V at build time if a shader tool is found:
+
+- Tools: either `glslc` (Shaderc) or `glslangValidator` must be in `PATH`.
+- Generated SPIR‑V goes to `build/shaders/*.spv` and the app uses that directory automatically.
+
+Install tips:
+- Debian/Ubuntu: `sudo apt install glslang-tools` (for `glslangValidator`)
+- Fedora: `sudo dnf install glslang` (or install the Vulkan SDK)
+- macOS (Homebrew): `brew install glslang`
+- Windows: install the Vulkan SDK (includes both tools)
+
+Manually build the shaders target:
+
+```
+cmake --build build --target wf_shaders --config Release
+ls build/shaders  # expect triangle.*, chunk.*, overlay.* .spv files
+```
+
+If the shader tools are missing, the app runs in a “no-shaders” mode: triangle, chunk rendering, and HUD overlay may be disabled. You’ll see info messages like “Shaders not found” or “HUD overlay disabled”. When the overlay is available, startup logs include “HUD overlay enabled”.
+
 ### Run
 
 ```
 ./build/wanderforge
 ```
 
-This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a few demo chunks (loaded/generated via Region IO on face 0) with a simple free‑fly camera. Otherwise it falls back to a basic triangle, or clear‑only if no shaders.
+This opens a window; if shader tools (`glslc` or `glslangValidator`) are available, it draws a few demo chunks (loaded/generated via Region IO on face 0) with a simple free‑fly camera and a small on‑screen HUD. Otherwise it falls back to a basic triangle, or clear‑only if no shaders.
 
 Controls (chunk view):
 - W/A/S/D: move forward/left/back/right
 - Q/E: move down/up
 - Right mouse drag: look around (yaw/pitch)
 - Shift: hold to move faster
- - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed.
+ - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in‑window overlay mirrors the same info.
 
 Config options:
 - File `wanderforge.cfg` (same directory) or env vars:

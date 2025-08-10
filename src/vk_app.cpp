@@ -1123,6 +1123,9 @@ void VulkanApp::create_graphics_pipeline_overlay() {
         std::cerr << "Failed to create overlay graphics pipeline.\n";
         vkDestroyPipelineLayout(device_, pipeline_layout_overlay_, nullptr); pipeline_layout_overlay_ = VK_NULL_HANDLE;
     }
+    else {
+        std::cout << "[info] HUD overlay enabled (overlay pipeline created)." << std::endl;
+    }
     vkDestroyShaderModule(device_, vs, nullptr); vkDestroyShaderModule(device_, fs, nullptr);
 }
 
