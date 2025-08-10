@@ -97,6 +97,8 @@ private:
         uint32_t index_count = 0;
     };
     std::vector<RenderChunk> render_chunks_;
+    // Temporary scratch for draw items to avoid per-frame allocations
+    std::vector<struct ChunkDrawItem> chunk_items_tmp_;
 
     // Helpers for buffers
     uint32_t find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties);

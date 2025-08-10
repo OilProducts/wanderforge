@@ -623,10 +623,11 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
         auto MVP = mul4(V, P);
 
-        std::vector<ChunkDrawItem> items;
-        items.reserve(render_chunks_.size());
-        for (const auto& rc : render_chunks_) items.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
-        chunk_renderer_.record(cmd, MVP.data(), items);
+        if (chunk_items_tmp_.size() != render_chunks_.size()) chunk_items_tmp_.resize(render_chunks_.size());
+        for (size_t i=0;i<render_chunks_.size();++i) {
+            chunk_items_tmp_[i] = ChunkDrawItem{render_chunks_[i].vbuf, render_chunks_[i].ibuf, render_chunks_[i].index_count};
+        }
+        chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
