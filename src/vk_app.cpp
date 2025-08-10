@@ -774,7 +774,8 @@ void VulkanApp::update_input(float dt) {
                                           r0.x*updir.y - r0.y*updir.x });
         float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
         Float3 fwd_t{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-        Float3 right_t{ updir.y*fwd_t.z - updir.z*fwd_t.y, updir.z*fwd_t.x - updir.x*fwd_t.z, updir.x*fwd_t.y - updir.y*fwd_t.x };
+        // Use right = forward x updir (RH), so +D moves to the screen-right
+        Float3 right_t{ fwd_t.y*updir.z - fwd_t.z*updir.y, fwd_t.z*updir.x - fwd_t.x*updir.z, fwd_t.x*updir.y - fwd_t.y*updir.x };
         right_t = wf::normalize(right_t);
         float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
         Float3 delta{0,0,0};
