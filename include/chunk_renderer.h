@@ -33,6 +33,8 @@ public:
     }
     void set_pool_log_every(int n_frames) { log_every_n_ = n_frames > 0 ? n_frames : 120; }
     void set_pool_caps_bytes(VkDeviceSize vtx_bytes, VkDeviceSize idx_bytes) { vtx_initial_cap_ = vtx_bytes; idx_initial_cap_ = idx_bytes; }
+    void set_device_local(bool enable) { use_device_local_ = enable; }
+    void set_transfer_context(uint32_t queue_family, VkQueue queue) { transfer_queue_family_ = queue_family; transfer_queue_ = queue; }
 
     // Upload a mesh into the shared pools; returns offsets for indirect drawing
     // Returns false if the pool has no space (mesh not uploaded)
@@ -56,7 +58,10 @@ private:
     int log_every_n_ = 120;
     int log_frame_cnt_ = 0;
 
-    // Shared mesh pools (host-visible for now)
+    // Device-local toggle
+    bool use_device_local_ = false;
+
+    // Shared mesh pools (either host-visible or device-local)
     VkBuffer vtx_pool_ = VK_NULL_HANDLE;
     VkDeviceMemory vtx_mem_ = VK_NULL_HANDLE;
     VkDeviceSize vtx_capacity_ = 0; // bytes
@@ -80,6 +85,12 @@ private:
     VkDeviceMemory indirect_mem_ = VK_NULL_HANDLE;
     VkDeviceSize indirect_capacity_cmds_ = 0; // number of commands capacity
 
+    // Transfer context (for staging copies when using device-local pools)
+    uint32_t transfer_queue_family_ = 0;
+    VkQueue transfer_queue_ = VK_NULL_HANDLE;
+    VkCommandPool transfer_pool_ = VK_NULL_HANDLE;
+    VkFence transfer_fence_ = VK_NULL_HANDLE;
+
     bool ensure_pool_capacity(VkDeviceSize add_vtx_bytes, VkDeviceSize add_idx_bytes);
     static inline VkDeviceSize align_up(VkDeviceSize x, VkDeviceSize a) {
         if (a == 0) return x;
@@ -88,6 +99,7 @@ private:
     bool alloc_from_pool(VkDeviceSize bytes, VkDeviceSize alignment, bool isVertex, VkDeviceSize& out_offset);
     void free_to_pool(VkDeviceSize offset, VkDeviceSize bytes, bool isVertex);
     void ensure_indirect_capacity(size_t drawCount);
+    void ensure_transfer_objects();
 };
 
 } // namespace wf

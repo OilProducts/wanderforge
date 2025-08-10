@@ -186,6 +186,8 @@ private:
     int last_draw_visible_ = 0;
     uint64_t last_draw_indices_ = 0;
 
+    bool device_local_enabled_ = true; // default to device-local pools with staging
+
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
     void schedule_delete_chunk(const RenderChunk& rc);

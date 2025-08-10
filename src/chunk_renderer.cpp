@@ -100,6 +100,8 @@ void ChunkRenderer::cleanup(VkDevice device) {
     if (idx_mem_) { vkFreeMemory(device, idx_mem_, nullptr); idx_mem_ = VK_NULL_HANDLE; idx_capacity_ = 0; idx_used_ = 0; }
     if (indirect_buf_) { vkDestroyBuffer(device, indirect_buf_, nullptr); indirect_buf_ = VK_NULL_HANDLE; }
     if (indirect_mem_) { vkFreeMemory(device, indirect_mem_, nullptr); indirect_mem_ = VK_NULL_HANDLE; indirect_capacity_cmds_ = 0; }
+    if (transfer_fence_) { vkDestroyFence(device, transfer_fence_, nullptr); transfer_fence_ = VK_NULL_HANDLE; }
+    if (transfer_pool_) { vkDestroyCommandPool(device, transfer_pool_, nullptr); transfer_pool_ = VK_NULL_HANDLE; }
 }
 
 void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items) {
@@ -146,17 +148,19 @@ bool ChunkRenderer::ensure_pool_capacity(VkDeviceSize add_vtx_bytes, VkDeviceSiz
     if (vtx_capacity_ == 0) {
         VkDeviceSize base_cap = (vtx_initial_cap_ > 0) ? vtx_initial_cap_ : (VkDeviceSize)(64 * 1024 * 1024);
         VkDeviceSize new_cap = std::max<VkDeviceSize>(add_vtx_bytes, base_cap);
-        wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              vtx_pool_, vtx_mem_);
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkMemoryPropertyFlags props = use_device_local_ ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                                        : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        wf::vk::create_buffer(phys_, device_, new_cap, usage, props, vtx_pool_, vtx_mem_);
         vtx_capacity_ = new_cap; vtx_used_ = 0; vtx_tail_ = 0; vtx_free_.clear();
     }
     if (idx_capacity_ == 0) {
         VkDeviceSize base_cap = (idx_initial_cap_ > 0) ? idx_initial_cap_ : (VkDeviceSize)(64 * 1024 * 1024);
         VkDeviceSize new_cap = std::max<VkDeviceSize>(add_idx_bytes, base_cap);
-        wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              idx_pool_, idx_mem_);
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkMemoryPropertyFlags props = use_device_local_ ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                                        : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        wf::vk::create_buffer(phys_, device_, new_cap, usage, props, idx_pool_, idx_mem_);
         idx_capacity_ = new_cap; idx_used_ = 0; idx_tail_ = 0; idx_free_.clear();
     }
     return true;
@@ -172,33 +176,6 @@ void ChunkRenderer::ensure_indirect_capacity(size_t drawCount) {
                           nb, nm);
     if (indirect_mem_) { vkDestroyBuffer(device_, indirect_buf_, nullptr); vkFreeMemory(device_, indirect_mem_, nullptr); }
     indirect_buf_ = nb; indirect_mem_ = nm; indirect_capacity_cmds_ = new_cap;
-}
-
-bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
-                                const uint32_t* indices, size_t icount,
-                                uint32_t& out_first_index,
-                                int32_t& out_base_vertex) {
-    VkDeviceSize vbytes = (VkDeviceSize)(vcount * sizeof(Vertex));
-    VkDeviceSize ibytes = (VkDeviceSize)(icount * sizeof(uint32_t));
-    if (!ensure_pool_capacity(vbytes, ibytes)) {
-        out_base_vertex = 0; out_first_index = 0; return false;
-    }
-    VkDeviceSize voff = 0, ioff = 0;
-    if (!alloc_from_pool(vbytes, sizeof(Vertex), true, voff)) return false;
-    if (!alloc_from_pool(ibytes, sizeof(uint32_t), false, ioff)) { free_to_pool(voff, vbytes, true); return false; }
-    out_base_vertex = (int32_t)(voff / sizeof(Vertex));
-    out_first_index = (uint32_t)(ioff / sizeof(uint32_t));
-    // Upload vertices
-    wf::vk::upload_host_visible(device_, vtx_mem_, vbytes, vertices, voff);
-    vtx_used_ = std::max(vtx_used_, voff + vbytes);
-    // Upload indices
-    wf::vk::upload_host_visible(device_, idx_mem_, ibytes, indices, ioff);
-    idx_used_ = std::max(idx_used_, ioff + ibytes);
-    if (log_) {
-        std::cout << "[pool] upload: vtx off=" << (unsigned long long)voff << " bytes=" << (unsigned long long)vbytes
-                  << " idx off=" << (unsigned long long)ioff << " bytes=" << (unsigned long long)ibytes << "\n";
-    }
-    return true;
 }
 
 bool ChunkRenderer::alloc_from_pool(VkDeviceSize bytes, VkDeviceSize alignment, bool isVertex, VkDeviceSize& out_offset) {
@@ -269,6 +246,75 @@ void ChunkRenderer::free_mesh(uint32_t first_index, uint32_t index_count,
         free_to_pool(off, sz, true);
     }
 }
-// Free-list removed: pooled memory is append-only without reuse
+
+bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
+                                const uint32_t* indices, size_t icount,
+                                uint32_t& out_first_index,
+                                int32_t& out_base_vertex) {
+    VkDeviceSize vbytes = (VkDeviceSize)(vcount * sizeof(Vertex));
+    VkDeviceSize ibytes = (VkDeviceSize)(icount * sizeof(uint32_t));
+    if (!ensure_pool_capacity(vbytes, ibytes)) {
+        out_base_vertex = 0; out_first_index = 0; return false;
+    }
+    VkDeviceSize voff = 0, ioff = 0;
+    if (!alloc_from_pool(vbytes, sizeof(Vertex), true, voff)) return false;
+    if (!alloc_from_pool(ibytes, sizeof(uint32_t), false, ioff)) { free_to_pool(voff, vbytes, true); return false; }
+    out_base_vertex = (int32_t)(voff / sizeof(Vertex));
+    out_first_index = (uint32_t)(ioff / sizeof(uint32_t));
+    if (!use_device_local_) {
+        wf::vk::upload_host_visible(device_, vtx_mem_, vbytes, vertices, voff);
+        vtx_used_ = std::max(vtx_used_, voff + vbytes);
+        wf::vk::upload_host_visible(device_, idx_mem_, ibytes, indices, ioff);
+        idx_used_ = std::max(idx_used_, ioff + ibytes);
+    } else {
+        ensure_transfer_objects();
+        VkBuffer sv=VK_NULL_HANDLE, si=VK_NULL_HANDLE; VkDeviceMemory smv=VK_NULL_HANDLE, smi=VK_NULL_HANDLE;
+        wf::vk::create_buffer(phys_, device_, vbytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              sv, smv);
+        wf::vk::upload_host_visible(device_, smv, vbytes, vertices, 0);
+        wf::vk::create_buffer(phys_, device_, ibytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              si, smi);
+        wf::vk::upload_host_visible(device_, smi, ibytes, indices, 0);
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cai.commandPool = transfer_pool_; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(device_, &cai, &cmd);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; vkBeginCommandBuffer(cmd, &bi);
+        VkBufferCopy c0{0, voff, vbytes}; vkCmdCopyBuffer(cmd, sv, vtx_pool_, 1, &c0);
+        VkBufferCopy c1{0, ioff, ibytes}; vkCmdCopyBuffer(cmd, si, idx_pool_, 1, &c1);
+        vkEndCommandBuffer(cmd);
+        if (!transfer_fence_) { VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; vkCreateFence(device_, &fci, nullptr, &transfer_fence_); }
+        vkResetFences(device_, 1, &transfer_fence_);
+        VkSubmitInfo siu{VK_STRUCTURE_TYPE_SUBMIT_INFO}; siu.commandBufferCount = 1; siu.pCommandBuffers = &cmd;
+        vkQueueSubmit(transfer_queue_, 1, &siu, transfer_fence_);
+        vkWaitForFences(device_, 1, &transfer_fence_, VK_TRUE, UINT64_MAX);
+        vkFreeCommandBuffers(device_, transfer_pool_, 1, &cmd);
+        vkDestroyBuffer(device_, sv, nullptr); vkFreeMemory(device_, smv, nullptr);
+        vkDestroyBuffer(device_, si, nullptr); vkFreeMemory(device_, smi, nullptr);
+        vtx_used_ = std::max(vtx_used_, voff + vbytes);
+        idx_used_ = std::max(idx_used_, ioff + ibytes);
+    }
+    if (log_) {
+        std::cout << "[pool] upload: vtx off=" << (unsigned long long)voff << " bytes=" << (unsigned long long)vbytes
+                  << " idx off=" << (unsigned long long)ioff << " bytes=" << (unsigned long long)ibytes << "\n";
+    }
+    return true;
+}
+
+void ChunkRenderer::ensure_transfer_objects() {
+    if (!transfer_pool_) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pci.queueFamilyIndex = transfer_queue_family_;
+        vkCreateCommandPool(device_, &pci, nullptr, &transfer_pool_);
+    }
+    if (!transfer_fence_) {
+        VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        vkCreateFence(device_, &fci, nullptr, &transfer_fence_);
+    }
+}
 
 } // namespace wf
+

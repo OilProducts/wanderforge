@@ -191,6 +191,9 @@ void VulkanApp::init_vulkan() {
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
     chunk_renderer_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    // Device-local pools + staging: configurable; default enabled
+    chunk_renderer_.set_device_local(device_local_enabled_);
+    chunk_renderer_.set_transfer_context(queue_family_graphics_, queue_graphics_);
     // Apply pool caps and logging preferences
     chunk_renderer_.set_pool_caps_bytes((VkDeviceSize)pool_vtx_mb_ * 1024ull * 1024ull,
                                         (VkDeviceSize)pool_idx_mb_ * 1024ull * 1024ull);
@@ -745,6 +748,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
     if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
     if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
+    if (const char* s = std::getenv("WF_DEVICE_LOCAL")) device_local_enabled_ = parse_bool(s, device_local_enabled_);
     if (const char* s = std::getenv("WF_POOL_VTX_MB")) { try { pool_vtx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_POOL_IDX_MB")) { try { pool_idx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_UPLOADS_PER_FRAME")) { try { uploads_per_frame_limit_ = std::max(1, std::stoi(s)); } catch(...){} }
@@ -775,6 +779,7 @@ void VulkanApp::load_config() {
         else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
         else if (key == "log_stream") log_stream_ = parse_bool(val, log_stream_);
         else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
+        else if (key == "device_local") device_local_enabled_ = parse_bool(val, device_local_enabled_);
         else if (key == "pool_vtx_mb") { try { pool_vtx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
         else if (key == "pool_idx_mb") { try { pool_idx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
         else if (key == "uploads_per_frame") { try { uploads_per_frame_limit_ = std::max(1, std::stoi(val)); } catch(...){} }
