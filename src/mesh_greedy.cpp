@@ -131,9 +131,10 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                         udir = Float3{1, 0, 0};
                         vdir = Float3{0, 1, 0};
                     }
-                    bool flip = false;
-                    if (axis == 0 || axis == 1) flip = (c0.sign > 0);
-                    else /* axis == 2 */ flip = (c0.sign < 0);
+                    // Match naive mesher winding under VK_FRONT_FACE_CLOCKWISE:
+                    // For positive faces (+X,+Y,+Z), swap u/v orientation relative to negative faces.
+                    // Since we keep udir/vdir fixed per axis here, flip indices for all positive faces.
+                    bool flip = (c0.sign > 0);
                     add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, flip);
                     u += w;
                 }
