@@ -14,7 +14,7 @@ static inline bool cell_equal(const MaskCell& a, const MaskCell& b) {
     return a.mat == b.mat && a.sign == b.sign;
 }
 
-static void add_quad(Mesh& m, Float3 origin, Float3 udir, Float3 vdir, Float3 n, float w, float h, uint16_t mat) {
+static void add_quad(Mesh& m, Float3 origin, Float3 udir, Float3 vdir, Float3 n, float w, float h, uint16_t mat, bool flip) {
     const uint32_t base = (uint32_t)m.vertices.size();
     Float3 p0 = origin;
     Float3 p1 = { origin.x + udir.x * w, origin.y + udir.y * w, origin.z + udir.z * w };
@@ -28,12 +28,21 @@ static void add_quad(Mesh& m, Float3 origin, Float3 udir, Float3 vdir, Float3 n,
     m.vertices.push_back(v1);
     m.vertices.push_back(v2);
     m.vertices.push_back(v3);
-    m.indices.push_back(base + 0);
-    m.indices.push_back(base + 1);
-    m.indices.push_back(base + 2);
-    m.indices.push_back(base + 0);
-    m.indices.push_back(base + 2);
-    m.indices.push_back(base + 3);
+    if (!flip) {
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 1);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base + 3);
+    } else {
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 2);
+        m.indices.push_back(base + 1);
+        m.indices.push_back(base + 0);
+        m.indices.push_back(base + 3);
+        m.indices.push_back(base + 2);
+    }
 }
 
 void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
@@ -122,7 +131,10 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                         udir = Float3{1, 0, 0};
                         vdir = Float3{0, 1, 0};
                     }
-                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat);
+                    bool flip = false;
+                    if (axis == 0 || axis == 1) flip = (c0.sign > 0);
+                    else /* axis == 2 */ flip = (c0.sign < 0);
+                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, flip);
                     u += w;
                 }
             }
