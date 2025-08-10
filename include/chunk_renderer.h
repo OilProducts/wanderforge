@@ -18,6 +18,7 @@ public:
     void init(VkDevice device, VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir);
     void recreate(VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir);
     void cleanup(VkDevice device);
+    bool is_ready() const { return pipeline_ != VK_NULL_HANDLE && layout_ != VK_NULL_HANDLE; }
 
     // Record draw commands for provided chunks; expects MVP as 16 floats (row-major, multiplied in shader as provided)
     void record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items);

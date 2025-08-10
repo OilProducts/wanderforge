@@ -30,7 +30,7 @@ private:
     void create_image_views();
     void create_render_pass();
     void create_graphics_pipeline();
-    void create_graphics_pipeline_chunk(); // deprecated (kept during transition)
+    // Legacy chunk pipeline removed; ChunkRenderer is authoritative
     void create_compute_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
@@ -78,9 +78,7 @@ private:
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
-    // Deprecated chunk pipeline members (replaced by ChunkRenderer)
-    VkPipelineLayout pipeline_layout_chunk_ = VK_NULL_HANDLE; // legacy
-    VkPipeline pipeline_chunk_ = VK_NULL_HANDLE;              // legacy
+    // Legacy chunk pipeline removed
 
     std::vector<VkFramebuffer> framebuffers_;
 
@@ -97,8 +95,6 @@ private:
         uint32_t index_count = 0;
     };
     std::vector<RenderChunk> render_chunks_;
-    // Temporary scratch for draw items to avoid per-frame allocations
-    std::vector<struct ChunkDrawItem> chunk_items_tmp_;
 
     // Helpers for buffers
     uint32_t find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties);
@@ -148,9 +144,11 @@ private:
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
     ChunkRenderer chunk_renderer_;
-    bool overlay_enabled_ = true;
-    bool titlebar_enabled_ = true;
-    bool seam_faces_enabled_ = true; // control neighbor-aware seam faces for testing
+    // Reused per-frame container to avoid allocations when building draw items
+    std::vector<ChunkDrawItem> chunk_items_tmp_;
+
+    // Parity toggle: use new ChunkRenderer path vs legacy pipeline
+    bool use_chunk_renderer_ = true;
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
     std::string hud_text_;

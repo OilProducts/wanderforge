@@ -107,4 +107,3 @@ void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::
 }
 
 } // namespace wf
-

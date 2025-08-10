@@ -68,11 +68,7 @@ static bool has_device_extension(VkPhysicalDevice dev, const char* name) {
 }
 
 VulkanApp::VulkanApp() {
-#ifdef WF_DEBUG
-    enable_validation_ = true;
-#else
-    enable_validation_ = false;
-#endif
+    enable_validation_ = true; // toggled by build type in future
 }
 
 VulkanApp::~VulkanApp() {
@@ -170,11 +166,12 @@ void VulkanApp::init_vulkan() {
     create_image_views();
     create_render_pass();
     create_depth_resources();
-    // ChunkRenderer encapsulates the chunk pipeline now
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
     chunk_renderer_.init(device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    std::cout << "ChunkRenderer ready: " << (chunk_renderer_.is_ready() ? "yes" : "no")
+              << ", use_chunk_renderer=" << (use_chunk_renderer_ ? 1 : 0) << "\n";
     overlay_text_valid_.fill(false);
     hud_force_refresh_ = true;
     create_framebuffers();
@@ -235,8 +232,7 @@ void VulkanApp::init_vulkan() {
                 const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
                 const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
                 Mesh m;
-                if (seam_faces_enabled_) mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
-                else                     mesh_chunk_greedy(c, m, s);
+                mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
                 if (!m.indices.empty()) {
                     float S0 = (float)(di * chunk_m);
                     float T0 = (float)(dj * chunk_m);
@@ -251,32 +247,8 @@ void VulkanApp::init_vulkan() {
                     }
                     RenderChunk rc;
                     rc.index_count = (uint32_t)m.indices.size();
-                    VkDeviceSize vbytes = sizeof(Vertex) * m.vertices.size();
-                    VkDeviceSize ibytes = sizeof(uint32_t) * m.indices.size();
-                    VkBuffer vstage = VK_NULL_HANDLE; VkDeviceMemory vstageMem = VK_NULL_HANDLE;
-                    wf::vk::create_buffer(physical_device_, device_, vbytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                          vstage, vstageMem);
-                    wf::vk::upload_host_visible(device_, vstageMem, vbytes, m.vertices.data(), 0);
-                    wf::vk::create_buffer(physical_device_, device_, vbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rc.vbuf, rc.vmem);
-                    VkBuffer istage = VK_NULL_HANDLE; VkDeviceMemory istageMem = VK_NULL_HANDLE;
-                    wf::vk::create_buffer(physical_device_, device_, ibytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                          istage, istageMem);
-                    wf::vk::upload_host_visible(device_, istageMem, ibytes, m.indices.data(), 0);
-                    wf::vk::create_buffer(physical_device_, device_, ibytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rc.ibuf, rc.imem);
-                    {
-                        VkCommandBuffer cmd = wf::vk::begin_one_time_commands(device_, command_pool_);
-                        VkBufferCopy c0{0,0,vbytes};
-                        vkCmdCopyBuffer(cmd, vstage, rc.vbuf, 1, &c0);
-                        VkBufferCopy c1{0,0,ibytes};
-                        vkCmdCopyBuffer(cmd, istage, rc.ibuf, 1, &c1);
-                        wf::vk::end_one_time_commands(device_, queue_graphics_, command_pool_, cmd);
-                    }
-                    vkDestroyBuffer(device_, vstage, nullptr); vkFreeMemory(device_, vstageMem, nullptr);
-                    vkDestroyBuffer(device_, istage, nullptr); vkFreeMemory(device_, istageMem, nullptr);
+                    create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, m.vertices.data());
+                    create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, m.indices.data());
                     render_chunks_.push_back(rc);
                 }
             }
@@ -408,28 +380,7 @@ void VulkanApp::create_swapchain() {
     VkSurfaceFormatKHR chosenFmt = fmts[0];
     for (auto f : fmts) if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { chosenFmt = f; break; }
     VkPresentModeKHR chosenPm = VK_PRESENT_MODE_FIFO_KHR; // guaranteed
-    std::string pmOverride;
-    if (const char* s = std::getenv("WF_PRESENT_MODE")) pmOverride = s;
-    auto choose_pm = [&](VkPresentModeKHR want){ for (auto m: pms) if (m==want) { chosenPm = want; return true; } return false; };
-    if (!pmOverride.empty()) {
-        std::string v; v.resize(pmOverride.size());
-        std::transform(pmOverride.begin(), pmOverride.end(), v.begin(), [](unsigned char c){ return (char)std::tolower(c); });
-        bool chosen = false;
-        if      (v=="immediate") chosen = choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR);
-        else if (v=="mailbox")  chosen = choose_pm(VK_PRESENT_MODE_MAILBOX_KHR);
-        else if (v=="fifo_relaxed") chosen = choose_pm(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
-        else if (v=="fifo") chosen = choose_pm(VK_PRESENT_MODE_FIFO_KHR);
-        // If requested mode unavailable, fall back to our default preference order
-        if (!chosen) {
-            if (!choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR))
-                if (!choose_pm(VK_PRESENT_MODE_MAILBOX_KHR))
-                    choose_pm(VK_PRESENT_MODE_FIFO_KHR);
-        }
-    } else {
-        if (!choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR))
-            if (!choose_pm(VK_PRESENT_MODE_MAILBOX_KHR))
-                choose_pm(VK_PRESENT_MODE_FIFO_KHR);
-    }
+    for (auto m : pms) if (m == VK_PRESENT_MODE_MAILBOX_KHR) { chosenPm = m; break; }
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFF) { extent = { (uint32_t)width_, (uint32_t)height_ }; }
@@ -597,8 +548,8 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     throw_if_failed(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer failed");
 
-    // Optional no-op compute dispatch (disabled by default)
-    if (compute_enabled_ && pipeline_compute_) {
+    // No-op compute dispatch before rendering
+    if (pipeline_compute_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_compute_);
         vkCmdDispatch(cmd, 1, 1, 1);
     }
@@ -613,7 +564,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     clears[1].depthStencil = {1.0f, 0};
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if (!render_chunks_.empty() && chunk_renderer_.is_ready()) {
+    if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
         // Row-major projection (OpenGL-style) and view; multiply as row-major V*P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         float fov = 60.0f * 0.01745329252f;
@@ -642,17 +593,17 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
         auto MVP = mul4(V, P);
 
-        if (chunk_items_tmp_.size() != render_chunks_.size()) chunk_items_tmp_.resize(render_chunks_.size());
-        for (size_t i=0;i<render_chunks_.size();++i) {
-            chunk_items_tmp_[i] = ChunkDrawItem{render_chunks_[i].vbuf, render_chunks_[i].ibuf, render_chunks_[i].index_count};
-        }
+        // Reuse preallocated container
+        chunk_items_tmp_.clear();
+        chunk_items_tmp_.reserve(render_chunks_.size());
+        for (const auto& rc : render_chunks_) chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
-    if (overlay_enabled_) overlay_.record_draw(cmd, overlay_draw_slot_);
+    overlay_.record_draw(cmd, overlay_draw_slot_);
     vkCmdEndRenderPass(cmd);
 
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
@@ -730,7 +681,7 @@ void VulkanApp::update_hud(float dt) {
                   "Wanderforge | FPS: %.1f | Pos: (%.1f, %.1f, %.1f) | Yaw/Pitch: (%.1f, %.1f) | InvX:%d InvY:%d | Speed: %.1f",
                   fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
-    if (titlebar_enabled_) glfwSetWindowTitle(window_, title);
+    glfwSetWindowTitle(window_, title);
 
     char hud[256];
     std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
@@ -770,10 +721,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_ENABLE_COMPUTE_NOOP")) compute_enabled_ = parse_bool(s, compute_enabled_);
-    if (const char* s = std::getenv("WF_DISABLE_OVERLAY")) overlay_enabled_ = !parse_bool(s, false);
-    if (const char* s = std::getenv("WF_DISABLE_TITLEBAR")) titlebar_enabled_ = !parse_bool(s, false);
-    if (const char* s = std::getenv("WF_SEAMS")) seam_faces_enabled_ = parse_bool(s, seam_faces_enabled_);
+    if (const char* s = std::getenv("WF_USE_CHUNK_RENDERER")) use_chunk_renderer_ = parse_bool(s, use_chunk_renderer_);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -789,10 +737,7 @@ void VulkanApp::load_config() {
         else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
-        else if (key == "enable_compute_noop") compute_enabled_ = parse_bool(val, compute_enabled_);
-        else if (key == "overlay") overlay_enabled_ = parse_bool(val, overlay_enabled_);
-        else if (key == "titlebar") titlebar_enabled_ = parse_bool(val, titlebar_enabled_);
-        else if (key == "seams") seam_faces_enabled_ = parse_bool(val, seam_faces_enabled_);
+        else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
     }
 }
 
@@ -805,14 +750,12 @@ void VulkanApp::draw_frame() {
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) { recreate_swapchain(); return; }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) throw_if_failed(acq, "vkAcquireNextImageKHR failed");
 
-    // Prepare overlay text only if needed and overlay enabled
-    if (overlay_enabled_) {
-        overlay_draw_slot_ = current_frame_;
-        if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
-            overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
-            overlay_text_valid_[overlay_draw_slot_] = true;
-            overlay_last_text_ = hud_text_;
-        }
+    // Prepare overlay text only if needed for this frame slot (content changed or slot invalid)
+    overlay_draw_slot_ = current_frame_;
+    if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
+        overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+        overlay_text_valid_[overlay_draw_slot_] = true;
+        overlay_last_text_ = hud_text_;
     }
 
     // Overlay text is prepared once per frame above
@@ -859,7 +802,6 @@ void VulkanApp::recreate_swapchain() {
     create_image_views();
     create_render_pass();
     create_depth_resources();
-    // ChunkRenderer encapsulates the chunk pipeline now
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.recreate_swapchain(render_pass_, swapchain_extent_, WF_SHADER_DIR);
@@ -958,7 +900,11 @@ void VulkanApp::create_graphics_pipeline() {
     vkDestroyShaderModule(device_, fs, nullptr);
 }
 
-// legacy chunk pipeline removed; handled by ChunkRenderer
+// legacy chunk pipeline removed (ChunkRenderer owns chunk graphics pipeline)
+// removed overlay pipeline (handled by OverlayRenderer)
+
+
+// removed overlay buffer update (handled by OverlayRenderer)
 
 void VulkanApp::create_compute_pipeline() {
     // Load no-op compute shader
