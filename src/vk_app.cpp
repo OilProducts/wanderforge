@@ -413,10 +413,17 @@ void VulkanApp::create_swapchain() {
     if (!pmOverride.empty()) {
         std::string v; v.resize(pmOverride.size());
         std::transform(pmOverride.begin(), pmOverride.end(), v.begin(), [](unsigned char c){ return (char)std::tolower(c); });
-        if      (v=="immediate") choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR);
-        else if (v=="mailbox")  choose_pm(VK_PRESENT_MODE_MAILBOX_KHR);
-        else if (v=="fifo_relaxed") choose_pm(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
-        else choose_pm(VK_PRESENT_MODE_FIFO_KHR);
+        bool chosen = false;
+        if      (v=="immediate") chosen = choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR);
+        else if (v=="mailbox")  chosen = choose_pm(VK_PRESENT_MODE_MAILBOX_KHR);
+        else if (v=="fifo_relaxed") chosen = choose_pm(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+        else if (v=="fifo") chosen = choose_pm(VK_PRESENT_MODE_FIFO_KHR);
+        // If requested mode unavailable, fall back to our default preference order
+        if (!chosen) {
+            if (!choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR))
+                if (!choose_pm(VK_PRESENT_MODE_MAILBOX_KHR))
+                    choose_pm(VK_PRESENT_MODE_FIFO_KHR);
+        }
     } else {
         if (!choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR))
             if (!choose_pm(VK_PRESENT_MODE_MAILBOX_KHR))
