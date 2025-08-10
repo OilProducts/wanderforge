@@ -91,6 +91,20 @@ Config options:
   - `move_speed=12.0` (or `WF_MOVE_SPEED`)
   - Toggle at runtime: press `X` (invert X) or `Y` (invert Y)
 
+## Current Render Conventions (Phase 3)
+
+These conventions are locked for the remainder of Phase 3 to keep development stable. A focused migration to Vulkan‑native conventions is planned in Phase 3.5.
+
+- Front faces: CCW; culling: BACK. Chunks render with CCW fronts; backfaces are culled.
+- Projection: GL‑style perspective (depth in [-1, 1]); FOV 60°, near 0.1, far 1000.
+- Matrices: computed row‑major on CPU; MVP is built as `V * P` and uploaded as 16 floats; shaders multiply `pc.mvp * vec4(inPos,1)`.
+- Coordinate frame: right‑handed world, +Y up. Camera basis from yaw (around +Y) and pitch.
+- Winding consistency: greedy mesher emits triangles to match CCW fronts; neighbor‑aware seams avoid outer walls and close inter‑chunk gaps.
+- Overlay: HUD uses Vulkan NDC mapping (Y up); text quads are generated in screen pixels then converted to NDC.
+
+Notes
+- The above choices worked reliably across our targets. Mixing GL/Vulkan depth or matrix layouts caused the visual anomalies we debugged; Phase 3.5 will migrate to Vulkan‑native depth and column‑major matrices with validation helpers.
+
 ## Voxels On A Sphere (Cube‑Sphere)
 
 - Plain‑English picture: Imagine a cube gently wrapped around a ball. To locate a point on the planet, we shoot a line from the center to that point. Whichever cube side the line passes through is the “face,” and the spot on that face is a simple 2D coordinate. This avoids the nasty stretching near the poles you’d get with a latitude/longitude grid.

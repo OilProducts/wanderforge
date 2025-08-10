@@ -103,7 +103,7 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - Renderer with frustum culling and per-material draw lists.
 - Acceptance:
   - Walk around a static planet; smooth chunk streaming at 60 fps; typical chunk ≤ 15k tris.
-- Progress:
+ - Progress:
   - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
   - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
@@ -116,6 +116,32 @@ This document is a self-contained plan to build an experimental, planetary-scale
    - Move toward draw batching/indirect draws to reduce command overhead.
    - Region IO: add compression flags (LZ4/Zstd), async IO worker, and basic compaction/robust errors.
    - HUD: DPI/scale control and optional text shadow; skip rebuilds unless content changes (done).
+
+### Phase 3.5 — Convention Migration (Vulkan‑native clip space)
+
+- Goal: Migrate rendering to consistent Vulkan‑native conventions to reduce ambiguity and simplify future features (post, shadows), while keeping visuals stable.
+- Target conventions:
+  - Depth: Vulkan [0,1] (optionally reversed‑Z later).
+  - Matrices: column‑major on CPU; upload column‑major; `MVP = P * V`.
+  - Front faces: CCW; culling: BACK (unchanged from Phase 3 end state).
+  - Coordinate frame: right‑handed world, +Y up (unchanged).
+  - Overlay: explicit NDC mapping consistent with Vulkan Y.
+- Step‑by‑step plan:
+  1) Add math helpers: `perspective_vulkan(fov,aspect,zn,zf)`, `look_at(eye,fwd,up)`, `mul(a,b)` producing column‑major float[16].
+  2) Add a common header enabling GLM flags (if GLM used): `GLM_FORCE_DEPTH_ZERO_TO_ONE`, `GLM_FORCE_RIGHT_HANDED`; otherwise document our own math.
+  3) Add debug primitives and checks:
+     - Axis gizmo at origin (RGB XYZ), and a screen‑space test triangle to validate Y/handedness.
+     - A runtime toggle to flip `frontFace` and to disable culling (for quick A/B during migration).
+  4) Switch camera path to use column‑major `P * V`; push constants/upload unchanged elsewhere.
+  5) Verify culling from default pose; adjust chunk pipeline `frontFace` only if mismatch (expect CCW BACK).
+  6) Verify overlay orientation and HUD (NDC Y up). Fix only if discrepancy is observed.
+  7) Remove legacy row‑major helpers and any ad‑hoc transposes; centralize all math through the helpers.
+  8) Optional: implement reversed‑Z (set `depthCompareOp = GREATER`, swap zn/zf mapping); validate sky/ground cases and precision improvement.
+  9) Document the final conventions in README and AGENTS; add a short “troubleshooting visuals” section.
+- Acceptance:
+  - Default scene renders identically (or better precision) vs Phase 3.
+  - No culling inversions; seams remain closed; overlay orientation correct.
+  - Debug gizmos confirm axes and screen‑space orientation.
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:
