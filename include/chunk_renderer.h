@@ -22,6 +22,8 @@ public:
     // Record draw commands for provided chunks; expects MVP as 16 floats (row-major, multiplied in shader as provided)
     void record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items);
 
+    bool is_ready() const { return pipeline_ != VK_NULL_HANDLE; }
+
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;

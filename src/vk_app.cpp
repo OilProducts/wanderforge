@@ -585,7 +585,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     clears[1].depthStencil = {1.0f, 0};
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if (pipeline_chunk_ && !render_chunks_.empty()) {
+    if (!render_chunks_.empty() && chunk_renderer_.is_ready()) {
         // Row-major projection (OpenGL-style) and view; multiply as row-major V*P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         float fov = 60.0f * 0.01745329252f;
