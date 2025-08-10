@@ -559,6 +559,11 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             Float3 rightv{ fwd.y*up_rot.z - fwd.z*up_rot.y, fwd.z*up_rot.x - fwd.x*up_rot.z, fwd.x*up_rot.y - fwd.y*up_rot.x };
             // Recompute up_final = right x forward
             Float3 up_final{ rightv.y*fwd.z - rightv.z*fwd.y, rightv.z*fwd.x - rightv.x*fwd.z, rightv.x*fwd.y - rightv.y*fwd.x };
+            // If the frame is rolled (terrain appears on top), flip right and up simultaneously
+            if (up_final.y < 0.0f && std::fabs(updir.y) > 0.2f) {
+                rightv = Float3{ -rightv.x, -rightv.y, -rightv.z };
+                up_final = Float3{ -up_final.x, -up_final.y, -up_final.z };
+            }
             // Row-major view matrix from basis
             V = wf::Mat4{
                 rightv.x, up_final.x, -fwd.x, 0.0f,
@@ -605,9 +610,14 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 Float3 up2{ updir.x*cp2 - fwh.x*sp2, updir.y*cp2 - fwh.y*sp2, updir.z*cp2 - fwh.z*sp2 };
                 // right = forward x up; up = right x forward
                 Float3 rv{ fw.y*up2.z - fw.z*up2.y, fw.z*up2.x - fw.x*up2.z, fw.x*up2.y - fw.y*up2.x };
-                up2 = Float3{ rv.y*fw.z - rv.z*fw.y, rv.z*fw.x - rv.x*fw.z, rv.x*fw.y - rv.y*fw.x };
+                Float3 upf{ rv.y*fw.z - rv.z*fw.y, rv.z*fw.x - rv.x*fw.z, rv.x*fw.y - rv.y*fw.x };
+                // Flip both if inverted relative to world up to avoid upside-down view
+                if (upf.y < 0.0f && std::fabs(updir.y) > 0.2f) {
+                    rv = Float3{ -rv.x, -rv.y, -rv.z };
+                    upf = Float3{ -upf.x, -upf.y, -upf.z };
+                }
                 fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
-                upv[0]=up2.x; upv[1]=up2.y; upv[2]=up2.z;
+                upv[0]=upf.x; upv[1]=upf.y; upv[2]=upf.z;
                 rightv[0]=rv.x; rightv[1]=rv.y; rightv[2]=rv.z;
             }
             float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
