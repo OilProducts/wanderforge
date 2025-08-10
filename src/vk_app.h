@@ -150,6 +150,7 @@ private:
     ChunkRenderer chunk_renderer_;
     bool overlay_enabled_ = true;
     bool titlebar_enabled_ = true;
+    bool seam_faces_enabled_ = true; // control neighbor-aware seam faces for testing
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
     std::string hud_text_;

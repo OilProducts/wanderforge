@@ -235,7 +235,8 @@ void VulkanApp::init_vulkan() {
                 const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
                 const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
                 Mesh m;
-                mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
+                if (seam_faces_enabled_) mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
+                else                     mesh_chunk_greedy(c, m, s);
                 if (!m.indices.empty()) {
                     float S0 = (float)(di * chunk_m);
                     float T0 = (float)(dj * chunk_m);
@@ -772,6 +773,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_ENABLE_COMPUTE_NOOP")) compute_enabled_ = parse_bool(s, compute_enabled_);
     if (const char* s = std::getenv("WF_DISABLE_OVERLAY")) overlay_enabled_ = !parse_bool(s, false);
     if (const char* s = std::getenv("WF_DISABLE_TITLEBAR")) titlebar_enabled_ = !parse_bool(s, false);
+    if (const char* s = std::getenv("WF_SEAMS")) seam_faces_enabled_ = parse_bool(s, seam_faces_enabled_);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -790,6 +792,7 @@ void VulkanApp::load_config() {
         else if (key == "enable_compute_noop") compute_enabled_ = parse_bool(val, compute_enabled_);
         else if (key == "overlay") overlay_enabled_ = parse_bool(val, overlay_enabled_);
         else if (key == "titlebar") titlebar_enabled_ = parse_bool(val, titlebar_enabled_);
+        else if (key == "seams") seam_faces_enabled_ = parse_bool(val, seam_faces_enabled_);
     }
 }
 
