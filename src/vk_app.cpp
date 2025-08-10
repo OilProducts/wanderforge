@@ -573,7 +573,8 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             float R[16]{};
             for(int r=0;r<4;++r) for(int c=0;c<4;++c){ R[r*4+c]=A[r*4+0]*B[0*4+c]+A[r*4+1]*B[1*4+c]+A[r*4+2]*B[2*4+c]+A[r*4+3]*B[3*4+c]; }
             return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
-        auto MVP = mul4(V, P);
+        // Correct order is P * V (project after view)
+        auto MVP = mul4(P, V);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
         vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
