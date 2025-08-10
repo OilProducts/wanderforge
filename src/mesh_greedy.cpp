@@ -82,8 +82,11 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                             if (a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
                             else       { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
                         }
-                    } else {
-                        // Suppress faces on chunk borders to avoid large axis-aligned walls
+                    } else if (a_in && !b_in) {
+                        // Positive chunk boundary (d == N): emit face owned by this chunk if inside is solid
+                        if (c.is_solid(ax, ay, az)) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
+                    } else if (!a_in && b_in) {
+                        // Negative chunk boundary (d == 0): skip to avoid double faces; neighbor will own this seam
                         cell = {0, 0};
                     }
                     mask[u + v * U] = cell;
