@@ -93,13 +93,20 @@ void mesh_chunk_greedy_neighbors(const Chunk64& c,
                             else       { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
                         }
                     } else if (a_in && !b_in) {
-                        // Positive chunk boundary (d == N): consult neighbor to decide seam face; if no neighbor, treat as no face (avoid outer walls)
+                        // Positive chunk boundary (d == N): consult neighbor to decide seam face; if no neighbor, do not emit (avoid outer walls)
                         bool a_sol = c.is_solid(ax, ay, az);
-                        bool b_sol = false;
-                        if (axis == 0)      b_sol = get_neighbor_solid(posX, 0, by, bz);
-                        else if (axis == 1) b_sol = get_neighbor_solid(posY, bx, 0, bz);
-                        else                b_sol = get_neighbor_solid(posZ, bx, by, 0);
-                        if (a_sol != b_sol && a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
+                        bool has_nb = (axis == 0) ? (posX != nullptr)
+                                      : (axis == 1) ? (posY != nullptr)
+                                                    : (posZ != nullptr);
+                        if (has_nb) {
+                            bool b_sol = false;
+                            if (axis == 0)      b_sol = get_neighbor_solid(posX, 0, by, bz);
+                            else if (axis == 1) b_sol = get_neighbor_solid(posY, bx, 0, bz);
+                            else                b_sol = get_neighbor_solid(posZ, bx, by, 0);
+                            if (a_sol != b_sol && a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
+                        } else {
+                            cell = {0, 0};
+                        }
                     } else if (!a_in && b_in) {
                         // Negative chunk boundary (d == 0): ownership rule — neighbor (negative side) will emit; skip here
                         cell = {0, 0};
