@@ -547,9 +547,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                               updir.z*world_up.x - updir.x*world_up.z,
                                               updir.x*world_up.y - updir.y*world_up.x });
             if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-            Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
-                                              updir.z*r0.x - updir.x*r0.z,
-                                              updir.x*r0.y - updir.y*r0.x });
+            Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
+                                              r0.z*updir.x - r0.x*updir.z,
+                                              r0.x*updir.y - r0.y*updir.x });
             float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
             Float3 fwd_h{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
             float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
@@ -595,9 +595,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                                   updir.z*world_up.x - updir.x*world_up.z,
                                                   updir.x*world_up.y - updir.y*world_up.x });
                 if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-                Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
-                                                  updir.z*r0.x - updir.x*r0.z,
-                                                  updir.x*r0.y - updir.y*r0.x });
+                Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
+                                                  r0.z*updir.x - r0.x*updir.z,
+                                                  r0.x*updir.y - r0.y*updir.x });
                 float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
                 Float3 fwh{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
                 float cp2 = std::cos(walk_pitch_), sp2 = std::sin(walk_pitch_);
@@ -717,9 +717,9 @@ void VulkanApp::update_input(float dt) {
                                               world_up.z*updir.x - world_up.x*updir.z,
                                               world_up.x*updir.y - world_up.y*updir.x });
             if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-            Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
-                                              updir.z*r0.x - updir.x*r0.z,
-                                              updir.x*r0.y - updir.y*r0.x });
+            Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
+                                              r0.z*updir.x - r0.x*updir.z,
+                                              r0.x*updir.y - r0.y*updir.x });
             float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
             float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
             Float3 fwdv{ cp*cyaw, sp, cp*syaw };
@@ -759,9 +759,9 @@ void VulkanApp::update_input(float dt) {
                                           updir.z*world_up.x - updir.x*world_up.z,
                                           updir.x*world_up.y - updir.y*world_up.x });
         if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-        Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
-                                          updir.z*r0.x - updir.x*r0.z,
-                                          updir.x*r0.y - updir.y*r0.x });
+        Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
+                                          r0.z*updir.x - r0.x*updir.z,
+                                          r0.x*updir.y - r0.y*updir.x });
         float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
         Float3 fwd_t{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
         Float3 right_t{ updir.y*fwd_t.z - updir.z*fwd_t.y, updir.z*fwd_t.x - updir.x*fwd_t.z, updir.x*fwd_t.y - updir.y*fwd_t.x };
