@@ -721,6 +721,8 @@ void VulkanApp::load_config() {
 }
 
 void VulkanApp::draw_frame() {
+    // Streaming update (may schedule new loads and prune old chunks)
+    update_streaming();
     // Drain some mesh results each frame before rendering
     drain_mesh_results();
     vkWaitForFences(device_, 1, &fences_in_flight_[current_frame_], VK_TRUE, UINT64_MAX);
@@ -932,12 +934,14 @@ void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
 void VulkanApp::start_initial_ring_async() {
     // Spawn a one-shot worker to build the initial ring on face +X
     int face = 0;
+    stream_face_ = face;
+    ring_center_i_ = 0; ring_center_j_ = 0;
     loader_stop_ = false;
     loader_busy_ = true;
-    loader_thread_ = std::thread(&VulkanApp::loader_thread_func, this, face, ring_radius_);
+    loader_thread_ = std::thread(&VulkanApp::loader_thread_func, this, face, ring_radius_, ring_center_i_, ring_center_j_);
 }
 
-void VulkanApp::loader_thread_func(int face, int ring_radius) {
+void VulkanApp::loader_thread_func(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j) {
     PlanetConfig cfg;
     const int N = Chunk64::N;
     const float s = (float)cfg.voxel_size_m;
@@ -953,14 +957,14 @@ void VulkanApp::loader_thread_func(int face, int ring_radius) {
     // First pass: load or generate all chunks
     for (int dj = -tile_span; dj <= tile_span && !loader_stop_; ++dj) {
         for (int di = -tile_span; di <= tile_span && !loader_stop_; ++di) {
-            FaceChunkKey key{face, di, dj, k0};
+            FaceChunkKey key{face, center_i + di, center_j + dj, k0};
             Chunk64& c = chunks[idx_of(di, dj)];
             if (!RegionIO::load_chunk(key, c)) {
                 for (int z = 0; z < N; ++z) {
                     for (int y = 0; y < N; ++y) {
                         for (int x = 0; x < N; ++x) {
-                            double s0 = (double)di * chunk_m + (x + 0.5) * cfg.voxel_size_m;
-                            double t0 = (double)dj * chunk_m + (y + 0.5) * cfg.voxel_size_m;
+                            double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
+                            double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
                             double r0 = (double)k0 * chunk_m + (z + 0.5) * cfg.voxel_size_m;
                             Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
                             Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
@@ -985,8 +989,8 @@ void VulkanApp::loader_thread_func(int face, int ring_radius) {
             Mesh m;
             mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
             if (m.indices.empty()) continue;
-            float S0 = (float)(di * chunk_m);
-            float T0 = (float)(dj * chunk_m);
+            float S0 = (float)((center_i + di) * chunk_m);
+            float T0 = (float)((center_j + dj) * chunk_m);
             float R0 = (float)(k0 * chunk_m);
             for (auto& vert : m.vertices) {
                 Float3 lp{vert.x, vert.y, vert.z};
@@ -1004,6 +1008,7 @@ void VulkanApp::loader_thread_func(int face, int ring_radius) {
             Float3 center_local{half, half, half};
             Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
+            res.key = FaceChunkKey{face, center_i + di, center_j + dj, k0};
 
             {
                 std::lock_guard<std::mutex> lk(loader_mutex_);
@@ -1031,8 +1036,60 @@ void VulkanApp::drain_mesh_results() {
         create_host_buffer(sizeof(Vertex) * res.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, res.vertices.data());
         create_host_buffer(sizeof(uint32_t) * res.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, res.indices.data());
         rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
-        render_chunks_.push_back(rc);
+        rc.key = res.key;
+        // Replace existing chunk with same key, if present
+        bool replaced = false;
+        for (size_t i = 0; i < render_chunks_.size(); ++i) {
+            if (render_chunks_[i].key.face == rc.key.face && render_chunks_[i].key.i == rc.key.i && render_chunks_[i].key.j == rc.key.j && render_chunks_[i].key.k == rc.key.k) {
+                if (render_chunks_[i].vbuf) vkDestroyBuffer(device_, render_chunks_[i].vbuf, nullptr);
+                if (render_chunks_[i].vmem) vkFreeMemory(device_, render_chunks_[i].vmem, nullptr);
+                if (render_chunks_[i].ibuf) vkDestroyBuffer(device_, render_chunks_[i].ibuf, nullptr);
+                if (render_chunks_[i].imem) vkFreeMemory(device_, render_chunks_[i].imem, nullptr);
+                render_chunks_[i] = rc;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) render_chunks_.push_back(rc);
         if (++uploaded >= uploads_per_frame_limit_) break;
     }
+}
+
+void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span) {
+    for (size_t i = 0; i < render_chunks_.size();) {
+        const auto& rk = render_chunks_[i].key;
+        if (rk.face != face || std::llabs(rk.i - ci) > span || std::llabs(rk.j - cj) > span) {
+            if (render_chunks_[i].vbuf) vkDestroyBuffer(device_, render_chunks_[i].vbuf, nullptr);
+            if (render_chunks_[i].vmem) vkFreeMemory(device_, render_chunks_[i].vmem, nullptr);
+            if (render_chunks_[i].ibuf) vkDestroyBuffer(device_, render_chunks_[i].ibuf, nullptr);
+            if (render_chunks_[i].imem) vkFreeMemory(device_, render_chunks_[i].imem, nullptr);
+            render_chunks_.erase(render_chunks_.begin() + i);
+        } else {
+            ++i;
+        }
+    }
+}
+
+void VulkanApp::update_streaming() {
+    // Recenter the ring based on camera position, on the +X face only for now
+    PlanetConfig cfg;
+    const int N = Chunk64::N;
+    const double chunk_m = (double)N * cfg.voxel_size_m;
+    Float3 right, up, forward; face_basis(stream_face_, right, up, forward);
+    Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+    double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
+    double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
+    std::int64_t ci = (std::int64_t)std::floor(s / chunk_m);
+    std::int64_t cj = (std::int64_t)std::floor(t / chunk_m);
+    // If we've moved to a new tile center, and no loader is busy, kick off a new load
+    if (!loader_busy_ && (ci != ring_center_i_ || cj != ring_center_j_)) {
+        if (loader_thread_.joinable()) loader_thread_.join();
+        ring_center_i_ = ci; ring_center_j_ = cj;
+        loader_stop_ = false;
+        loader_busy_ = true;
+        loader_thread_ = std::thread(&VulkanApp::loader_thread_func, this, stream_face_, ring_radius_, ring_center_i_, ring_center_j_);
+    }
+    // Opportunistically prune far chunks each frame
+    prune_chunks_outside(stream_face_, ring_center_i_, ring_center_j_, ring_radius_ + 1);
 }
 }

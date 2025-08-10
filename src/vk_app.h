@@ -7,6 +7,7 @@
 #include "overlay.h"
 #include "chunk_renderer.h"
 #include "mesh.h"
+#include "planet.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -100,6 +101,7 @@ private:
         uint32_t index_count = 0;
         float center[3] = {0,0,0};
         float radius = 0.0f;
+        FaceChunkKey key{0,0,0,0};
     };
     std::vector<RenderChunk> render_chunks_;
 
@@ -178,6 +180,7 @@ private:
         std::vector<uint32_t> indices;
         float center[3] = {0,0,0};
         float radius = 0.0f;
+        FaceChunkKey key{0,0,0,0};
     };
     std::thread loader_thread_;
     std::mutex loader_mutex_;
@@ -188,8 +191,14 @@ private:
     int uploads_per_frame_limit_ = 8;
 
     void start_initial_ring_async();
-    void loader_thread_func(int face, int ring_radius);
+    void loader_thread_func(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j);
     void drain_mesh_results();
+    void update_streaming();
+    void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);
+
+    int stream_face_ = 0;
+    std::int64_t ring_center_i_ = 0;
+    std::int64_t ring_center_j_ = 0;
 };
 
 } // namespace wf

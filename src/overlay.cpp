@@ -7,6 +7,7 @@
 #include <array>
 #include <string>
 #include <cstdio>
+#include <cmath>
 #include <iostream>
 
 namespace wf {
@@ -190,13 +191,35 @@ void OverlayRenderer::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags u
 void OverlayRenderer::build_text(size_t frameSlot, const char* text, int W, int H) {
     struct OV { float x, y, r, g, b, a; };
     std::vector<OV> verts;
-    const int ch_w = 6, ch_h = 8; const float scale = 2.0f; int max_chars = 160;
-    int len = (int)std::min<size_t>(std::strlen(text), (size_t)max_chars);
-    float x0 = 6.0f, y0 = 6.0f;
+    const int ch_w = 6, ch_h = 8; const float scale = 2.0f;
+    const float x0 = 6.0f, y0 = 6.0f, xr = 6.0f; // left/top/right margins in pixels
+    const int max_chars_cap = 256; // hard cap to avoid runaway
+    int text_len = (int)std::min<size_t>(std::strlen(text), (size_t)max_chars_cap);
+    // Compute how many characters fit the current width and ellipsize if needed
+    int char_px = (int)std::ceil(ch_w * scale);
+    int max_fit = 0;
+    if (W > (x0 + xr) && char_px > 0) {
+        max_fit = (int)std::floor((W - x0 - xr) / (float)char_px);
+        if (max_fit < 0) max_fit = 0;
+    }
+    std::string line;
+    if (text_len <= max_fit) {
+        line.assign(text, text_len);
+    } else {
+        // Reserve room for "..." if possible
+        int keep = std::max(0, max_fit - 3);
+        if (keep > 0) {
+            line.assign(text, keep);
+            line += "...";
+        } else {
+            line.clear();
+        }
+    }
+    int len = (int)line.size();
     auto to_ndc = [&](float px, float py){ float xn = (px / (float)W) * 2.0f - 1.0f; float yn = (py / (float)H) * 2.0f - 1.0f; return std::array<float,2>{{xn, yn}}; };
     auto quad = [&](float x, float y, float w, float h, float r, float g, float b, float a){ auto p0 = to_ndc(x, y); auto p1 = to_ndc(x + w, y); auto p2 = to_ndc(x + w, y + h); auto p3 = to_ndc(x, y + h); verts.push_back(OV{p0[0], p0[1], r,g,b,a}); verts.push_back(OV{p1[0], p1[1], r,g,b,a}); verts.push_back(OV{p2[0], p2[1], r,g,b,a}); verts.push_back(OV{p0[0], p0[1], r,g,b,a}); verts.push_back(OV{p2[0], p2[1], r,g,b,a}); verts.push_back(OV{p3[0], p3[1], r,g,b,a}); };
     for (int ci = 0; ci < len; ++ci) {
-        unsigned char ch = (unsigned char)text[ci]; if (ch < 32 || ch > 127) ch = 32; const uint8_t* rows = WF_FONT6x8[ch - 32];
+        unsigned char ch = (unsigned char)line[ci]; if (ch < 32 || ch > 127) ch = 32; const uint8_t* rows = WF_FONT6x8[ch - 32];
         for (int ry = 0; ry < ch_h; ++ry) { uint8_t bits = rows[ry]; for (int rx = 0; rx < ch_w; ++rx) if (bits & (1u << rx)) { float px = x0 + (ci * ch_w + rx) * scale; float py = y0 + ry * scale; quad(px, py, scale, scale, 1,1,1,1); } }
     }
     VkDeviceSize bytes = (VkDeviceSize)(verts.size() * sizeof(OV));
