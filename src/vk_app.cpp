@@ -407,9 +407,20 @@ void VulkanApp::create_swapchain() {
     VkSurfaceFormatKHR chosenFmt = fmts[0];
     for (auto f : fmts) if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { chosenFmt = f; break; }
     VkPresentModeKHR chosenPm = VK_PRESENT_MODE_FIFO_KHR; // guaranteed
-    for (auto m : pms) if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) { chosenPm = m; break; }
-    if (chosenPm == VK_PRESENT_MODE_FIFO_KHR) {
-        for (auto m : pms) if (m == VK_PRESENT_MODE_MAILBOX_KHR) { chosenPm = m; break; }
+    std::string pmOverride;
+    if (const char* s = std::getenv("WF_PRESENT_MODE")) pmOverride = s;
+    auto choose_pm = [&](VkPresentModeKHR want){ for (auto m: pms) if (m==want) { chosenPm = want; return true; } return false; };
+    if (!pmOverride.empty()) {
+        std::string v; v.resize(pmOverride.size());
+        std::transform(pmOverride.begin(), pmOverride.end(), v.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+        if      (v=="immediate") choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR);
+        else if (v=="mailbox")  choose_pm(VK_PRESENT_MODE_MAILBOX_KHR);
+        else if (v=="fifo_relaxed") choose_pm(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+        else choose_pm(VK_PRESENT_MODE_FIFO_KHR);
+    } else {
+        if (!choose_pm(VK_PRESENT_MODE_IMMEDIATE_KHR))
+            if (!choose_pm(VK_PRESENT_MODE_MAILBOX_KHR))
+                choose_pm(VK_PRESENT_MODE_FIFO_KHR);
     }
 
     VkExtent2D extent = caps.currentExtent;
@@ -711,7 +722,7 @@ void VulkanApp::update_hud(float dt) {
                   "Wanderforge | FPS: %.1f | Pos: (%.1f, %.1f, %.1f) | Yaw/Pitch: (%.1f, %.1f) | InvX:%d InvY:%d | Speed: %.1f",
                   fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
-    glfwSetWindowTitle(window_, title);
+    if (titlebar_enabled_) glfwSetWindowTitle(window_, title);
 
     char hud[256];
     std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
@@ -753,6 +764,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_ENABLE_COMPUTE_NOOP")) compute_enabled_ = parse_bool(s, compute_enabled_);
     if (const char* s = std::getenv("WF_DISABLE_OVERLAY")) overlay_enabled_ = !parse_bool(s, false);
+    if (const char* s = std::getenv("WF_DISABLE_TITLEBAR")) titlebar_enabled_ = !parse_bool(s, false);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -770,6 +782,7 @@ void VulkanApp::load_config() {
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
         else if (key == "enable_compute_noop") compute_enabled_ = parse_bool(val, compute_enabled_);
         else if (key == "overlay") overlay_enabled_ = parse_bool(val, overlay_enabled_);
+        else if (key == "titlebar") titlebar_enabled_ = parse_bool(val, titlebar_enabled_);
     }
 }
 
