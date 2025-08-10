@@ -552,17 +552,19 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                               updir.x*r0.y - updir.y*r0.x });
             float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
             Float3 fwd_h{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-            // Apply local pitch around horizon: rotate towards updir by walk_pitch_
+            // Rotate around right axis by walk_pitch_: f' = f_h*cos(p) + up*cos? Actually rotation gives:
+            // forward' = f_h*cos(p) + updir*sin(p), up' = updir*cos(p) - f_h*sin(p)
             float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
             Float3 fwd{ fwd_h.x*cp + updir.x*sp, fwd_h.y*cp + updir.y*sp, fwd_h.z*cp + updir.z*sp };
-            Float3 rightv{ updir.y*fwd.z - updir.z*fwd.y, updir.z*fwd.x - updir.x*fwd.z, updir.x*fwd.y - updir.y*fwd.x };
+            Float3 up_rot{ updir.x*cp - fwd_h.x*sp, updir.y*cp - fwd_h.y*sp, updir.z*cp - fwd_h.z*sp };
+            Float3 rightv{ fwd.y*up_rot.z - fwd.z*up_rot.y, fwd.z*up_rot.x - fwd.x*up_rot.z, fwd.x*up_rot.y - fwd.y*up_rot.x };
             // Row-major view matrix from basis
             V = wf::Mat4{
-                rightv.x, updir.x, -fwd.x, 0.0f,
-                rightv.y, updir.y, -fwd.y, 0.0f,
-                rightv.z, updir.z, -fwd.z, 0.0f,
+                rightv.x, up_rot.x, -fwd.x, 0.0f,
+                rightv.y, up_rot.y, -fwd.y, 0.0f,
+                rightv.z, up_rot.z, -fwd.z, 0.0f,
                 -(rightv.x*eye[0] + rightv.y*eye[1] + rightv.z*eye[2]),
-                -(updir.x*eye[0] + updir.y*eye[1] + updir.z*eye[2]),
+                -(up_rot.x*eye[0] + up_rot.y*eye[1] + up_rot.z*eye[2]),
                  ( fwd.x*eye[0] +  fwd.y*eye[1] +  fwd.z*eye[2]),
                  1.0f
             };
@@ -599,9 +601,10 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 Float3 fwh{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
                 float cp2 = std::cos(walk_pitch_), sp2 = std::sin(walk_pitch_);
                 Float3 fw{ fwh.x*cp2 + updir.x*sp2, fwh.y*cp2 + updir.y*sp2, fwh.z*cp2 + updir.z*sp2 };
-                Float3 rv{ updir.y*fw.z - updir.z*fw.y, updir.z*fw.x - updir.x*fw.z, updir.x*fw.y - updir.y*fw.x };
+                Float3 up2{ updir.x*cp2 - fwh.x*sp2, updir.y*cp2 - fwh.y*sp2, updir.z*cp2 - fwh.z*sp2 };
+                Float3 rv{ fw.y*up2.z - fw.z*up2.y, fw.z*up2.x - fw.x*up2.z, fw.x*up2.y - fw.y*up2.x };
                 fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
-                upv[0]=updir.x; upv[1]=updir.y; upv[2]=updir.z;
+                upv[0]=up2.x; upv[1]=up2.y; upv[2]=up2.z;
                 rightv[0]=rv.x; rightv[1]=rv.y; rightv[2]=rv.z;
             }
             float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
@@ -772,7 +775,7 @@ void VulkanApp::update_input(float dt) {
         double h = terrain_height_m(cfg, ndir);
         double ground_r = cfg.radius_m + h;
         if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m; // keep above water surface
-        double target_r = ground_r + (double)eye_height_m_;
+        double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
         Float3 final = ndir * (float)target_r;
         cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
     }
@@ -913,6 +916,7 @@ void VulkanApp::load_config() {
         else if (key == "eye_height") { try { eye_height_m_ = std::stof(val); } catch(...){} }
         else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
         else if (key == "walk_pitch_max_deg") { try { walk_pitch_max_deg_ = std::stof(val); } catch(...){} }
+        else if (key == "walk_surface_bias_m") { try { walk_surface_bias_m_ = std::stof(val); } catch(...){} }
         else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
         else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
         else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }

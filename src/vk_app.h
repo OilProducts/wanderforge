@@ -159,6 +159,7 @@ private:
     float walk_heading_ = 0.0f; // radians, rotation around local up when in walk mode
     float walk_pitch_ = 0.0f;   // radians, local pitch relative to horizon (positive up)
     float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
+    float walk_surface_bias_m_ = 0.25f; // extra offset above computed surface to avoid clipping
 
     // HUD / stats
     double hud_accum_ = 0.0;
