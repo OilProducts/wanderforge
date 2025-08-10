@@ -123,6 +123,7 @@ void VulkanApp::run() {
         float dt = (float)std::max(0.0, now - last_time_);
         last_time_ = now;
         update_input(dt);
+        update_hud(dt);
         draw_frame();
     }
 }
@@ -632,6 +633,26 @@ void VulkanApp::update_input(float dt) {
     int ky = glfwGetKey(window_, GLFW_KEY_Y);
     if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; }
     key_prev_toggle_y_ = (ky == GLFW_PRESS);
+}
+
+void VulkanApp::update_hud(float dt) {
+    // Smooth FPS
+    if (dt > 0.0001f && dt < 1.0f) {
+        float fps = 1.0f / dt;
+        if (fps_smooth_ <= 0.0f) fps_smooth_ = fps; else fps_smooth_ = fps_smooth_ * 0.9f + fps * 0.1f;
+    }
+    hud_accum_ += dt;
+    if (hud_accum_ < 0.25) return;
+    hud_accum_ = 0.0;
+
+    char buf[256];
+    float yaw_deg = cam_yaw_ * 57.2957795f;
+    float pitch_deg = cam_pitch_ * 57.2957795f;
+    std::snprintf(buf, sizeof(buf),
+                  "Wanderforge | FPS: %.1f | Pos: (%.1f, %.1f, %.1f) | Yaw/Pitch: (%.1f, %.1f) | InvX:%d InvY:%d | Speed: %.1f",
+                  fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                  invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
+    glfwSetWindowTitle(window_, buf);
 }
 
 static inline std::string trim(const std::string& s) {

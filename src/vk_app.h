@@ -36,6 +36,7 @@ private:
     void record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex);
     void draw_frame();
     void update_input(float dt);
+    void update_hud(float dt);
     void load_config();
 
     void cleanup_swapchain();
@@ -131,6 +132,10 @@ private:
     bool invert_mouse_y_ = false;
     bool key_prev_toggle_x_ = false;
     bool key_prev_toggle_y_ = false;
+
+    // HUD / stats
+    double hud_accum_ = 0.0;
+    float fps_smooth_ = 0.0f;
 };
 
 } // namespace wf

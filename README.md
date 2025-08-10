@@ -59,6 +59,7 @@ Controls (chunk view):
 - Q/E: move down/up
 - Right mouse drag: look around (yaw/pitch)
 - Shift: hold to move faster
+ - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed.
 
 Config options:
 - File `wanderforge.cfg` (same directory) or env vars:
