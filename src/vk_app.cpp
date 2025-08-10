@@ -68,7 +68,11 @@ static bool has_device_extension(VkPhysicalDevice dev, const char* name) {
 }
 
 VulkanApp::VulkanApp() {
-    enable_validation_ = true; // toggled by build type in future
+#ifdef WF_DEBUG
+    enable_validation_ = true;
+#else
+    enable_validation_ = false;
+#endif
 }
 
 VulkanApp::~VulkanApp() {
