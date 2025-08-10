@@ -191,7 +191,7 @@ void VulkanApp::init_vulkan() {
     {
         PlanetConfig cfg;
         const int face = 0; // +X face
-        const int tile_span = 1; // loads (2*tile_span+1)^2 chunks centered at (0,0)
+        const int tile_span = ring_radius_; // loads (2*tile_span+1)^2 chunks centered at (0,0)
         const int N = Chunk64::N;
         const float s = (float)cfg.voxel_size_m;
         const double chunk_m = (double)N * cfg.voxel_size_m;
@@ -579,37 +579,51 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         auto V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
         auto MVP = wf::mul_row_major(V, P);
 
-        // Frustum culling (simple sphere vs frustum)
-        // Build camera basis
-        float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-        float fwd[3] = { cp*cyaw, sp, cp*syaw };
-        float upv[3]  = { 0.0f, 1.0f, 0.0f };
-        float rightv[3] = { fwd[1]*upv[2]-fwd[2]*upv[1], fwd[2]*upv[0]-fwd[0]*upv[2], fwd[0]*upv[1]-fwd[1]*upv[0] };
-        float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
-        if (rl > 0) { rightv[0]/=rl; rightv[1]/=rl; rightv[2]/=rl; }
-        // FOVs
-        float fovy = 60.0f * 0.01745329252f;
-        float tan_y = std::tan(fovy * 0.5f);
-        float tan_x = tan_y * aspect;
-
-        // Reuse preallocated container
+        // Prepare preallocated container and compute draw stats
         chunk_items_tmp_.clear();
         chunk_items_tmp_.reserve(render_chunks_.size());
-        for (const auto& rc : render_chunks_) {
-            float dx = rc.center[0] - eye[0];
-            float dy = rc.center[1] - eye[1];
-            float dz = rc.center[2] - eye[2];
-            float dist_f = dx*fwd[0] + dy*fwd[1] + dz*fwd[2];
-            float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
-            float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
-            // near/far
-            if (dist_f + rc.radius < 0.1f) continue;
-            if (dist_f - rc.radius > 1000.0f) continue;
-            // side planes
-            if (std::fabs(dist_r) > dist_f * tan_x + rc.radius) continue;
-            if (std::fabs(dist_u) > dist_f * tan_y + rc.radius) continue;
-            chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+        last_draw_total_ = (int)render_chunks_.size();
+        last_draw_visible_ = 0;
+        last_draw_indices_ = 0;
+
+        if (cull_enabled_) {
+            // Frustum culling (simple sphere vs frustum)
+            // Build camera basis
+            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+            float fwd[3] = { cp*cyaw, sp, cp*syaw };
+            float upv[3]  = { 0.0f, 1.0f, 0.0f };
+            float rightv[3] = { fwd[1]*upv[2]-fwd[2]*upv[1], fwd[2]*upv[0]-fwd[0]*upv[2], fwd[0]*upv[1]-fwd[1]*upv[0] };
+            float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
+            if (rl > 0) { rightv[0]/=rl; rightv[1]/=rl; rightv[2]/=rl; }
+            // FOVs
+            float fovy = 60.0f * 0.01745329252f;
+            float tan_y = std::tan(fovy * 0.5f);
+            float tan_x = tan_y * aspect;
+
+            for (const auto& rc : render_chunks_) {
+                float dx = rc.center[0] - eye[0];
+                float dy = rc.center[1] - eye[1];
+                float dz = rc.center[2] - eye[2];
+                float dist_f = dx*fwd[0] + dy*fwd[1] + dz*fwd[2];
+                float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
+                float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
+                // near/far
+                if (dist_f + rc.radius < 0.1f) continue;
+                if (dist_f - rc.radius > 1000.0f) continue;
+                // side planes
+                if (std::fabs(dist_r) > dist_f * tan_x + rc.radius) continue;
+                if (std::fabs(dist_u) > dist_f * tan_y + rc.radius) continue;
+                chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+                last_draw_visible_++;
+                last_draw_indices_ += rc.index_count;
+            }
+        } else {
+            for (const auto& rc : render_chunks_) {
+                chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+                last_draw_visible_++;
+                last_draw_indices_ += rc.index_count;
+            }
         }
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
@@ -697,10 +711,19 @@ void VulkanApp::update_hud(float dt) {
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
     glfwSetWindowTitle(window_, title);
 
-    char hud[256];
-    std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
-                  fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
-                  invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
+    char hud[512];
+    if (draw_stats_enabled_) {
+        float tris_m = (float)last_draw_indices_ / 3.0f / 1.0e6f;
+        std::snprintf(hud, sizeof(hud),
+                      "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f  Draw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d",
+                      fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                      invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
+                      last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_);
+    } else {
+        std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
+                      fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                      invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
+    }
 
     // Only update overlay text if it actually changed
     if (hud_text_ != hud) {
@@ -736,6 +759,9 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_USE_CHUNK_RENDERER")) use_chunk_renderer_ = parse_bool(s, use_chunk_renderer_);
+    if (const char* s = std::getenv("WF_RING_RADIUS")) { try { ring_radius_ = std::max(0, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_CULL")) cull_enabled_ = parse_bool(s, cull_enabled_);
+    if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -752,6 +778,9 @@ void VulkanApp::load_config() {
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
         else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
+        else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
+        else if (key == "cull") cull_enabled_ = parse_bool(val, cull_enabled_);
+        else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
     }
 }
 

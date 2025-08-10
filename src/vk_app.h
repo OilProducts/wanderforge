@@ -157,6 +157,15 @@ private:
     std::string overlay_last_text_;
     bool hud_force_refresh_ = true;
     std::array<bool, kFramesInFlight> overlay_text_valid_{{false, false}};
+
+    // Rendering controls
+    int ring_radius_ = 1;         // loads (2*ring_radius_+1)^2 chunks
+    bool cull_enabled_ = true;    // CPU frustum culling toggle
+    bool draw_stats_enabled_ = true; // show draw stats in HUD
+    // Per-frame draw stats captured last frame
+    int last_draw_total_ = 0;
+    int last_draw_visible_ = 0;
+    uint64_t last_draw_indices_ = 0;
 };
 
 } // namespace wf
