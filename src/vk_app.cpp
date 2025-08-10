@@ -96,12 +96,12 @@ VulkanApp::~VulkanApp() {
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
 
-    #ifdef WF_HAVE_VMA
+#ifdef WF_HAVE_VMA
     if (vma_allocator_) {
         vmaDestroyAllocator(vma_allocator_);
         vma_allocator_ = nullptr;
     }
-    #endif
+#endif
 
     for (auto f : fences_in_flight_) vkDestroyFence(device_, f, nullptr);
     for (auto s : sem_render_finished_) vkDestroySemaphore(device_, s, nullptr);
@@ -926,7 +926,7 @@ void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           buf, mem);
     if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
-}
+
 
 } // namespace wf
 void VulkanApp::start_initial_ring_async() {
@@ -1034,4 +1034,5 @@ void VulkanApp::drain_mesh_results() {
         render_chunks_.push_back(rc);
         if (++uploaded >= uploads_per_frame_limit_) break;
     }
+}
 }
