@@ -744,7 +744,7 @@ void VulkanApp::update_input(float dt) {
             PlanetConfig cfg;
             double h = terrain_height_m(cfg, updir);
             double ground_r = cfg.radius_m + h; if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m;
-            double target_r = ground_r + (double)eye_height_m_;
+            double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
             Float3 final = updir * (float)target_r;
             cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
         }
