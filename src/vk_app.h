@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <deque>
+#include <tuple>
 
 struct GLFWwindow;
 
@@ -203,25 +204,46 @@ private:
     bool loader_quit_ = false;
     bool loader_busy_ = false;
     std::deque<MeshResult> results_queue_;
-    int uploads_per_frame_limit_ = 8;
+    int uploads_per_frame_limit_ = 1024;
+    int loader_threads_ = 0; // 0 = auto
+    std::atomic<double> loader_last_gen_ms_{0.0};
+    std::atomic<int> loader_last_chunks_{0};
 
     // Persistent loader: request queue and helpers
-    struct LoadRequest { int face; int ring_radius; std::int64_t ci; std::int64_t cj; float fwd_s; float fwd_t; uint64_t gen; };
+    struct LoadRequest { int face; int ring_radius; std::int64_t ci; std::int64_t cj; std::int64_t ck; int k_down; int k_up; float fwd_s; float fwd_t; uint64_t gen; };
     std::deque<LoadRequest> request_queue_;
     std::atomic<uint64_t> request_gen_{0};
 
     void start_initial_ring_async();
     void start_loader_thread();
-    void enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t);
+    void enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t);
     void loader_thread_main();
-    void build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t, uint64_t job_gen);
+    void build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t, uint64_t job_gen);
     void drain_mesh_results();
     void update_streaming();
     void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);
+    // Multi-face/k pruning: keep any chunk that falls within any of the allowed rings and k-range
+    struct AllowRegion { int face; std::int64_t ci; std::int64_t cj; std::int64_t ck; int span; int k_down; int k_up; };
+    void prune_chunks_multi(const std::vector<AllowRegion>& allows);
 
+    // Streaming state: current face and ring center
     int stream_face_ = 0;
     std::int64_t ring_center_i_ = 0;
     std::int64_t ring_center_j_ = 0;
+    std::int64_t ring_center_k_ = 0;
+
+    // Multi-face transition support: keep previous face briefly while new face loads
+    int prev_face_ = -1;
+    std::int64_t prev_center_i_ = 0;
+    std::int64_t prev_center_j_ = 0;
+    std::int64_t prev_center_k_ = 0;
+    float face_keep_timer_s_ = 0.0f;    // countdown while preserving previous face
+    float face_keep_time_cfg_s_ = 0.75f; // configurable hold time
+
+    // Radial depth control (number of shells).
+    int k_down_ = 3; // shells below center (toward planet center)
+    int k_up_ = 1;   // shells above center (toward space)
+    int k_prune_margin_ = 1; // hysteresis for k pruning
 };
 
 } // namespace wf

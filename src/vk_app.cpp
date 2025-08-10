@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <chrono>
 
 #include "chunk.h"
 #include "mesh.h"
@@ -210,8 +211,6 @@ void VulkanApp::init_vulkan() {
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
     std::cout << "Queues: graphics=" << queue_family_graphics_ << ", present=" << queue_family_present_ << "\n";
 
-    // Start persistent loader and enqueue initial ring
-    start_initial_ring_async();
     // Place camera slightly outside the loaded shell, looking inward (matches previous behavior)
     {
         PlanetConfig cfg;
@@ -225,6 +224,8 @@ void VulkanApp::init_vulkan() {
         cam_yaw_ = 3.14159265f;   // look toward -forward (inward)
         cam_pitch_ = -0.05f;
     }
+    // Start persistent loader and enqueue initial ring based on current camera
+    start_initial_ring_async();
 }
 void VulkanApp::create_instance() {
     // Query GLFW extensions
@@ -681,12 +682,21 @@ void VulkanApp::update_hud(float dt) {
         float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         float i_used_mb = (float)i_used / (1024.0f*1024.0f);
         float i_cap_mb  = (float)(i_cap ? i_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
+        size_t qdepth = 0; {
+            std::lock_guard<std::mutex> lk(loader_mutex_);
+            qdepth = results_queue_.size();
+        }
+        double gen_ms = loader_last_gen_ms_.load();
+        int gen_chunks = loader_last_chunks_.load();
+        double ms_per = (gen_chunks > 0) ? (gen_ms / (double)gen_chunks) : 0.0;
         std::snprintf(hud, sizeof(hud),
-                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
-                      fps_smooth_,
-                      cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
-                      invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
-                      last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
+                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
+                       fps_smooth_,
+                       cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                       invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
+                       last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
+                      stream_face_, (long long)ring_center_i_, (long long)ring_center_j_, (long long)ring_center_k_, k_down_, k_up_, (double)face_keep_timer_s_,
+                      qdepth, gen_ms, gen_chunks, ms_per,
                       v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
@@ -737,6 +747,12 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
     if (const char* s = std::getenv("WF_POOL_VTX_MB")) { try { pool_vtx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_POOL_IDX_MB")) { try { pool_idx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_UPLOADS_PER_FRAME")) { try { uploads_per_frame_limit_ = std::max(1, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_LOADER_THREADS")) { try { loader_threads_ = std::max(0, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_K_DOWN")) { try { k_down_ = std::max(0, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_K_UP")) { try { k_up_ = std::max(0, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_K_PRUNE_MARGIN")) { try { k_prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_FACE_KEEP_SEC")) { try { face_keep_time_cfg_s_ = std::max(0.0f, std::stof(s)); } catch(...){} }
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -761,6 +777,12 @@ void VulkanApp::load_config() {
         else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
         else if (key == "pool_vtx_mb") { try { pool_vtx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
         else if (key == "pool_idx_mb") { try { pool_idx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
+        else if (key == "uploads_per_frame") { try { uploads_per_frame_limit_ = std::max(1, std::stoi(val)); } catch(...){} }
+        else if (key == "loader_threads") { try { loader_threads_ = std::max(0, std::stoi(val)); } catch(...){} }
+        else if (key == "k_down") { try { k_down_ = std::max(0, std::stoi(val)); } catch(...){} }
+        else if (key == "k_up") { try { k_up_ = std::max(0, std::stoi(val)); } catch(...){} }
+        else if (key == "k_prune_margin") { try { k_prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
+        else if (key == "face_keep_sec") { try { face_keep_time_cfg_s_ = std::max(0.0f, std::stof(val)); } catch(...){} }
     }
 }
 
@@ -1002,9 +1024,10 @@ void VulkanApp::loader_thread_main() {
         }
         if (log_stream_) {
             std::cout << "[stream] process request: face=" << req.face << " ring=" << req.ring_radius
-                      << " ci=" << req.ci << " cj=" << req.cj << "\n";
+                      << " ci=" << req.ci << " cj=" << req.cj << " ck=" << req.ck
+                      << " k_down=" << req.k_down << " k_up=" << req.k_up << "\n";
         }
-        build_ring_job(req.face, req.ring_radius, req.ci, req.cj, req.fwd_s, req.fwd_t, req.gen);
+        build_ring_job(req.face, req.ring_radius, req.ci, req.cj, req.ck, req.k_down, req.k_up, req.fwd_s, req.fwd_t, req.gen);
         {
             std::lock_guard<std::mutex> lk(loader_mutex_);
             loader_busy_ = false;
@@ -1026,12 +1049,12 @@ void VulkanApp::start_loader_thread() {
     }
 }
 
-void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t) {
+void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t) {
     uint64_t gen = ++request_gen_;
     {
         std::lock_guard<std::mutex> lk(loader_mutex_);
         // Collapse to the latest request
-        LoadRequest req{face, ring_radius, center_i, center_j, fwd_s, fwd_t, gen};
+        LoadRequest req{face, ring_radius, center_i, center_j, center_k, k_down, k_up, fwd_s, fwd_t, gen};
         request_queue_.clear();
         request_queue_.push_back(req);
     }
@@ -1039,30 +1062,49 @@ void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t cen
 }
 
 void VulkanApp::start_initial_ring_async() {
-    // Initialize persistent worker and enqueue initial ring on face +X
+    // Initialize persistent worker and enqueue initial ring around current camera on the appropriate face
     start_loader_thread();
-    int face = 0;
+    PlanetConfig cfg;
+    const int N = Chunk64::N;
+    const double chunk_m = (double)N * cfg.voxel_size_m;
+    // Determine face from camera position
+    Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+    Float3 dir = normalize(eye);
+    int face = face_from_direction(dir);
+    Float3 right, up, forward; face_basis(face, right, up, forward);
+    double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
+    double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
+    ring_center_i_ = (std::int64_t)std::floor(s / chunk_m);
+    ring_center_j_ = (std::int64_t)std::floor(t / chunk_m);
+    ring_center_k_ = (std::int64_t)std::floor((double)length(eye) / chunk_m);
     stream_face_ = face;
-    ring_center_i_ = 0; ring_center_j_ = 0;
-    enqueue_ring_request(face, ring_radius_, ring_center_i_, ring_center_j_, 0.0f, 0.0f);
+    // Project camera forward to face s/t for prioritization
+    float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+    float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+    float fwd[3] = { cp*cyaw, sp, cp*syaw };
+    float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
+    float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
+    enqueue_ring_request(face, ring_radius_, ring_center_i_, ring_center_j_, ring_center_k_, k_down_, k_up_, fwd_s, fwd_t);
     if (log_stream_) {
         std::cout << "[stream] initial request: face=" << face << " ring=" << ring_radius_
-                  << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << "\n";
+                  << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << " ck=" << ring_center_k_
+                  << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << " k_down=" << k_down_ << " k_up=" << k_up_ << "\n";
     }
 }
 
-void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t, uint64_t job_gen) {
+void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t, uint64_t job_gen) {
     PlanetConfig cfg;
     const int N = Chunk64::N;
     const float s = (float)cfg.voxel_size_m;
     const double chunk_m = (double)N * cfg.voxel_size_m;
-    const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
+    const std::int64_t k0 = center_k; // center radial shell from request
     Float3 right, up, forward; face_basis(face, right, up, forward);
 
     const int tile_span = ring_radius;
     const int W = 2*tile_span + 1;
-    auto idx_of = [&](int di, int dj){ int ix = di + tile_span; int jy = dj + tile_span; return jy * W + ix; };
-    std::vector<Chunk64> chunks(W * W);
+    const int KD = k_down + k_up + 1;
+    auto idx_of = [&](int di, int dj, int dk){ int ix = di + tile_span; int jy = dj + tile_span; int kz = dk + k_down; return (kz * W + jy) * W + ix; };
+    std::vector<Chunk64> chunks(W * W * KD);
 
     // Build prioritized list of tile offsets: prefer ahead of camera (by fwd_s/fwd_t), then nearer distance
     struct Off { int di, dj; int dist2; float dot; };
@@ -1085,45 +1127,79 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
         return a.di < b.di;
     });
 
-    // First pass: load or generate all chunks (prioritized order)
-    for (const auto& off : order) {
-        if (loader_quit_ || request_gen_.load() != job_gen) break;
-        int di = off.di, dj = off.dj;
-        FaceChunkKey key{face, center_i + di, center_j + dj, k0};
-        Chunk64& c = chunks[idx_of(di, dj)];
-        if (!RegionIO::load_chunk(key, c)) {
-                for (int z = 0; z < N; ++z) {
-                    for (int y = 0; y < N; ++y) {
-                        for (int x = 0; x < N; ++x) {
-                            double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
-                            double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
-                            double r0 = (double)k0 * chunk_m + (z + 0.5) * cfg.voxel_size_m;
-                            Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
-                            Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
-                            auto sb = sample_base(cfg, v);
-                            c.set_voxel(x, y, z, sb.material);
-                        }
-                    }
-                }
-                RegionIO::save_chunk(key, c);
+    // Two-phase approach: parallel generation first, then neighbor-aware meshing pass.
+    struct Task { int di, dj, dk; };
+    std::vector<Task> tasks;
+    tasks.reserve(W * W * KD);
+    for (int dj = -tile_span; dj <= tile_span; ++dj) {
+        for (int di = -tile_span; di <= tile_span; ++di) {
+            for (int dk = -k_down; dk <= k_up; ++dk) tasks.push_back(Task{di, dj, dk});
         }
     }
+    // Parallel generation
+    auto t0 = std::chrono::steady_clock::now();
+    std::atomic<size_t> ti{0};
+    int nthreads = loader_threads_ > 0 ? loader_threads_ : (int)std::max(1u, std::thread::hardware_concurrency());
+    std::vector<std::thread> workers;
+    workers.reserve(nthreads);
+    for (int w = 0; w < nthreads; ++w) {
+        workers.emplace_back([&, job_gen](){
+            for (;;) {
+                if (loader_quit_) return;
+                if (request_gen_.load() != job_gen) return;
+                size_t idx = ti.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= tasks.size()) break;
+                const Task t = tasks[idx];
+                int di = t.di, dj = t.dj, dk = t.dk;
+                std::int64_t kk = k0 + dk;
+                FaceChunkKey key{face, center_i + di, center_j + dj, kk};
+                Chunk64& c = chunks[idx_of(di, dj, dk)];
+                if (!RegionIO::load_chunk(key, c)) {
+                    for (int z = 0; z < N; ++z) {
+                        for (int y = 0; y < N; ++y) {
+                            for (int x = 0; x < N; ++x) {
+                                double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
+                                double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
+                                double r0 = (double)kk * chunk_m + (z + 0.5) * cfg.voxel_size_m;
+                                Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
+                                Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
+                                auto sb = sample_base(cfg, v);
+                                c.set_voxel(x, y, z, sb.material);
+                            }
+                        }
+                    }
+                    RegionIO::save_chunk(key, c);
+                }
+            }
+        });
+    }
+    for (auto& th : workers) th.join();
+    auto t1 = std::chrono::steady_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    loader_last_gen_ms_.store(ms);
+    loader_last_chunks_.store((int)tasks.size());
+    if (loader_quit_ || request_gen_.load() != job_gen) return;
 
-    // Second pass: mesh each with neighbor awareness and enqueue results (same prioritized order)
+    // Meshing pass: prioritized s/t order, iterate k for each tile
     for (const auto& off : order) {
         if (loader_quit_ || request_gen_.load() != job_gen) break;
         int di = off.di, dj = off.dj;
-        const Chunk64& c = chunks[idx_of(di, dj)];
-        const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj)] : nullptr;
-        const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj)] : nullptr;
-        const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
-            const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
+        for (int dk = -k_down; dk <= k_up; ++dk) {
+            if (loader_quit_ || request_gen_.load() != job_gen) break;
+            std::int64_t kk = k0 + dk;
+            const Chunk64& c = chunks[idx_of(di, dj, dk)];
+            const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj, dk)] : nullptr;
+            const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj, dk)] : nullptr;
+            const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1, dk)] : nullptr;
+            const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1, dk)] : nullptr;
+            const Chunk64* nz = (dk > -k_down)    ? &chunks[idx_of(di, dj, dk - 1)] : nullptr;
+            const Chunk64* pz = (dk <  k_up)      ? &chunks[idx_of(di, dj, dk + 1)] : nullptr;
             Mesh m;
-            mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
+            mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nz, pz, m, s);
             if (m.indices.empty()) continue;
             float S0 = (float)((center_i + di) * chunk_m);
             float T0 = (float)((center_j + dj) * chunk_m);
-            float R0 = (float)(k0 * chunk_m);
+            float R0 = (float)(kk * chunk_m);
             for (auto& vert : m.vertices) {
                 Float3 lp{vert.x, vert.y, vert.z};
                 Float3 wp = right * (S0 + lp.x) + up * (T0 + lp.y) + forward * (R0 + lp.z);
@@ -1140,13 +1216,13 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             Float3 center_local{half, half, half};
             Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
-            res.key = FaceChunkKey{face, center_i + di, center_j + dj, k0};
-
+            res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
             {
                 std::lock_guard<std::mutex> lk(loader_mutex_);
                 results_queue_.push_back(std::move(res));
             }
             loader_cv_.notify_one();
+        }
     }
 }
 
@@ -1229,34 +1305,106 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
     }
 }
 
+void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
+    auto inside_any = [&](const FaceChunkKey& k) -> bool {
+        for (const auto& a : allows) {
+            if (k.face != a.face) continue;
+            if (std::llabs(k.i - a.ci) > a.span) continue;
+            if (std::llabs(k.j - a.cj) > a.span) continue;
+            std::int64_t kmin = a.ck - a.k_down;
+            std::int64_t kmax = a.ck + a.k_up;
+            if (k.k < kmin || k.k > kmax) continue;
+            return true;
+        }
+        return false;
+    };
+    for (size_t i = 0; i < render_chunks_.size();) {
+        const auto& rc = render_chunks_[i];
+        if (!inside_any(rc.key)) {
+            if (log_stream_) {
+                std::cout << "[stream] prune: face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                          << " first_index=" << rc.first_index
+                          << " base_vertex=" << rc.base_vertex
+                          << " idx_count=" << rc.index_count
+                          << " vtx_count=" << rc.vertex_count << "\n";
+            }
+            schedule_delete_chunk(rc);
+            render_chunks_.erase(render_chunks_.begin() + i);
+        } else {
+            ++i;
+        }
+    }
+}
+
 void VulkanApp::update_streaming() {
-    // Recenter the ring based on camera position, on the +X face only for now
+    // Recenter the ring based on camera position; dynamically choose face by camera direction
     PlanetConfig cfg;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
-    Float3 right, up, forward; face_basis(stream_face_, right, up, forward);
     Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+    Float3 dir = normalize(eye);
+    int cur_face = face_from_direction(dir);
+    Float3 right, up, forward; face_basis(cur_face, right, up, forward);
     double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
     double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
     std::int64_t ci = (std::int64_t)std::floor(s / chunk_m);
     std::int64_t cj = (std::int64_t)std::floor(t / chunk_m);
-    // If we've moved to a new tile center, enqueue a prioritized request for the loader
-    if (ci != ring_center_i_ || cj != ring_center_j_) {
-        ring_center_i_ = ci; ring_center_j_ = cj;
-        // Compute camera forward projected onto face-local s/t plane to bias loading order
+    std::int64_t ck = (std::int64_t)std::floor((double)length(eye) / chunk_m);
+
+    bool face_changed = (cur_face != stream_face_);
+    if (face_changed) {
+        // Start holding previous face for a brief time to avoid popping while new face loads
+        prev_face_ = stream_face_;
+        prev_center_i_ = ring_center_i_;
+        prev_center_j_ = ring_center_j_;
+        prev_center_k_ = ring_center_k_;
+        face_keep_timer_s_ = face_keep_time_cfg_s_;
+        stream_face_ = cur_face;
+        ring_center_i_ = ci;
+        ring_center_j_ = cj;
+        ring_center_k_ = ck;
+        // Bias loading order by camera forward projected onto new face basis
         float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
         float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
         float fwd[3] = { cp*cyaw, sp, cp*syaw };
         float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
         float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
-        start_loader_thread();
-        enqueue_ring_request(stream_face_, ring_radius_, ring_center_i_, ring_center_j_, fwd_s, fwd_t);
+        enqueue_ring_request(stream_face_, ring_radius_, ring_center_i_, ring_center_j_, ring_center_k_, k_down_, k_up_, fwd_s, fwd_t);
         if (log_stream_) {
-            std::cout << "[stream] move request: face=" << stream_face_ << " ring=" << ring_radius_
+            std::cout << "[stream] face switch -> face=" << stream_face_ << " ring=" << ring_radius_
                       << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << "\n";
         }
+    } else {
+        // Same face: if we've moved tiles, request an update
+        if (ci != ring_center_i_ || cj != ring_center_j_ || ck != ring_center_k_) {
+            ring_center_i_ = ci; ring_center_j_ = cj; ring_center_k_ = ck;
+            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+            float fwd[3] = { cp*cyaw, sp, cp*syaw };
+            float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
+            float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
+            enqueue_ring_request(stream_face_, ring_radius_, ring_center_i_, ring_center_j_, ring_center_k_, k_down_, k_up_, fwd_s, fwd_t);
+            if (log_stream_) {
+                std::cout << "[stream] move request: face=" << stream_face_ << " ring=" << ring_radius_
+                          << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << " ck=" << ring_center_k_
+                          << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << "\n";
+            }
+        }
     }
-    // Opportunistically prune far chunks each frame using hysteresis margin
-    prune_chunks_outside(stream_face_, ring_center_i_, ring_center_j_, ring_radius_ + prune_margin_);
+
+    // Count down previous-face hold timer
+    if (face_keep_timer_s_ > 0.0f) {
+        // Approximate frame time via HUD smoothing cadence; alternatively, compute dt from glfw each frame
+        // Here, we decrement by a small fixed step per frame; more accurate would be to pass dt
+        face_keep_timer_s_ = std::max(0.0f, face_keep_timer_s_ - 1.0f/60.0f);
+    }
+
+    // Build prune allow-list: keep current face ring with hysteresis in s/t and k; optionally keep previous face while timer active
+    std::vector<AllowRegion> allows;
+    allows.push_back(AllowRegion{stream_face_, ring_center_i_, ring_center_j_, ring_center_k_, ring_radius_ + prune_margin_, k_down_ + k_prune_margin_, k_up_ + k_prune_margin_});
+    if (face_keep_timer_s_ > 0.0f && prev_face_ >= 0) {
+        allows.push_back(AllowRegion{prev_face_, prev_center_i_, prev_center_j_, prev_center_k_, ring_radius_ + prune_margin_, k_down_ + k_prune_margin_, k_up_ + k_prune_margin_});
+    }
+    prune_chunks_multi(allows);
 }
 }

@@ -128,8 +128,14 @@ This document is a self-contained plan to build an experimental, planetary-scale
    - HUD: DPI/scale control and optional text shadow — [Pending]; skip rebuilds unless content changes — [Done].
 
  - Upcoming (to complete Phase 3 acceptance):
-   - Multi‑Face Streaming: select face from camera direction, recenter ring across faces, and preserve continuity.
    - Device‑local pools + staging uploads for higher throughput.
+
+ - Completed since last update:
+   - Multi‑Face Streaming: dynamically select face from camera direction, recenter the ring across faces, and preserve continuity with a short dual‑face hold (configurable) during transitions. HUD now shows face and ring center.
+
+ - Extras (non‑blocking additions):
+   - Threaded meshing in loader: parallelize the mesh build per tile after voxel generation to further reduce wall‑clock time of a request.
+   - Near‑seam neighbor‑face prefetch: when approaching a cube‑face seam (|u| or |v| large), preemptively request the adjacent face’s ring to hide seam transitions completely.
 
  - Extras (non‑blocking for Phase 3 acceptance):
    - Tail reclamation in pools (shrink tail when freeing the last allocated block).
