@@ -167,6 +167,8 @@ void VulkanApp::init_vulkan() {
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    overlay_text_valid_.fill(false);
+    hud_force_refresh_ = true;
     create_framebuffers();
     create_command_pool_and_buffers();
     create_sync_objects();
@@ -636,10 +638,10 @@ void VulkanApp::update_input(float dt) {
 
     // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
     int kx = glfwGetKey(window_, GLFW_KEY_X);
-    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; }
+    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; hud_force_refresh_ = true; }
     key_prev_toggle_x_ = (kx == GLFW_PRESS);
     int ky = glfwGetKey(window_, GLFW_KEY_Y);
-    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; }
+    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; }
     key_prev_toggle_y_ = (ky == GLFW_PRESS);
 }
 
@@ -650,17 +652,33 @@ void VulkanApp::update_hud(float dt) {
         if (fps_smooth_ <= 0.0f) fps_smooth_ = fps; else fps_smooth_ = fps_smooth_ * 0.9f + fps * 0.1f;
     }
     hud_accum_ += dt;
-    if (hud_accum_ < 0.25) return;
+
+    bool do_refresh = hud_force_refresh_ || (hud_accum_ >= 0.25);
+    if (!do_refresh) return;
+    hud_force_refresh_ = false;
     hud_accum_ = 0.0;
 
-    char buf[256];
+    // Format both the window title and HUD overlay strings
+    char title[256];
     float yaw_deg = cam_yaw_ * 57.2957795f;
     float pitch_deg = cam_pitch_ * 57.2957795f;
-    std::snprintf(buf, sizeof(buf),
+    std::snprintf(title, sizeof(title),
                   "Wanderforge | FPS: %.1f | Pos: (%.1f, %.1f, %.1f) | Yaw/Pitch: (%.1f, %.1f) | InvX:%d InvY:%d | Speed: %.1f",
                   fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
-    glfwSetWindowTitle(window_, buf);
+    glfwSetWindowTitle(window_, title);
+
+    char hud[256];
+    std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
+                  fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                  invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
+
+    // Only update overlay text if it actually changed
+    if (hud_text_ != hud) {
+        hud_text_.assign(hud);
+        // Mark all per-frame overlays as needing rebuild
+        overlay_text_valid_.fill(false);
+    }
 }
 
 static inline std::string trim(const std::string& s) {
@@ -715,25 +733,15 @@ void VulkanApp::draw_frame() {
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) { recreate_swapchain(); return; }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) throw_if_failed(acq, "vkAcquireNextImageKHR failed");
 
-    // Prepare overlay text for this frame-in-flight slot
+    // Prepare overlay text only if needed for this frame slot (content changed or slot invalid)
     overlay_draw_slot_ = current_frame_;
-    {
-        char hud[256];
-        float yaw_deg = cam_yaw_ * 57.2957795f; float pitch_deg = cam_pitch_ * 57.2957795f;
-        std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
-                      fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
-                      invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
-        overlay_.build_text(overlay_draw_slot_, hud, (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+    if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
+        overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+        overlay_text_valid_[overlay_draw_slot_] = true;
+        overlay_last_text_ = hud_text_;
     }
 
-    // Build overlay text for this frame before recording
-    overlay_draw_slot_ = current_frame_;
-    char hud[256];
-    float yaw_deg = cam_yaw_ * 57.2957795f; float pitch_deg = cam_pitch_ * 57.2957795f;
-    std::snprintf(hud, sizeof(hud), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
-                  fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
-                  invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
-    overlay_.build_text(overlay_draw_slot_, hud, (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+    // Overlay text is prepared once per frame above
 
     vkResetCommandBuffer(command_buffers_[imageIndex], 0);
     record_command_buffer(command_buffers_[imageIndex], imageIndex);
@@ -783,6 +791,8 @@ void VulkanApp::recreate_swapchain() {
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.recreate_swapchain(render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    overlay_text_valid_.fill(false);
+    hud_force_refresh_ = true;
     create_framebuffers();
 }
 

@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <string>
+#include <array>
 #include "overlay.h"
 
 struct GLFWwindow;
@@ -141,6 +142,12 @@ private:
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
+
+    // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
+    std::string hud_text_;
+    std::string overlay_last_text_;
+    bool hud_force_refresh_ = true;
+    std::array<bool, kFramesInFlight> overlay_text_valid_{{false, false}};
 };
 
 } // namespace wf
