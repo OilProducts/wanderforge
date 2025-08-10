@@ -1,4 +1,5 @@
 #include "overlay.h"
+#include "vk_utils.h"
 
 #include <cstring>
 #include <algorithm>
@@ -176,22 +177,14 @@ void OverlayRenderer::cleanup(VkDevice dev) {
 }
 
 uint32_t OverlayRenderer::find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProps{}; vkGetPhysicalDeviceMemoryProperties(phys_, &memProps);
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((typeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) return i;
-    }
-    return UINT32_MAX;
+    return wf::vk::find_memory_type(phys_, typeBits, properties);
 }
 
 void OverlayRenderer::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buf, VkDeviceMemory& mem, const void* data) {
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bci.size = size; bci.usage = usage; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vkCreateBuffer(device_, &bci, nullptr, &buf);
-    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device_, buf, &req);
-    uint32_t mt = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
-    vkAllocateMemory(device_, &mai, nullptr, &mem);
-    vkBindBufferMemory(device_, buf, mem, 0);
-    if (data) { void* p=nullptr; vkMapMemory(device_, mem, 0, size, 0, &p); std::memcpy(p, data, (size_t)size); vkUnmapMemory(device_, mem); }
+    wf::vk::create_buffer(phys_, device_, size, usage,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          buf, mem);
+    if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
 }
 
 void OverlayRenderer::build_text(size_t frameSlot, const char* text, int W, int H) {

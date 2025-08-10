@@ -19,6 +19,7 @@
 #include "mesh.h"
 #include "planet.h"
 #include "region_io.h"
+#include "vk_utils.h"
 
 namespace wf {
 
@@ -498,7 +499,7 @@ void VulkanApp::create_depth_resources() {
     ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     throw_if_failed(vkCreateImage(device_, &ici, nullptr, &depth_image_), "vkCreateImage(depth) failed");
     VkMemoryRequirements req{}; vkGetImageMemoryRequirements(device_, depth_image_, &req);
-    uint32_t mt = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    uint32_t mt = wf::vk::find_memory_type(physical_device_, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
     throw_if_failed(vkAllocateMemory(device_, &mai, nullptr, &depth_mem_), "vkAllocateMemory(depth) failed");
@@ -1046,32 +1047,14 @@ void VulkanApp::create_compute_pipeline() {
 }
 
 uint32_t VulkanApp::find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProps{};
-    vkGetPhysicalDeviceMemoryProperties(physical_device_, &memProps);
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((typeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) return i;
-    }
-    return UINT32_MAX;
+    return wf::vk::find_memory_type(physical_device_, typeBits, properties);
 }
 
 void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buf, VkDeviceMemory& mem, const void* data) {
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = size; bci.usage = usage; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    throw_if_failed(vkCreateBuffer(device_, &bci, nullptr, &buf), "vkCreateBuffer failed");
-    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device_, buf, &req);
-    uint32_t mt = find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (mt == UINT32_MAX) {
-        std::cerr << "No host-visible memory type for buffers" << std::endl; std::abort();
-    }
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
-    throw_if_failed(vkAllocateMemory(device_, &mai, nullptr, &mem), "vkAllocateMemory failed");
-    throw_if_failed(vkBindBufferMemory(device_, buf, mem, 0), "vkBindBufferMemory failed");
-    if (data) {
-        void* p = nullptr; vkMapMemory(device_, mem, 0, size, 0, &p);
-        std::memcpy(p, data, (size_t)size);
-        vkUnmapMemory(device_, mem);
-    }
+    wf::vk::create_buffer(physical_device_, device_, size, usage,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          buf, mem);
+    if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
 }
 
 } // namespace wf

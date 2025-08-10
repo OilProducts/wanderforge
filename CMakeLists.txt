@@ -54,6 +54,7 @@ add_executable(wanderforge
   src/mesh_greedy.cpp
   src/region_io.cpp
   src/overlay.cpp
+  src/vk_utils.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
