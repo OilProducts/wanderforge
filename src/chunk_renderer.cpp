@@ -1,13 +1,15 @@
 #include "chunk_renderer.h"
 #include "vk_utils.h"
+#include "mesh.h"
 
 #include <string>
 #include <iostream>
+#include <algorithm>
 
 namespace wf {
 
-void ChunkRenderer::init(VkDevice device, VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir) {
-    device_ = device; render_pass_ = renderPass; extent_ = extent; shader_dir_ = shaderDir ? std::string(shaderDir) : std::string();
+void ChunkRenderer::init(VkPhysicalDevice phys, VkDevice device, VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir) {
+    phys_ = phys; device_ = device; render_pass_ = renderPass; extent_ = extent; shader_dir_ = shaderDir ? std::string(shaderDir) : std::string();
 
     // Load shaders
     std::string vsPath = shader_dir_ + "/chunk.vert.spv";
@@ -86,24 +88,114 @@ void ChunkRenderer::init(VkDevice device, VkRenderPass renderPass, VkExtent2D ex
 void ChunkRenderer::recreate(VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir) {
     if (pipeline_) { vkDestroyPipeline(device_, pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
     if (layout_) { vkDestroyPipelineLayout(device_, layout_, nullptr); layout_ = VK_NULL_HANDLE; }
-    init(device_, renderPass, extent, shaderDir ? shaderDir : shader_dir_.c_str());
+    init(phys_, device_, renderPass, extent, shaderDir ? shaderDir : shader_dir_.c_str());
 }
 
 void ChunkRenderer::cleanup(VkDevice device) {
     if (pipeline_) { vkDestroyPipeline(device, pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
     if (layout_) { vkDestroyPipelineLayout(device, layout_, nullptr); layout_ = VK_NULL_HANDLE; }
+    if (vtx_pool_) { vkDestroyBuffer(device, vtx_pool_, nullptr); vtx_pool_ = VK_NULL_HANDLE; }
+    if (vtx_mem_) { vkFreeMemory(device, vtx_mem_, nullptr); vtx_mem_ = VK_NULL_HANDLE; vtx_capacity_ = 0; vtx_used_ = 0; }
+    if (idx_pool_) { vkDestroyBuffer(device, idx_pool_, nullptr); idx_pool_ = VK_NULL_HANDLE; }
+    if (idx_mem_) { vkFreeMemory(device, idx_mem_, nullptr); idx_mem_ = VK_NULL_HANDLE; idx_capacity_ = 0; idx_used_ = 0; }
+    if (indirect_buf_) { vkDestroyBuffer(device, indirect_buf_, nullptr); indirect_buf_ = VK_NULL_HANDLE; }
+    if (indirect_mem_) { vkFreeMemory(device, indirect_mem_, nullptr); indirect_mem_ = VK_NULL_HANDLE; indirect_capacity_cmds_ = 0; }
 }
 
 void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items) {
     if (!pipeline_ || items.empty()) return;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
+    // If items reference the shared pools (no per-chunk buffers), build and issue indirect multi-draw
+    bool pooled = true;
     for (const auto& it : items) {
+        if (it.vbuf != VK_NULL_HANDLE || it.ibuf != VK_NULL_HANDLE) { pooled = false; break; }
+    }
+    if (pooled && vtx_pool_ && idx_pool_) {
+        ensure_indirect_capacity(items.size());
+        // Build commands
+        using Cmd = VkDrawIndexedIndirectCommand;
+        std::vector<Cmd> cmds; cmds.reserve(items.size());
+        for (const auto& it : items) {
+            Cmd c{ it.index_count, 1u, it.first_index, it.base_vertex, 0u };
+            cmds.push_back(c);
+        }
+        wf::vk::upload_host_visible(device_, indirect_mem_, sizeof(Cmd) * cmds.size(), cmds.data(), 0);
         VkDeviceSize offs = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &it.vbuf, &offs);
-        vkCmdBindIndexBuffer(cmd, it.ibuf, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, it.index_count, 1, 0, 0, 0);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vtx_pool_, &offs);
+        vkCmdBindIndexBuffer(cmd, idx_pool_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexedIndirect(cmd, indirect_buf_, 0, (uint32_t)cmds.size(), sizeof(Cmd));
+    } else {
+        // Fallback to direct per-chunk draws
+        for (const auto& it : items) {
+            VkDeviceSize offs = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &it.vbuf, &offs);
+            vkCmdBindIndexBuffer(cmd, it.ibuf, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, it.index_count, 1, 0, 0, 0);
+        }
     }
 }
+
+bool ChunkRenderer::ensure_pool_capacity(VkDeviceSize add_vtx_bytes, VkDeviceSize add_idx_bytes) {
+    VkDeviceSize need_v = vtx_used_ + add_vtx_bytes;
+    if (vtx_capacity_ == 0) {
+        VkDeviceSize new_cap = std::max<VkDeviceSize>(need_v, (VkDeviceSize)(64 * 1024 * 1024));
+        wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              vtx_pool_, vtx_mem_);
+        vtx_capacity_ = new_cap;
+        vtx_used_ = 0;
+    } else if (need_v > vtx_capacity_) {
+        std::cerr << "[warn] ChunkRenderer vertex pool overflow; skipping mesh upload (need " << need_v << ", cap " << vtx_capacity_ << ")\n";
+        return false;
+    }
+    VkDeviceSize need_i = idx_used_ + add_idx_bytes;
+    if (idx_capacity_ == 0) {
+        VkDeviceSize new_cap = std::max<VkDeviceSize>(need_i, (VkDeviceSize)(64 * 1024 * 1024));
+        wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              idx_pool_, idx_mem_);
+        idx_capacity_ = new_cap;
+        idx_used_ = 0;
+    } else if (need_i > idx_capacity_) {
+        std::cerr << "[warn] ChunkRenderer index pool overflow; skipping mesh upload (need " << need_i << ", cap " << idx_capacity_ << ")\n";
+        return false;
+    }
+    return true;
+}
+
+void ChunkRenderer::ensure_indirect_capacity(size_t drawCount) {
+    if (indirect_capacity_cmds_ >= drawCount) return;
+    size_t new_cap = std::max<size_t>(drawCount, indirect_capacity_cmds_ ? indirect_capacity_cmds_ * 2 : 1024);
+    VkDeviceSize bytes = (VkDeviceSize)(new_cap * sizeof(uint32_t) * 5); // conservative
+    VkBuffer nb = VK_NULL_HANDLE; VkDeviceMemory nm = VK_NULL_HANDLE;
+    wf::vk::create_buffer(phys_, device_, bytes, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          nb, nm);
+    if (indirect_mem_) { vkDestroyBuffer(device_, indirect_buf_, nullptr); vkFreeMemory(device_, indirect_mem_, nullptr); }
+    indirect_buf_ = nb; indirect_mem_ = nm; indirect_capacity_cmds_ = new_cap;
+}
+
+void ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
+                                const uint32_t* indices, size_t icount,
+                                uint32_t& out_first_index,
+                                int32_t& out_base_vertex) {
+    VkDeviceSize vbytes = (VkDeviceSize)(vcount * sizeof(Vertex));
+    VkDeviceSize ibytes = (VkDeviceSize)(icount * sizeof(uint32_t));
+    if (!ensure_pool_capacity(vbytes, ibytes)) {
+        out_base_vertex = 0; out_first_index = 0; return;
+    }
+    VkDeviceSize voff = vtx_used_;
+    VkDeviceSize ioff = idx_used_;
+    out_base_vertex = (int32_t)(voff / sizeof(Vertex));
+    out_first_index = (uint32_t)(ioff / sizeof(uint32_t));
+    // Upload vertices
+    wf::vk::upload_host_visible(device_, vtx_mem_, vbytes, vertices, voff);
+    vtx_used_ = voff + vbytes;
+    // Upload indices
+    wf::vk::upload_host_visible(device_, idx_mem_, ibytes, indices, ioff);
+    idx_used_ = ioff + ibytes;
+}
+// Free-list removed: pooled memory is append-only without reuse
 
 } // namespace wf

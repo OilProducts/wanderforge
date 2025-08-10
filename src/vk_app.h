@@ -11,6 +11,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include <deque>
 
 struct GLFWwindow;
@@ -94,11 +95,15 @@ private:
     bool compute_enabled_ = false; // gate no-op compute dispatch
 
     struct RenderChunk {
+        // Legacy per-chunk buffers (unused in indirect path)
         VkBuffer vbuf = VK_NULL_HANDLE;
         VkDeviceMemory vmem = VK_NULL_HANDLE;
         VkBuffer ibuf = VK_NULL_HANDLE;
         VkDeviceMemory imem = VK_NULL_HANDLE;
+        // Draw info
         uint32_t index_count = 0;
+        uint32_t first_index = 0; // indirect path
+        int32_t  base_vertex = 0; // indirect path
         float center[3] = {0,0,0};
         float radius = 0.0f;
         FaceChunkKey key{0,0,0,0};
@@ -167,12 +172,17 @@ private:
 
     // Rendering controls
     int ring_radius_ = 1;         // loads (2*ring_radius_+1)^2 chunks
+    int prune_margin_ = 2;        // hysteresis: keep extra radius around load ring
     bool cull_enabled_ = true;    // CPU frustum culling toggle
     bool draw_stats_enabled_ = true; // show draw stats in HUD
     // Per-frame draw stats captured last frame
     int last_draw_total_ = 0;
     int last_draw_visible_ = 0;
     uint64_t last_draw_indices_ = 0;
+
+    // Deferred GPU resource destruction to avoid device-lost
+    std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
+    void schedule_delete_chunk(const RenderChunk& rc);
 
     // Async loading/meshing
     struct MeshResult {
@@ -185,13 +195,21 @@ private:
     std::thread loader_thread_;
     std::mutex loader_mutex_;
     std::condition_variable loader_cv_;
-    bool loader_stop_ = false;
+    bool loader_quit_ = false;
     bool loader_busy_ = false;
     std::deque<MeshResult> results_queue_;
     int uploads_per_frame_limit_ = 8;
 
+    // Persistent loader: request queue and helpers
+    struct LoadRequest { int face; int ring_radius; std::int64_t ci; std::int64_t cj; float fwd_s; float fwd_t; uint64_t gen; };
+    std::deque<LoadRequest> request_queue_;
+    std::atomic<uint64_t> request_gen_{0};
+
     void start_initial_ring_async();
-    void loader_thread_func(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j);
+    void start_loader_thread();
+    void enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t);
+    void loader_thread_main();
+    void build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t, uint64_t job_gen);
     void drain_mesh_results();
     void update_streaming();
     void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);
