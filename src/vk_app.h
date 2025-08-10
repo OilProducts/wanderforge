@@ -152,6 +152,10 @@ private:
     bool invert_mouse_y_ = false;
     bool key_prev_toggle_x_ = false;
     bool key_prev_toggle_y_ = false;
+    bool walk_mode_ = false;
+    bool key_prev_toggle_walk_ = false;
+    float eye_height_m_ = 1.7f; // camera height above terrain when walking
+    float walk_speed_ = 6.0f;   // m/s on ground
 
     // HUD / stats
     double hud_accum_ = 0.0;
@@ -177,7 +181,7 @@ private:
     std::array<bool, kFramesInFlight> overlay_text_valid_{{false, false}};
 
     // Rendering controls
-    int ring_radius_ = 1;         // loads (2*ring_radius_+1)^2 chunks
+    int ring_radius_ = 4;         // loads (2*ring_radius_+1)^2 chunks
     int prune_margin_ = 2;        // hysteresis: keep extra radius around load ring
     bool cull_enabled_ = true;    // CPU frustum culling toggle
     bool draw_stats_enabled_ = true; // show draw stats in HUD

@@ -49,4 +49,8 @@ FaceChunkKey face_chunk_from_voxel(const PlanetConfig& cfg, Int3 voxel, int chun
 // Sample the base world (procedural, read-only).
 BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel);
 
+// Deterministic terrain height at a direction on the sphere, in meters above cfg.radius_m.
+// Mirrors the elevation logic used in sample_base (no caves/water/biomes); used for ground following.
+double terrain_height_m(const PlanetConfig& cfg, Float3 direction);
+
 } // namespace wf

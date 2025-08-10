@@ -99,14 +99,7 @@ BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
 
     // Elevation via FBM on the angular direction; cave noise via 3D fbm
     Float3 dir = (r > 0) ? pos_m / r : Float3{0,1,0};
-    // Exact cube-sphere inverse mapping to get face-local (u,v)
-    int face = 0; float u = 0.0f, v = 0.0f;
-    (void)face_uv_from_direction(dir, face, u, v);
-
-    // Terrain FBM parameters
-    float elev = fbm({u*128.0f, v*128.0f, 0.0f}, 5, 2.0f, 0.5f, cfg.seed); // [-1,1]
-    elev = (elev + 1.0f) * 0.5f; // [0,1]
-    double height_m = 40.0 * elev; // up to ~40 m hills
+    double height_m = terrain_height_m(cfg, dir);
 
     // Base radial surface at radius + height
     double surface_r = cfg.radius_m + height_m;
@@ -136,6 +129,16 @@ BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
     } else {
         out.material = MAT_ROCK; out.density = 1.0f; return out;
     }
+}
+
+double terrain_height_m(const PlanetConfig& cfg, Float3 direction) {
+    // Map to face-UV and compute the same FBM elevation as sample_base
+    int face = 0; float u = 0.0f, v = 0.0f;
+    (void)face_uv_from_direction(direction, face, u, v);
+    float elev = fbm({u*128.0f, v*128.0f, 0.0f}, 5, 2.0f, 0.5f, cfg.seed); // [-1,1]
+    elev = (elev + 1.0f) * 0.5f; // [0,1]
+    double height_m = 40.0 * elev; // up to ~40 m hills
+    return height_m;
 }
 
 } // namespace wf

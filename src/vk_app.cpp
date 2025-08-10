@@ -23,6 +23,7 @@
 #include "region_io.h"
 #include "vk_utils.h"
 #include "camera.h"
+#include "planet.h"
 
 namespace wf {
 
@@ -636,13 +637,45 @@ void VulkanApp::update_input(float dt) {
     float rl = std::sqrt(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
     if (rl > 0) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
 
-    float speed = cam_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 3.0f : 1.0f);
-    if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { cam_pos_[0]+=fwd[0]*speed; cam_pos_[1]+=fwd[1]*speed; cam_pos_[2]+=fwd[2]*speed; }
-    if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { cam_pos_[0]-=fwd[0]*speed; cam_pos_[1]-=fwd[1]*speed; cam_pos_[2]-=fwd[2]*speed; }
-    if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { cam_pos_[0]-=right[0]*speed; cam_pos_[1]-=right[1]*speed; cam_pos_[2]-=right[2]*speed; }
-    if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { cam_pos_[0]+=right[0]*speed; cam_pos_[1]+=right[1]*speed; cam_pos_[2]+=right[2]*speed; }
-    if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
-    if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
+    // Toggle walk mode with F key
+    int kwalk = glfwGetKey(window_, GLFW_KEY_F);
+    if (kwalk == GLFW_PRESS && !key_prev_toggle_walk_) { walk_mode_ = !walk_mode_; hud_force_refresh_ = true; }
+    key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
+
+    if (!walk_mode_) {
+        float speed = cam_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 3.0f : 1.0f);
+        if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { cam_pos_[0]+=fwd[0]*speed; cam_pos_[1]+=fwd[1]*speed; cam_pos_[2]+=fwd[2]*speed; }
+        if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { cam_pos_[0]-=fwd[0]*speed; cam_pos_[1]-=fwd[1]*speed; cam_pos_[2]-=fwd[2]*speed; }
+        if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { cam_pos_[0]-=right[0]*speed; cam_pos_[1]-=right[1]*speed; cam_pos_[2]-=right[2]*speed; }
+        if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { cam_pos_[0]+=right[0]*speed; cam_pos_[1]+=right[1]*speed; cam_pos_[2]+=right[2]*speed; }
+        if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
+        if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
+    } else {
+        // Walk mode: move along tangent plane; keep camera at surface + eye_height
+        PlanetConfig cfg;
+        Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+        Float3 updir = normalize(pos);
+        // Project view forward onto tangent plane
+        Float3 fwdv{fwd[0], fwd[1], fwd[2]};
+        float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
+        Float3 fwd_t = normalize(Float3{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu });
+        Float3 right_t = normalize(Float3{ fwd_t.y*updir.z - fwd_t.z*updir.y, fwd_t.z*updir.x - fwd_t.x*updir.z, fwd_t.x*updir.y - fwd_t.y*updir.x });
+        float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
+        Float3 delta{0,0,0};
+        if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { delta = delta + fwd_t * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { delta = delta - fwd_t * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { delta = delta - right_t * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { delta = delta + right_t * speed; }
+        // Update position and reproject onto ground + eye height
+        Float3 npos = pos + delta;
+        Float3 ndir = normalize(npos);
+        double h = terrain_height_m(cfg, ndir);
+        double ground_r = cfg.radius_m + h;
+        if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m; // keep above water surface
+        double target_r = ground_r + (double)eye_height_m_;
+        Float3 final = ndir * (float)target_r;
+        cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
+    }
 
     // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
     int kx = glfwGetKey(window_, GLFW_KEY_X);
@@ -697,7 +730,7 @@ void VulkanApp::update_hud(float dt) {
                        fps_smooth_,
                        cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                        invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
-                       last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
+                      last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
                       stream_face_, (long long)ring_center_i_, (long long)ring_center_j_, (long long)ring_center_k_, k_down_, k_up_, (double)face_keep_timer_s_,
                       qdepth, gen_ms, gen_chunks, ms_per,
                       v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
@@ -741,6 +774,9 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_WALK_MODE")) walk_mode_ = parse_bool(s, walk_mode_);
+    if (const char* s = std::getenv("WF_EYE_HEIGHT")) { try { eye_height_m_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_WALK_SPEED")) { try { walk_speed_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_USE_CHUNK_RENDERER")) use_chunk_renderer_ = parse_bool(s, use_chunk_renderer_);
     if (const char* s = std::getenv("WF_RING_RADIUS")) { try { ring_radius_ = std::max(0, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_PRUNE_MARGIN")) { try { prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
@@ -772,6 +808,9 @@ void VulkanApp::load_config() {
         else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
+        else if (key == "walk_mode") walk_mode_ = parse_bool(val, walk_mode_);
+        else if (key == "eye_height") { try { eye_height_m_ = std::stof(val); } catch(...){} }
+        else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
         else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
         else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
         else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
