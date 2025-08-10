@@ -536,7 +536,34 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         auto P = wf::perspective_row_major(60.0f, aspect, 0.1f, 1000.0f);
         float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
-        auto V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
+        wf::Mat4 V;
+        if (!walk_mode_) {
+            V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
+        } else {
+            // Build view from local basis (updir, heading)
+            Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
+            Float3 world_up{0,1,0};
+            Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
+                                              world_up.z*updir.x - world_up.x*updir.z,
+                                              world_up.x*updir.y - world_up.y*updir.x });
+            if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
+            Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
+                                              updir.z*r0.x - updir.x*r0.z,
+                                              updir.x*r0.y - updir.y*r0.x });
+            float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
+            Float3 fwd{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+            Float3 rightv{ updir.y*fwd.z - updir.z*fwd.y, updir.z*fwd.x - updir.x*fwd.z, updir.x*fwd.y - updir.y*fwd.x };
+            // Row-major view matrix from basis
+            V = wf::Mat4{
+                rightv.x, updir.x, -fwd.x, 0.0f,
+                rightv.y, updir.y, -fwd.y, 0.0f,
+                rightv.z, updir.z, -fwd.z, 0.0f,
+                -(rightv.x*eye[0] + rightv.y*eye[1] + rightv.z*eye[2]),
+                -(updir.x*eye[0] + updir.y*eye[1] + updir.z*eye[2]),
+                 ( fwd.x*eye[0] +  fwd.y*eye[1] +  fwd.z*eye[2]),
+                 1.0f
+            };
+        }
         auto MVP = wf::mul_row_major(V, P);
 
         // Prepare preallocated container and compute draw stats
@@ -547,13 +574,31 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         last_draw_indices_ = 0;
 
         if (cull_enabled_) {
-            // Frustum culling (simple sphere vs frustum) using yaw/pitch basis
-            // Build camera basis
-            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-            float fwd[3] = { cp*cyaw, sp, cp*syaw };
-            float upv[3]  = { 0.0f, 1.0f, 0.0f };
-            float rightv[3] = { fwd[1]*upv[2]-fwd[2]*upv[1], fwd[2]*upv[0]-fwd[0]*upv[2], fwd[0]*upv[1]-fwd[1]*upv[0] };
+            // Frustum culling (simple sphere vs frustum)
+            float fwd[3]; float upv[3]; float rightv[3];
+            if (!walk_mode_) {
+                float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+                float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+                fwd[0] = cp*cyaw; fwd[1] = sp; fwd[2] = cp*syaw;
+                upv[0] = 0.0f; upv[1] = 1.0f; upv[2] = 0.0f;
+                rightv[0] = fwd[1]*upv[2]-fwd[2]*upv[1]; rightv[1] = fwd[2]*upv[0]-fwd[0]*upv[2]; rightv[2] = fwd[0]*upv[1]-fwd[1]*upv[0];
+            } else {
+                Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
+                Float3 world_up{0,1,0};
+                Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
+                                                  world_up.z*updir.x - world_up.x*updir.z,
+                                                  world_up.x*updir.y - world_up.y*updir.x });
+                if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
+                Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
+                                                  updir.z*r0.x - updir.x*r0.z,
+                                                  updir.x*r0.y - updir.y*r0.x });
+                float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
+                Float3 fw{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+                Float3 rv{ updir.y*fw.z - updir.z*fw.y, updir.z*fw.x - updir.x*fw.z, updir.x*fw.y - updir.y*fw.x };
+                fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
+                upv[0]=updir.x; upv[1]=updir.y; upv[2]=updir.z;
+                rightv[0]=rv.x; rightv[1]=rv.y; rightv[2]=rv.z;
+            }
             float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
             if (rl > 0) { rightv[0]/=rl; rightv[1]/=rl; rightv[2]/=rl; }
             // FOVs
@@ -619,29 +664,16 @@ void VulkanApp::update_input(float dt) {
         last_cursor_x_ = cx; last_cursor_y_ = cy;
         float sx = invert_mouse_x_ ? -1.0f : 1.0f;
         float sy = invert_mouse_y_ ?  1.0f : -1.0f;
-        cam_yaw_   += sx * (float)(dx * cam_sensitivity_);
-        cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
-        const float maxp = 1.55334306f; // ~89 deg
-        if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
-        // In walk mode, keep horizon aligned by projecting view into the local tangent plane
-        if (walk_mode_) {
-            Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
-            Float3 updir = wf::normalize(pos);
-            float cyaw2 = std::cos(cam_yaw_), syaw2 = std::sin(cam_yaw_);
-            float cp2 = std::cos(cam_pitch_), sp2 = std::sin(cam_pitch_);
-            Float3 fwdv{ cp2*cyaw2, sp2, cp2*syaw2 };
-            float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
-            Float3 fwd_t{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu };
-            float len = wf::length(fwd_t);
-            if (len < 1e-5f) {
-                Float3 axis = (std::fabs(updir.x) < 0.9f) ? Float3{1,0,0} : Float3{0,0,1};
-                float d = axis.x*updir.x + axis.y*updir.y + axis.z*updir.z;
-                fwd_t = wf::normalize(Float3{ axis.x - updir.x*d, axis.y - updir.y*d, axis.z - updir.z*d });
-            } else {
-                fwd_t = fwd_t / len;
-            }
-            cam_yaw_ = std::atan2(fwd_t.z, fwd_t.x);
-            cam_pitch_ = 0.0f; // keep horizon aligned relative to local up
+        if (!walk_mode_) {
+            cam_yaw_   += sx * (float)(dx * cam_sensitivity_);
+            cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
+            const float maxp = 1.55334306f; // ~89 deg
+            if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
+        } else {
+            // Horizon-locked: update heading around local up; ignore pitch
+            walk_heading_ += sx * (float)(dx * cam_sensitivity_);
+            if (walk_heading_ > 3.14159265f) walk_heading_ -= 6.28318531f;
+            if (walk_heading_ < -3.14159265f) walk_heading_ += 6.28318531f;
         }
     } else {
         rmb_down_ = false;
@@ -663,28 +695,27 @@ void VulkanApp::update_input(float dt) {
         walk_mode_ = !walk_mode_;
         hud_force_refresh_ = true;
         if (walk_mode_) {
-            // Align camera forward to local tangent to avoid looking into the ground on snap
+            // Initialize walk heading from current forward projected into tangent
             Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
             Float3 updir = wf::normalize(pos);
-            // Current forward from yaw/pitch
+            Float3 world_up{0,1,0};
+            Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
+                                              world_up.z*updir.x - world_up.x*updir.z,
+                                              world_up.x*updir.y - world_up.y*updir.x });
+            if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
+            Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
+                                              updir.z*r0.x - updir.x*r0.z,
+                                              updir.x*r0.y - updir.y*r0.x });
             float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
             float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
             Float3 fwdv{ cp*cyaw, sp, cp*syaw };
-            // Project onto tangent and normalize
             float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
             Float3 fwd_t{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu };
-            float len = wf::length(fwd_t);
-            if (len < 1e-5f) {
-                // Degenerate: choose a stable axis not parallel to updir and project it
-                Float3 axis = (std::fabs(updir.x) < 0.9f) ? Float3{1,0,0} : Float3{0,0,1};
-                float d = axis.x*updir.x + axis.y*updir.y + axis.z*updir.z;
-                fwd_t = wf::normalize(Float3{ axis.x - updir.x*d, axis.y - updir.y*d, axis.z - updir.z*d });
-            } else {
-                fwd_t = fwd_t / len;
-            }
-            // Recompute yaw/pitch from tangent forward in world axes
-            cam_yaw_ = std::atan2(fwd_t.z, fwd_t.x);
-            cam_pitch_ = std::asin(std::clamp(fwd_t.y, -1.0f, 1.0f));
+            fwd_t = wf::normalize(fwd_t);
+            float x = fwd_t.x*f0.x + fwd_t.y*f0.y + fwd_t.z*f0.z;
+            float y = fwd_t.x*r0.x + fwd_t.y*r0.y + fwd_t.z*r0.z;
+            walk_heading_ = std::atan2(y, x);
+            cam_pitch_ = 0.0f;
         }
     }
     key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
@@ -698,16 +729,22 @@ void VulkanApp::update_input(float dt) {
         if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
         if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
     } else {
-        // Walk mode: move along tangent plane; keep camera at surface + eye_height
+        // Walk mode: move along tangent plane using heading; keep camera at surface + eye_height
         PlanetConfig cfg;
         Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
         Float3 updir = normalize(pos);
-        // Project view forward onto tangent plane
-        Float3 fwdv{fwd[0], fwd[1], fwd[2]};
-        float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
-        Float3 fwd_t = normalize(Float3{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu });
-        // Right vector: use up x forward (right-handed) so D moves to screen-right
-        Float3 right_t = normalize(Float3{ updir.y*fwd_t.z - updir.z*fwd_t.y, updir.z*fwd_t.x - updir.x*fwd_t.z, updir.x*fwd_t.y - updir.y*fwd_t.x });
+        Float3 world_up{0,1,0};
+        Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
+                                          world_up.z*updir.x - world_up.x*updir.z,
+                                          world_up.x*updir.y - world_up.y*updir.x });
+        if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
+        Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
+                                          updir.z*r0.x - updir.x*r0.z,
+                                          updir.x*r0.y - updir.y*r0.x });
+        float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
+        Float3 fwd_t{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+        Float3 right_t{ updir.y*fwd_t.z - updir.z*fwd_t.y, updir.z*fwd_t.x - updir.x*fwd_t.z, updir.x*fwd_t.y - updir.y*fwd_t.x };
+        right_t = wf::normalize(right_t);
         float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
         Float3 delta{0,0,0};
         if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { delta = delta + fwd_t * speed; }
