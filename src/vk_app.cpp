@@ -551,7 +551,10 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                               updir.z*r0.x - updir.x*r0.z,
                                               updir.x*r0.y - updir.y*r0.x });
             float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-            Float3 fwd{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+            Float3 fwd_h{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+            // Apply local pitch around horizon: rotate towards updir by walk_pitch_
+            float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
+            Float3 fwd{ fwd_h.x*cp + updir.x*sp, fwd_h.y*cp + updir.y*sp, fwd_h.z*cp + updir.z*sp };
             Float3 rightv{ updir.y*fwd.z - updir.z*fwd.y, updir.z*fwd.x - updir.x*fwd.z, updir.x*fwd.y - updir.y*fwd.x };
             // Row-major view matrix from basis
             V = wf::Mat4{
@@ -593,7 +596,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                                   updir.z*r0.x - updir.x*r0.z,
                                                   updir.x*r0.y - updir.y*r0.x });
                 float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-                Float3 fw{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+                Float3 fwh{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
+                float cp2 = std::cos(walk_pitch_), sp2 = std::sin(walk_pitch_);
+                Float3 fw{ fwh.x*cp2 + updir.x*sp2, fwh.y*cp2 + updir.y*sp2, fwh.z*cp2 + updir.z*sp2 };
                 Float3 rv{ updir.y*fw.z - updir.z*fw.y, updir.z*fw.x - updir.x*fw.z, updir.x*fw.y - updir.y*fw.x };
                 fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
                 upv[0]=updir.x; upv[1]=updir.y; upv[2]=updir.z;
@@ -670,10 +675,13 @@ void VulkanApp::update_input(float dt) {
             const float maxp = 1.55334306f; // ~89 deg
             if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
         } else {
-            // Horizon-locked: update heading around local up; ignore pitch
+            // Walk mode: heading around local up, and local pitch around horizon
             walk_heading_ += sx * (float)(dx * cam_sensitivity_);
             if (walk_heading_ > 3.14159265f) walk_heading_ -= 6.28318531f;
             if (walk_heading_ < -3.14159265f) walk_heading_ += 6.28318531f;
+            float maxp = walk_pitch_max_deg_ * 0.01745329252f;
+            walk_pitch_ += sy * (float)(dy * cam_sensitivity_);
+            if (walk_pitch_ > maxp) walk_pitch_ = maxp; if (walk_pitch_ < -maxp) walk_pitch_ = -maxp;
         }
     } else {
         rmb_down_ = false;
@@ -715,7 +723,14 @@ void VulkanApp::update_input(float dt) {
             float x = fwd_t.x*f0.x + fwd_t.y*f0.y + fwd_t.z*f0.z;
             float y = fwd_t.x*r0.x + fwd_t.y*r0.y + fwd_t.z*r0.z;
             walk_heading_ = std::atan2(y, x);
-            cam_pitch_ = 0.0f;
+            walk_pitch_ = 0.0f;
+            // Snap to surface radius immediately on entering walk mode
+            PlanetConfig cfg;
+            double h = terrain_height_m(cfg, updir);
+            double ground_r = cfg.radius_m + h; if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m;
+            double target_r = ground_r + (double)eye_height_m_;
+            Float3 final = updir * (float)target_r;
+            cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
         }
     }
     key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
@@ -862,6 +877,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_WALK_MODE")) walk_mode_ = parse_bool(s, walk_mode_);
     if (const char* s = std::getenv("WF_EYE_HEIGHT")) { try { eye_height_m_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_WALK_SPEED")) { try { walk_speed_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_WALK_PITCH_MAX_DEG")) { try { walk_pitch_max_deg_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_USE_CHUNK_RENDERER")) use_chunk_renderer_ = parse_bool(s, use_chunk_renderer_);
     if (const char* s = std::getenv("WF_RING_RADIUS")) { try { ring_radius_ = std::max(0, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_PRUNE_MARGIN")) { try { prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
@@ -896,6 +912,7 @@ void VulkanApp::load_config() {
         else if (key == "walk_mode") walk_mode_ = parse_bool(val, walk_mode_);
         else if (key == "eye_height") { try { eye_height_m_ = std::stof(val); } catch(...){} }
         else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
+        else if (key == "walk_pitch_max_deg") { try { walk_pitch_max_deg_ = std::stof(val); } catch(...){} }
         else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
         else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
         else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }

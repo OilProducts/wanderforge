@@ -157,6 +157,8 @@ private:
     float eye_height_m_ = 1.7f; // camera height above terrain when walking
     float walk_speed_ = 6.0f;   // m/s on ground
     float walk_heading_ = 0.0f; // radians, rotation around local up when in walk mode
+    float walk_pitch_ = 0.0f;   // radians, local pitch relative to horizon (positive up)
+    float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
 
     // HUD / stats
     double hud_accum_ = 0.0;
