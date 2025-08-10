@@ -65,12 +65,17 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                     }
                     bool a_in = (acoord >= 0 && acoord < N);
                     bool b_in = (bcoord >= 0 && bcoord < N);
-                    bool a_sol = a_in && c.is_solid(ax, ay, az);
-                    bool b_sol = b_in && c.is_solid(bx, by, bz);
                     MaskCell cell{0, 0};
-                    if (a_sol != b_sol) {
-                        if (a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
-                        else       { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
+                    if (a_in && b_in) {
+                        bool a_sol = c.is_solid(ax, ay, az);
+                        bool b_sol = c.is_solid(bx, by, bz);
+                        if (a_sol != b_sol) {
+                            if (a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
+                            else       { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
+                        }
+                    } else {
+                        // Suppress faces on chunk borders to avoid large axis-aligned walls
+                        cell = {0, 0};
                     }
                     mask[u + v * U] = cell;
                 }
@@ -126,4 +131,3 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
 }
 
 } // namespace wf
-

@@ -103,10 +103,19 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - Renderer with frustum culling and per-material draw lists.
 - Acceptance:
   - Walk around a static planet; smooth chunk streaming at 60 fps; typical chunk ≤ 15k tris.
- - Progress:
-   - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
-   - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
-   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
+- Progress:
+  - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
+  - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
+  - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
+
+ - Next tasks (Phase 3 scope):
+   - Extract `ChunkRenderer` module (pipeline, vertex layout, push constants, draw paths).
+   - Centralize Vulkan helpers (shader module loader, `find_memory_type`, buffer utils) for reuse.
+   - Factor a `Camera` utility for view/projection and input config (FOV/near/far, smoothing).
+   - Expand to a larger streaming ring; add simple CPU frustum culling.
+   - Move toward draw batching/indirect draws to reduce command overhead.
+   - Region IO: add compression flags (LZ4/Zstd), async IO worker, and basic compaction/robust errors.
+   - HUD: DPI/scale control and optional text shadow; skip rebuilds unless content changes (done).
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:

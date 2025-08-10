@@ -40,7 +40,8 @@ void mesh_chunk_naive(const Chunk64& c, Mesh& out, float voxel_size_m) {
                 uint16_t mat = c.get_material(x, y, z);
                 // neighbor helper
                 auto neighbor = [&](int nx, int ny, int nz)->bool{
-                    if (nx < 0 || ny < 0 || nz < 0 || nx >= N || ny >= N || nz >= N) return false; // treat out of chunk as air for now
+                    // Treat out-of-chunk as having the same material to avoid exposing chunk-edge walls
+                    if (nx < 0 || ny < 0 || nz < 0 || nx >= N || ny >= N || nz >= N) return true;
                     if (!c.is_solid(nx, ny, nz)) return false;
                     return c.get_material(nx, ny, nz) == mat;
                 };
@@ -66,4 +67,3 @@ void mesh_chunk_naive(const Chunk64& c, Mesh& out, float voxel_size_m) {
 }
 
 } // namespace wf
-
