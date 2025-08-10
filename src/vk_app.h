@@ -6,6 +6,11 @@
 #include <array>
 #include "overlay.h"
 #include "chunk_renderer.h"
+#include "mesh.h"
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
 
 struct GLFWwindow;
 
@@ -166,6 +171,25 @@ private:
     int last_draw_total_ = 0;
     int last_draw_visible_ = 0;
     uint64_t last_draw_indices_ = 0;
+
+    // Async loading/meshing
+    struct MeshResult {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        float center[3] = {0,0,0};
+        float radius = 0.0f;
+    };
+    std::thread loader_thread_;
+    std::mutex loader_mutex_;
+    std::condition_variable loader_cv_;
+    bool loader_stop_ = false;
+    bool loader_busy_ = false;
+    std::deque<MeshResult> results_queue_;
+    int uploads_per_frame_limit_ = 8;
+
+    void start_initial_ring_async();
+    void loader_thread_func(int face, int ring_radius);
+    void drain_mesh_results();
 };
 
 } // namespace wf

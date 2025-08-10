@@ -14,6 +14,7 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <cmath>
 
 #include "chunk.h"
 #include "mesh.h"
@@ -73,6 +74,9 @@ VulkanApp::VulkanApp() {
 }
 
 VulkanApp::~VulkanApp() {
+    // Stop loader thread if running
+    loader_stop_ = true;
+    if (loader_thread_.joinable()) loader_thread_.join();
     vkDeviceWaitIdle(device_);
 
     cleanup_swapchain();
@@ -187,88 +191,20 @@ void VulkanApp::init_vulkan() {
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
     std::cout << "Queues: graphics=" << queue_family_graphics_ << ", present=" << queue_family_present_ << "\n";
 
-    // Load or generate a small grid of chunks via Region IO and upload them
+    // Start async loading/meshing of the initial ring of chunks
+    start_initial_ring_async();
+    // Place camera slightly outside the loaded shell, looking inward (matches previous behavior)
     {
         PlanetConfig cfg;
-        const int face = 0; // +X face
-        const int tile_span = ring_radius_; // loads (2*tile_span+1)^2 chunks centered at (0,0)
         const int N = Chunk64::N;
-        const float s = (float)cfg.voxel_size_m;
         const double chunk_m = (double)N * cfg.voxel_size_m;
         const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
-        Float3 right, up, forward; face_basis(face, right, up, forward);
-
-        const int W = 2*tile_span + 1;
-        std::vector<Chunk64> chunks(W * W);
-        auto idx_of = [&](int di, int dj){ int ix = di + tile_span; int jy = dj + tile_span; return jy * W + ix; };
-        // First pass: load or generate all chunks
-        for (int dj = -tile_span; dj <= tile_span; ++dj) {
-            for (int di = -tile_span; di <= tile_span; ++di) {
-                FaceChunkKey key{face, di, dj, k0};
-                Chunk64& c = chunks[idx_of(di, dj)];
-                if (!RegionIO::load_chunk(key, c)) {
-                    for (int z = 0; z < N; ++z) {
-                        for (int y = 0; y < N; ++y) {
-                            for (int x = 0; x < N; ++x) {
-                                double s0 = (double)di * chunk_m + (x + 0.5) * cfg.voxel_size_m;
-                                double t0 = (double)dj * chunk_m + (y + 0.5) * cfg.voxel_size_m;
-                                double r0 = (double)k0 * chunk_m + (z + 0.5) * cfg.voxel_size_m;
-                                Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
-                                Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
-                                auto sb = sample_base(cfg, v);
-                                c.set_voxel(x, y, z, sb.material);
-                            }
-                        }
-                    }
-                    RegionIO::save_chunk(key, c);
-                }
-            }
-        }
-        // Second pass: mesh each with neighbor awareness
-        for (int dj = -tile_span; dj <= tile_span; ++dj) {
-            for (int di = -tile_span; di <= tile_span; ++di) {
-                const Chunk64& c = chunks[idx_of(di, dj)];
-                const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj)] : nullptr;
-                const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj)] : nullptr;
-                const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
-                const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
-                Mesh m;
-                mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
-                if (!m.indices.empty()) {
-                    float S0 = (float)(di * chunk_m);
-                    float T0 = (float)(dj * chunk_m);
-                    float R0 = (float)(k0 * chunk_m);
-                    for (auto& vert : m.vertices) {
-                        Float3 lp{vert.x, vert.y, vert.z};
-                        Float3 wp = right * (S0 + lp.x) + up * (T0 + lp.y) + forward * (R0 + lp.z);
-                        Float3 ln{vert.nx, vert.ny, vert.nz};
-                        Float3 wn = right * ln.x + up * ln.y + forward * ln.z;
-                        vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
-                        vert.nx = wn.x; vert.ny = wn.y; vert.nz = wn.z;
-                    }
-                    RenderChunk rc;
-                    rc.index_count = (uint32_t)m.indices.size();
-                    create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, m.vertices.data());
-                    create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, m.indices.data());
-                    // Compute world-space bounding sphere for frustum culling
-                    const float half = (float)(N * s * 0.5);
-                    const float diag_half = half * 1.73205080757f; // sqrt(3)
-                    Float3 center_local{half, half, half};
-                    Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
-                    rc.center[0] = wc.x; rc.center[1] = wc.y; rc.center[2] = wc.z; rc.radius = diag_half;
-                    render_chunks_.push_back(rc);
-                }
-            }
-        }
-
-        // Place camera slightly outside the loaded shell, looking inward
-        {
-            float R0f = (float)(k0 * chunk_m);
-            Float3 pos = forward * (R0f + 10.0f) + up * 4.0f; // 10m radially outward, 4m up
-            cam_pos_[0] = pos.x; cam_pos_[1] = pos.y; cam_pos_[2] = pos.z;
-            cam_yaw_ = 3.14159265f;   // look toward -forward (inward)
-            cam_pitch_ = -0.05f;
-        }
+        Float3 right, up, forward; face_basis(0, right, up, forward);
+        float R0f = (float)(k0 * chunk_m);
+        Float3 pos = forward * (R0f + 10.0f) + up * 4.0f; // 10m radially outward, 4m up
+        cam_pos_[0] = pos.x; cam_pos_[1] = pos.y; cam_pos_[2] = pos.z;
+        cam_yaw_ = 3.14159265f;   // look toward -forward (inward)
+        cam_pitch_ = -0.05f;
     }
 }
 void VulkanApp::create_instance() {
@@ -785,6 +721,8 @@ void VulkanApp::load_config() {
 }
 
 void VulkanApp::draw_frame() {
+    // Drain some mesh results each frame before rendering
+    drain_mesh_results();
     vkWaitForFences(device_, 1, &fences_in_flight_[current_frame_], VK_TRUE, UINT64_MAX);
     vkResetFences(device_, 1, &fences_in_flight_[current_frame_]);
 
@@ -991,3 +929,109 @@ void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
 }
 
 } // namespace wf
+void VulkanApp::start_initial_ring_async() {
+    // Spawn a one-shot worker to build the initial ring on face +X
+    int face = 0;
+    loader_stop_ = false;
+    loader_busy_ = true;
+    loader_thread_ = std::thread(&VulkanApp::loader_thread_func, this, face, ring_radius_);
+}
+
+void VulkanApp::loader_thread_func(int face, int ring_radius) {
+    PlanetConfig cfg;
+    const int N = Chunk64::N;
+    const float s = (float)cfg.voxel_size_m;
+    const double chunk_m = (double)N * cfg.voxel_size_m;
+    const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
+    Float3 right, up, forward; face_basis(face, right, up, forward);
+
+    const int tile_span = ring_radius;
+    const int W = 2*tile_span + 1;
+    auto idx_of = [&](int di, int dj){ int ix = di + tile_span; int jy = dj + tile_span; return jy * W + ix; };
+    std::vector<Chunk64> chunks(W * W);
+
+    // First pass: load or generate all chunks
+    for (int dj = -tile_span; dj <= tile_span && !loader_stop_; ++dj) {
+        for (int di = -tile_span; di <= tile_span && !loader_stop_; ++di) {
+            FaceChunkKey key{face, di, dj, k0};
+            Chunk64& c = chunks[idx_of(di, dj)];
+            if (!RegionIO::load_chunk(key, c)) {
+                for (int z = 0; z < N; ++z) {
+                    for (int y = 0; y < N; ++y) {
+                        for (int x = 0; x < N; ++x) {
+                            double s0 = (double)di * chunk_m + (x + 0.5) * cfg.voxel_size_m;
+                            double t0 = (double)dj * chunk_m + (y + 0.5) * cfg.voxel_size_m;
+                            double r0 = (double)k0 * chunk_m + (z + 0.5) * cfg.voxel_size_m;
+                            Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
+                            Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
+                            auto sb = sample_base(cfg, v);
+                            c.set_voxel(x, y, z, sb.material);
+                        }
+                    }
+                }
+                RegionIO::save_chunk(key, c);
+            }
+        }
+    }
+
+    // Second pass: mesh each with neighbor awareness and enqueue results
+    for (int dj = -tile_span; dj <= tile_span && !loader_stop_; ++dj) {
+        for (int di = -tile_span; di <= tile_span && !loader_stop_; ++di) {
+            const Chunk64& c = chunks[idx_of(di, dj)];
+            const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj)] : nullptr;
+            const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj)] : nullptr;
+            const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
+            const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
+            Mesh m;
+            mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
+            if (m.indices.empty()) continue;
+            float S0 = (float)(di * chunk_m);
+            float T0 = (float)(dj * chunk_m);
+            float R0 = (float)(k0 * chunk_m);
+            for (auto& vert : m.vertices) {
+                Float3 lp{vert.x, vert.y, vert.z};
+                Float3 wp = right * (S0 + lp.x) + up * (T0 + lp.y) + forward * (R0 + lp.z);
+                Float3 ln{vert.nx, vert.ny, vert.nz};
+                Float3 wn = right * ln.x + up * ln.y + forward * ln.z;
+                vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
+                vert.nx = wn.x; vert.ny = wn.y; vert.nz = wn.z;
+            }
+            MeshResult res;
+            res.vertices = std::move(m.vertices);
+            res.indices = std::move(m.indices);
+            const float half = (float)(N * s * 0.5);
+            const float diag_half = half * 1.73205080757f; // sqrt(3)
+            Float3 center_local{half, half, half};
+            Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
+            res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
+
+            {
+                std::lock_guard<std::mutex> lk(loader_mutex_);
+                results_queue_.push_back(std::move(res));
+            }
+            loader_cv_.notify_one();
+        }
+    }
+    loader_busy_ = false;
+}
+
+void VulkanApp::drain_mesh_results() {
+    // Drain up to uploads_per_frame_limit_ results and create GPU buffers
+    int uploaded = 0;
+    for (;;) {
+        MeshResult res;
+        {
+            std::lock_guard<std::mutex> lk(loader_mutex_);
+            if (results_queue_.empty()) break;
+            res = std::move(results_queue_.front());
+            results_queue_.pop_front();
+        }
+        RenderChunk rc;
+        rc.index_count = (uint32_t)res.indices.size();
+        create_host_buffer(sizeof(Vertex) * res.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, res.vertices.data());
+        create_host_buffer(sizeof(uint32_t) * res.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, res.indices.data());
+        rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
+        render_chunks_.push_back(rc);
+        if (++uploaded >= uploads_per_frame_limit_) break;
+    }
+}
