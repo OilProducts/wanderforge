@@ -574,8 +574,8 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     throw_if_failed(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer failed");
 
-    // No-op compute dispatch before rendering
-    if (pipeline_compute_) {
+    // Optional no-op compute dispatch (disabled by default)
+    if (compute_enabled_ && pipeline_compute_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_compute_);
         vkCmdDispatch(cmd, 1, 1, 1);
     }
@@ -746,6 +746,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_ENABLE_COMPUTE_NOOP")) compute_enabled_ = parse_bool(s, compute_enabled_);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -761,6 +762,7 @@ void VulkanApp::load_config() {
         else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
+        else if (key == "enable_compute_noop") compute_enabled_ = parse_bool(val, compute_enabled_);
     }
 }
 

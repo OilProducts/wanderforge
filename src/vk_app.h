@@ -87,6 +87,7 @@ private:
     // Compute pipeline (no-op dispatch)
     VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
     VkPipeline pipeline_compute_ = VK_NULL_HANDLE;
+    bool compute_enabled_ = false; // gate no-op compute dispatch
 
     struct RenderChunk {
         VkBuffer vbuf = VK_NULL_HANDLE;
