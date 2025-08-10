@@ -878,8 +878,7 @@ void VulkanApp::create_graphics_pipeline() {
 
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    // Temporarily disable culling to validate transforms/winding, will restore BACK after verification
-    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
@@ -966,8 +965,7 @@ void VulkanApp::create_graphics_pipeline_chunk() {
 
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    // Temporarily disable culling to validate transforms/winding, will restore BACK after verification
-    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
