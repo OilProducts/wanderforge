@@ -552,19 +552,20 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                                               updir.x*r0.y - updir.y*r0.x });
             float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
             Float3 fwd_h{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-            // Rotate around right axis by walk_pitch_: f' = f_h*cos(p) + up*cos? Actually rotation gives:
-            // forward' = f_h*cos(p) + updir*sin(p), up' = updir*cos(p) - f_h*sin(p)
             float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
             Float3 fwd{ fwd_h.x*cp + updir.x*sp, fwd_h.y*cp + updir.y*sp, fwd_h.z*cp + updir.z*sp };
             Float3 up_rot{ updir.x*cp - fwd_h.x*sp, updir.y*cp - fwd_h.y*sp, updir.z*cp - fwd_h.z*sp };
+            // Build right and recompute up via cross to ensure right-handed triad
             Float3 rightv{ fwd.y*up_rot.z - fwd.z*up_rot.y, fwd.z*up_rot.x - fwd.x*up_rot.z, fwd.x*up_rot.y - fwd.y*up_rot.x };
+            // Recompute up_final = right x forward
+            Float3 up_final{ rightv.y*fwd.z - rightv.z*fwd.y, rightv.z*fwd.x - rightv.x*fwd.z, rightv.x*fwd.y - rightv.y*fwd.x };
             // Row-major view matrix from basis
             V = wf::Mat4{
-                rightv.x, up_rot.x, -fwd.x, 0.0f,
-                rightv.y, up_rot.y, -fwd.y, 0.0f,
-                rightv.z, up_rot.z, -fwd.z, 0.0f,
+                rightv.x, up_final.x, -fwd.x, 0.0f,
+                rightv.y, up_final.y, -fwd.y, 0.0f,
+                rightv.z, up_final.z, -fwd.z, 0.0f,
                 -(rightv.x*eye[0] + rightv.y*eye[1] + rightv.z*eye[2]),
-                -(up_rot.x*eye[0] + up_rot.y*eye[1] + up_rot.z*eye[2]),
+                -(up_final.x*eye[0] + up_final.y*eye[1] + up_final.z*eye[2]),
                  ( fwd.x*eye[0] +  fwd.y*eye[1] +  fwd.z*eye[2]),
                  1.0f
             };
@@ -602,7 +603,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 float cp2 = std::cos(walk_pitch_), sp2 = std::sin(walk_pitch_);
                 Float3 fw{ fwh.x*cp2 + updir.x*sp2, fwh.y*cp2 + updir.y*sp2, fwh.z*cp2 + updir.z*sp2 };
                 Float3 up2{ updir.x*cp2 - fwh.x*sp2, updir.y*cp2 - fwh.y*sp2, updir.z*cp2 - fwh.z*sp2 };
+                // right = forward x up; up = right x forward
                 Float3 rv{ fw.y*up2.z - fw.z*up2.y, fw.z*up2.x - fw.x*up2.z, fw.x*up2.y - fw.y*up2.x };
+                up2 = Float3{ rv.y*fw.z - rv.z*fw.y, rv.z*fw.x - rv.x*fw.z, rv.x*fw.y - rv.y*fw.x };
                 fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
                 upv[0]=up2.x; upv[1]=up2.y; upv[2]=up2.z;
                 rightv[0]=rv.x; rightv[1]=rv.y; rightv[2]=rv.z;
