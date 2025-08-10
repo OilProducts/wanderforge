@@ -37,7 +37,7 @@ void ChunkRenderer::init(VkPhysicalDevice phys, VkDevice device, VkRenderPass re
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
 
-    VkVertexInputBindingDescription bind{}; bind.binding = 0; bind.stride = sizeof(float) * 7; bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputBindingDescription bind{}; bind.binding = 0; bind.stride = sizeof(Vertex); bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     VkVertexInputAttributeDescription attrs[3]{};
     attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[0].offset = 0;
     attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[1].offset = 12;
@@ -121,6 +121,11 @@ void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::
             cmds.push_back(c);
         }
         wf::vk::upload_host_visible(device_, indirect_mem_, sizeof(Cmd) * cmds.size(), cmds.data(), 0);
+        if (log_ && (++log_frame_cnt_ % log_every_n_ == 0)) {
+            std::cout << "[pool] record: draws=" << cmds.size() << " vtx_used=" << (unsigned long long)vtx_used_
+                      << "/" << (unsigned long long)vtx_capacity_ << " idx_used=" << (unsigned long long)idx_used_
+                      << "/" << (unsigned long long)idx_capacity_ << "\n";
+        }
         VkDeviceSize offs = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vtx_pool_, &offs);
         vkCmdBindIndexBuffer(cmd, idx_pool_, 0, VK_INDEX_TYPE_UINT32);
@@ -137,29 +142,22 @@ void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::
 }
 
 bool ChunkRenderer::ensure_pool_capacity(VkDeviceSize add_vtx_bytes, VkDeviceSize add_idx_bytes) {
-    VkDeviceSize need_v = vtx_used_ + add_vtx_bytes;
+    // Create on first use only; afterwards, reuse via free-list without growth
     if (vtx_capacity_ == 0) {
-        VkDeviceSize new_cap = std::max<VkDeviceSize>(need_v, (VkDeviceSize)(64 * 1024 * 1024));
+        VkDeviceSize base_cap = (vtx_initial_cap_ > 0) ? vtx_initial_cap_ : (VkDeviceSize)(64 * 1024 * 1024);
+        VkDeviceSize new_cap = std::max<VkDeviceSize>(add_vtx_bytes, base_cap);
         wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                               vtx_pool_, vtx_mem_);
-        vtx_capacity_ = new_cap;
-        vtx_used_ = 0;
-    } else if (need_v > vtx_capacity_) {
-        std::cerr << "[warn] ChunkRenderer vertex pool overflow; skipping mesh upload (need " << need_v << ", cap " << vtx_capacity_ << ")\n";
-        return false;
+        vtx_capacity_ = new_cap; vtx_used_ = 0; vtx_tail_ = 0; vtx_free_.clear();
     }
-    VkDeviceSize need_i = idx_used_ + add_idx_bytes;
     if (idx_capacity_ == 0) {
-        VkDeviceSize new_cap = std::max<VkDeviceSize>(need_i, (VkDeviceSize)(64 * 1024 * 1024));
+        VkDeviceSize base_cap = (idx_initial_cap_ > 0) ? idx_initial_cap_ : (VkDeviceSize)(64 * 1024 * 1024);
+        VkDeviceSize new_cap = std::max<VkDeviceSize>(add_idx_bytes, base_cap);
         wf::vk::create_buffer(phys_, device_, new_cap, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                               idx_pool_, idx_mem_);
-        idx_capacity_ = new_cap;
-        idx_used_ = 0;
-    } else if (need_i > idx_capacity_) {
-        std::cerr << "[warn] ChunkRenderer index pool overflow; skipping mesh upload (need " << need_i << ", cap " << idx_capacity_ << ")\n";
-        return false;
+        idx_capacity_ = new_cap; idx_used_ = 0; idx_tail_ = 0; idx_free_.clear();
     }
     return true;
 }
@@ -176,25 +174,100 @@ void ChunkRenderer::ensure_indirect_capacity(size_t drawCount) {
     indirect_buf_ = nb; indirect_mem_ = nm; indirect_capacity_cmds_ = new_cap;
 }
 
-void ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
+bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
                                 const uint32_t* indices, size_t icount,
                                 uint32_t& out_first_index,
                                 int32_t& out_base_vertex) {
     VkDeviceSize vbytes = (VkDeviceSize)(vcount * sizeof(Vertex));
     VkDeviceSize ibytes = (VkDeviceSize)(icount * sizeof(uint32_t));
     if (!ensure_pool_capacity(vbytes, ibytes)) {
-        out_base_vertex = 0; out_first_index = 0; return;
+        out_base_vertex = 0; out_first_index = 0; return false;
     }
-    VkDeviceSize voff = vtx_used_;
-    VkDeviceSize ioff = idx_used_;
+    VkDeviceSize voff = 0, ioff = 0;
+    if (!alloc_from_pool(vbytes, sizeof(Vertex), true, voff)) return false;
+    if (!alloc_from_pool(ibytes, sizeof(uint32_t), false, ioff)) { free_to_pool(voff, vbytes, true); return false; }
     out_base_vertex = (int32_t)(voff / sizeof(Vertex));
     out_first_index = (uint32_t)(ioff / sizeof(uint32_t));
     // Upload vertices
     wf::vk::upload_host_visible(device_, vtx_mem_, vbytes, vertices, voff);
-    vtx_used_ = voff + vbytes;
+    vtx_used_ = std::max(vtx_used_, voff + vbytes);
     // Upload indices
     wf::vk::upload_host_visible(device_, idx_mem_, ibytes, indices, ioff);
-    idx_used_ = ioff + ibytes;
+    idx_used_ = std::max(idx_used_, ioff + ibytes);
+    if (log_) {
+        std::cout << "[pool] upload: vtx off=" << (unsigned long long)voff << " bytes=" << (unsigned long long)vbytes
+                  << " idx off=" << (unsigned long long)ioff << " bytes=" << (unsigned long long)ibytes << "\n";
+    }
+    return true;
+}
+
+bool ChunkRenderer::alloc_from_pool(VkDeviceSize bytes, VkDeviceSize alignment, bool isVertex, VkDeviceSize& out_offset) {
+    auto& freev = isVertex ? vtx_free_ : idx_free_;
+    VkDeviceSize& tail = isVertex ? vtx_tail_ : idx_tail_;
+    VkDeviceSize capacity = isVertex ? vtx_capacity_ : idx_capacity_;
+    // First-fit with alignment inside blocks
+    for (size_t i = 0; i < freev.size(); ++i) {
+        VkDeviceSize a = align_up(freev[i].off, alignment);
+        VkDeviceSize end = freev[i].off + freev[i].size;
+        if (a + bytes <= end) {
+            // Allocate [a, a+bytes)
+            std::vector<FreeBlock> newBlocks;
+            if (a > freev[i].off) newBlocks.push_back(FreeBlock{ freev[i].off, a - freev[i].off });
+            VkDeviceSize tailSize = end - (a + bytes);
+            if (tailSize > 0) newBlocks.push_back(FreeBlock{ a + bytes, tailSize });
+            freev.erase(freev.begin() + i);
+            freev.insert(freev.begin() + i, newBlocks.begin(), newBlocks.end());
+            out_offset = a;
+            return true;
+        }
+    }
+    // Allocate at tail with alignment
+    VkDeviceSize a = align_up(tail, alignment);
+    if (a + bytes <= capacity) {
+        out_offset = a;
+        tail = a + bytes;
+        return true;
+    }
+    return false;
+}
+
+void ChunkRenderer::free_to_pool(VkDeviceSize offset, VkDeviceSize bytes, bool isVertex) {
+    auto& freev = isVertex ? vtx_free_ : idx_free_;
+    FreeBlock nb{ offset, bytes };
+    auto it = std::lower_bound(freev.begin(), freev.end(), nb, [](const FreeBlock& a, const FreeBlock& b){ return a.off < b.off; });
+    freev.insert(it, nb);
+    // Coalesce
+    std::vector<FreeBlock> merged;
+    for (const auto& b : freev) {
+        if (!merged.empty()) {
+            auto& last = merged.back();
+            if (last.off + last.size >= b.off) {
+                VkDeviceSize newEnd = std::max(last.off + last.size, b.off + b.size);
+                last.size = newEnd - last.off;
+                continue;
+            }
+        }
+        merged.push_back(b);
+    }
+    freev.swap(merged);
+    if (log_) {
+        std::cout << "[pool] free: " << (isVertex?"vtx":"idx") << " off=" << (unsigned long long)offset
+                  << " size=" << (unsigned long long)bytes << " blocks=" << freev.size() << "\n";
+    }
+}
+
+void ChunkRenderer::free_mesh(uint32_t first_index, uint32_t index_count,
+                              int32_t base_vertex, uint32_t vertex_count) {
+    if (index_count > 0) {
+        VkDeviceSize off = (VkDeviceSize)first_index * sizeof(uint32_t);
+        VkDeviceSize sz = (VkDeviceSize)index_count * sizeof(uint32_t);
+        free_to_pool(off, sz, false);
+    }
+    if (vertex_count > 0) {
+        VkDeviceSize off = (VkDeviceSize)base_vertex * sizeof(Vertex);
+        VkDeviceSize sz = (VkDeviceSize)vertex_count * sizeof(Vertex);
+        free_to_pool(off, sz, true);
+    }
 }
 // Free-list removed: pooled memory is append-only without reuse
 

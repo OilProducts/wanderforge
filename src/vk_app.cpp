@@ -190,6 +190,10 @@ void VulkanApp::init_vulkan() {
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
     chunk_renderer_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    // Apply pool caps and logging preferences
+    chunk_renderer_.set_pool_caps_bytes((VkDeviceSize)pool_vtx_mb_ * 1024ull * 1024ull,
+                                        (VkDeviceSize)pool_idx_mb_ * 1024ull * 1024ull);
+    chunk_renderer_.set_logging(log_pool_);
     std::cout << "ChunkRenderer ready: " << (chunk_renderer_.is_ready() ? "yes" : "no")
               << ", use_chunk_renderer=" << (use_chunk_renderer_ ? 1 : 0) << "\n";
     overlay_text_valid_.fill(false);
@@ -671,12 +675,19 @@ void VulkanApp::update_hud(float dt) {
     char hud[512];
     if (draw_stats_enabled_) {
         float tris_m = (float)last_draw_indices_ / 3.0f / 1.0e6f;
+        VkDeviceSize v_used=0,v_cap=0,i_used=0,i_cap=0;
+        if (chunk_renderer_.is_ready()) chunk_renderer_.get_pool_usage(v_used, v_cap, i_used, i_cap);
+        float v_used_mb = (float)v_used / (1024.0f*1024.0f);
+        float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
+        float i_used_mb = (float)i_used / (1024.0f*1024.0f);
+        float i_cap_mb  = (float)(i_cap ? i_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         std::snprintf(hud, sizeof(hud),
-                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d",
+                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
                       fps_smooth_,
                       cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                       invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
-                      last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_);
+                      last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
+                      v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
                       "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
@@ -722,6 +733,10 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_PRUNE_MARGIN")) { try { prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_CULL")) cull_enabled_ = parse_bool(s, cull_enabled_);
     if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
+    if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
+    if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
+    if (const char* s = std::getenv("WF_POOL_VTX_MB")) { try { pool_vtx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_POOL_IDX_MB")) { try { pool_idx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -742,6 +757,10 @@ void VulkanApp::load_config() {
         else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
         else if (key == "cull") cull_enabled_ = parse_bool(val, cull_enabled_);
         else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
+        else if (key == "log_stream") log_stream_ = parse_bool(val, log_stream_);
+        else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
+        else if (key == "pool_vtx_mb") { try { pool_vtx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
+        else if (key == "pool_idx_mb") { try { pool_idx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
     }
 }
 
@@ -755,6 +774,10 @@ void VulkanApp::draw_frame() {
         if (rc.vmem) vkFreeMemory(device_, rc.vmem, nullptr);
         if (rc.ibuf) vkDestroyBuffer(device_, rc.ibuf, nullptr);
         if (rc.imem) vkFreeMemory(device_, rc.imem, nullptr);
+        // Free pooled mesh ranges if used
+        if (!rc.vbuf && !rc.ibuf && rc.index_count > 0 && rc.vertex_count > 0) {
+            chunk_renderer_.free_mesh(rc.first_index, rc.index_count, rc.base_vertex, rc.vertex_count);
+        }
     }
     trash_[current_frame_].clear();
     // Streaming update (may schedule new loads and prune old chunks) and drain uploads
@@ -977,6 +1000,10 @@ void VulkanApp::loader_thread_main() {
             request_queue_.clear();
             loader_busy_ = true;
         }
+        if (log_stream_) {
+            std::cout << "[stream] process request: face=" << req.face << " ring=" << req.ring_radius
+                      << " ci=" << req.ci << " cj=" << req.cj << "\n";
+        }
         build_ring_job(req.face, req.ring_radius, req.ci, req.cj, req.fwd_s, req.fwd_t, req.gen);
         {
             std::lock_guard<std::mutex> lk(loader_mutex_);
@@ -1018,6 +1045,10 @@ void VulkanApp::start_initial_ring_async() {
     stream_face_ = face;
     ring_center_i_ = 0; ring_center_j_ = 0;
     enqueue_ring_request(face, ring_radius_, ring_center_i_, ring_center_j_, 0.0f, 0.0f);
+    if (log_stream_) {
+        std::cout << "[stream] initial request: face=" << face << " ring=" << ring_radius_
+                  << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << "\n";
+    }
 }
 
 void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, float fwd_s, float fwd_t, uint64_t job_gen) {
@@ -1132,11 +1163,19 @@ void VulkanApp::drain_mesh_results() {
         }
         RenderChunk rc;
         rc.index_count = (uint32_t)res.indices.size();
-        // Upload into shared pools for indirect drawing (append-only)
-        chunk_renderer_.upload_mesh(res.vertices.data(), res.vertices.size(),
-                                    res.indices.data(), res.indices.size(),
-                                    rc.first_index, rc.base_vertex);
-        // Clear legacy per-chunk buffers (we use pooled buffers)
+        rc.vertex_count = (uint32_t)res.vertices.size();
+        // Upload into pooled buffers with free-list reuse
+        bool ok_upload = chunk_renderer_.upload_mesh(res.vertices.data(), res.vertices.size(),
+                                                    res.indices.data(), res.indices.size(),
+                                                    rc.first_index, rc.base_vertex);
+        if (!ok_upload) {
+            if (log_stream_) {
+                std::cerr << "[stream] skip upload (pool full): face=" << rc.key.face
+                          << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                          << " vtx=" << res.vertices.size() << " idx=" << res.indices.size() << "\n";
+            }
+            continue;
+        }
         rc.vbuf = VK_NULL_HANDLE; rc.vmem = VK_NULL_HANDLE; rc.ibuf = VK_NULL_HANDLE; rc.imem = VK_NULL_HANDLE;
         rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
         rc.key = res.key;
@@ -1148,10 +1187,24 @@ void VulkanApp::drain_mesh_results() {
                 schedule_delete_chunk(render_chunks_[i]);
                 render_chunks_[i] = rc;
                 replaced = true;
+                if (log_stream_) {
+                    std::cout << "[stream] replace: face=" << rc.key.face
+                              << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                              << " idx_count=" << rc.index_count << " vtx_count=" << rc.vertex_count
+                              << " first_index=" << rc.first_index << " base_vertex=" << rc.base_vertex << "\n";
+                }
                 break;
             }
         }
-        if (!replaced) render_chunks_.push_back(rc);
+        if (!replaced) {
+            render_chunks_.push_back(rc);
+            if (log_stream_) {
+                std::cout << "[stream] add: face=" << rc.key.face
+                          << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                          << " idx_count=" << rc.index_count << " vtx_count=" << rc.vertex_count
+                          << " first_index=" << rc.first_index << " base_vertex=" << rc.base_vertex << "\n";
+            }
+        }
         if (++uploaded >= uploads_per_frame_limit_) break;
     }
 }
@@ -1160,6 +1213,13 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
     for (size_t i = 0; i < render_chunks_.size();) {
         const auto& rk = render_chunks_[i].key;
         if (rk.face != face || std::llabs(rk.i - ci) > span || std::llabs(rk.j - cj) > span) {
+            if (log_stream_) {
+                std::cout << "[stream] prune: face=" << rk.face << " i=" << rk.i << " j=" << rk.j << " k=" << rk.k
+                          << " first_index=" << render_chunks_[i].first_index
+                          << " base_vertex=" << render_chunks_[i].base_vertex
+                          << " idx_count=" << render_chunks_[i].index_count
+                          << " vtx_count=" << render_chunks_[i].vertex_count << "\n";
+            }
             // Defer deletion/free; chunk might still be referenced by commands submitted last frame
             schedule_delete_chunk(render_chunks_[i]);
             render_chunks_.erase(render_chunks_.begin() + i);
@@ -1191,6 +1251,10 @@ void VulkanApp::update_streaming() {
         float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
         start_loader_thread();
         enqueue_ring_request(stream_face_, ring_radius_, ring_center_i_, ring_center_j_, fwd_s, fwd_t);
+        if (log_stream_) {
+            std::cout << "[stream] move request: face=" << stream_face_ << " ring=" << ring_radius_
+                      << " ci=" << ring_center_i_ << " cj=" << ring_center_j_ << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << "\n";
+        }
     }
     // Opportunistically prune far chunks each frame using hysteresis margin
     prune_chunks_outside(stream_face_, ring_center_i_, ring_center_j_, ring_radius_ + prune_margin_);

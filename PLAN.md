@@ -105,17 +105,35 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - Walk around a static planet; smooth chunk streaming at 60 fps; typical chunk ≤ 15k tris.
  - Progress:
   - 2025-08-09: Added `Chunk64` (palette + occupancy) and a naive face mesher.
-  - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
+ - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
+  - 2025-08-10: Extracted `ChunkRenderer` (pipeline, layout, push constants) and switched to indirect multi‑draw for chunk batches. Added pooled vertex/index buffer allocator.
+  - 2025-08-10: Added persistent loader thread + request coalescing, prioritized tile ordering (near‑first, ahead‑of‑camera within ring), and prune hysteresis (load R, prune R+margin) for smooth streaming.
+  - 2025-08-10: Fixed device‑lost during streaming by deferring GPU resource destruction by frame; added robust pooled allocator with strict alignment; fixed stride mismatch (pipeline now uses `sizeof(Vertex)`).
+  - 2025-08-10: HUD improvements: multi‑line stats; added optional pool usage and loader status; added stream/pool logging toggles for targeted diagnostics.
 
  - Next tasks (Phase 3 scope):
    - Extract `ChunkRenderer` module (pipeline, vertex layout, push constants, draw paths) — [Done].
    - Centralize Vulkan helpers (shader module loader, `find_memory_type`, buffer utils) for reuse — [Done] (`vk_utils`).
    - Factor a `Camera` utility for view/projection and input config (FOV/near/far, smoothing) — [Done (math helpers)]; input config toggles pending.
-   - Expand to a larger streaming ring; add simple CPU frustum culling — [Partial]: frustum culling implemented; ring expansion pending.
-   - Move toward draw batching/indirect draws to reduce command overhead — [Pending].
-   - Region IO: add compression flags (LZ4/Zstd), async IO worker, and basic compaction/robust errors — [Pending].
+   - Expand to a larger streaming ring; add simple CPU frustum culling — [Partial].
+   - Move toward draw batching/indirect draws to reduce command overhead — [Done].
+   - Persistent loader + request coalescing — [Done].
+   - Prioritized tile ordering (near‑first, ahead‑of‑camera within ring) — [Done].
+   - Prune hysteresis (load R, prune R+margin) — [Done].
+   - Deferred GPU resource destruction by frame (avoid device‑lost) — [Done].
+   - Pooled allocator free‑list with strict alignment; logging toggles for stream/pool — [Done].
+   - Pool caps configurable + HUD usage line — [Done].
+   
    - HUD: DPI/scale control and optional text shadow — [Pending]; skip rebuilds unless content changes — [Done].
+
+ - Upcoming (to complete Phase 3 acceptance):
+   - Multi‑Face Streaming: select face from camera direction, recenter ring across faces, and preserve continuity.
+   - Device‑local pools + staging uploads for higher throughput.
+
+ - Extras (non‑blocking for Phase 3 acceptance):
+   - Tail reclamation in pools (shrink tail when freeing the last allocated block).
+   - Region IO compression & compaction: compression flags (LZ4/Zstd), async IO worker, compaction, and robust error handling.
 
 ### Phase 3.5 — Convention Migration (Vulkan‑native clip space)
 

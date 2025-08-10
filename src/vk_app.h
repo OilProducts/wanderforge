@@ -104,6 +104,7 @@ private:
         uint32_t index_count = 0;
         uint32_t first_index = 0; // indirect path
         int32_t  base_vertex = 0; // indirect path
+        uint32_t vertex_count = 0; // for pooled free-list reclamation
         float center[3] = {0,0,0};
         float radius = 0.0f;
         FaceChunkKey key{0,0,0,0};
@@ -154,6 +155,10 @@ private:
     // HUD / stats
     double hud_accum_ = 0.0;
     float fps_smooth_ = 0.0f;
+    bool log_stream_ = false;
+    bool log_pool_ = false;
+    int pool_vtx_mb_ = 64;
+    int pool_idx_mb_ = 64;
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
