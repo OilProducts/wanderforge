@@ -181,6 +181,14 @@ VulkanApp::~VulkanApp() {
         if (rc.imem) vkFreeMemory(device_, rc.imem, nullptr);
     }
 
+    // Destroy overlay buffers
+    for (size_t i = 0; i < kFramesInFlight; ++i) {
+        if (overlay_vbuf_[i]) vkDestroyBuffer(device_, overlay_vbuf_[i], nullptr);
+        if (overlay_vmem_[i]) vkFreeMemory(device_, overlay_vmem_[i], nullptr);
+        overlay_vbuf_[i] = VK_NULL_HANDLE; overlay_vmem_[i] = VK_NULL_HANDLE;
+        overlay_capacity_bytes_[i] = 0; overlay_vertex_count_[i] = 0;
+    }
+
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
 
@@ -815,6 +823,29 @@ void VulkanApp::draw_frame() {
     VkResult acq = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, sem_image_available_[current_frame_], VK_NULL_HANDLE, &imageIndex);
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) { recreate_swapchain(); return; }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) throw_if_failed(acq, "vkAcquireNextImageKHR failed");
+
+    // Prepare overlay geometry for this frame-in-flight slot
+    overlay_draw_slot_ = current_frame_;
+    if (pipeline_overlay_) {
+        char line[256];
+        float yaw_deg = cam_yaw_ * 57.2957795f; float pitch_deg = cam_pitch_ * 57.2957795f;
+        std::snprintf(line, sizeof(line), "FPS: %.1f  Pos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
+                      fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
+                      invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
+        int W = (int)swapchain_extent_.width; int H = (int)swapchain_extent_.height;
+        struct OV { float x, y, r, g, b, a; };
+        std::vector<OV> verts;
+        const int ch_w = 6, ch_h = 8; const float scale = 2.0f; int max_chars = 120;
+        int len = (int)std::min<size_t>(std::strlen(line), (size_t)max_chars);
+        float x0 = 6.0f, y0 = 6.0f;
+        auto to_ndc = [&](float px, float py){ float xn = (px / (float)W) * 2.0f - 1.0f; float yn = 1.0f - (py / (float)H) * 2.0f; return std::array<float,2>{xn, yn}; };
+        auto quad = [&](float x, float y, float w, float h, float r, float g, float b, float a){ auto p0 = to_ndc(x, y); auto p1 = to_ndc(x + w, y); auto p2 = to_ndc(x + w, y + h); auto p3 = to_ndc(x, y + h); verts.push_back({p0[0], p0[1], r,g,b,a}); verts.push_back({p1[0], p1[1], r,g,b,a}); verts.push_back({p2[0], p2[1], r,g,b,a}); verts.push_back({p0[0], p0[1], r,g,b,a}); verts.push_back({p2[0], p2[1], r,g,b,a}); verts.push_back({p3[0], p3[1], r,g,b,a}); };
+        for (int ci = 0; ci < len; ++ci) {
+            unsigned char ch = (unsigned char)line[ci]; if (ch < 32 || ch > 127) ch = 32; const uint8_t* rows = WF_FONT6x8[ch - 32];
+            for (int ry = 0; ry < ch_h; ++ry) { uint8_t bits = rows[ry]; for (int rx = 0; rx < ch_w; ++rx) if (bits & (1u << rx)) { float px = x0 + (ci * ch_w + rx) * scale; float py = y0 + ry * scale; quad(px, py, scale, scale, 1,1,1,1); } }
+        }
+        if (!verts.empty()) update_overlay_buffer(overlay_draw_slot_, verts.data(), (VkDeviceSize)(verts.size() * sizeof(OV))); else overlay_vertex_count_[overlay_draw_slot_] = 0;
+    }
 
     vkResetCommandBuffer(command_buffers_[imageIndex], 0);
     record_command_buffer(command_buffers_[imageIndex], imageIndex);
