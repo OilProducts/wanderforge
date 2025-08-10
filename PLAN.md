@@ -109,13 +109,13 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
 
  - Next tasks (Phase 3 scope):
-   - Extract `ChunkRenderer` module (pipeline, vertex layout, push constants, draw paths).
-   - Centralize Vulkan helpers (shader module loader, `find_memory_type`, buffer utils) for reuse.
-   - Factor a `Camera` utility for view/projection and input config (FOV/near/far, smoothing).
-   - Expand to a larger streaming ring; add simple CPU frustum culling.
-   - Move toward draw batching/indirect draws to reduce command overhead.
-   - Region IO: add compression flags (LZ4/Zstd), async IO worker, and basic compaction/robust errors.
-   - HUD: DPI/scale control and optional text shadow; skip rebuilds unless content changes (done).
+   - Extract `ChunkRenderer` module (pipeline, vertex layout, push constants, draw paths) — [Done].
+   - Centralize Vulkan helpers (shader module loader, `find_memory_type`, buffer utils) for reuse — [Done] (`vk_utils`).
+   - Factor a `Camera` utility for view/projection and input config (FOV/near/far, smoothing) — [Done (math helpers)]; input config toggles pending.
+   - Expand to a larger streaming ring; add simple CPU frustum culling — [Partial]: frustum culling implemented; ring expansion pending.
+   - Move toward draw batching/indirect draws to reduce command overhead — [Pending].
+   - Region IO: add compression flags (LZ4/Zstd), async IO worker, and basic compaction/robust errors — [Pending].
+   - HUD: DPI/scale control and optional text shadow — [Pending]; skip rebuilds unless content changes — [Done].
 
 ### Phase 3.5 — Convention Migration (Vulkan‑native clip space)
 
