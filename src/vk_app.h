@@ -28,6 +28,7 @@ private:
     void create_render_pass();
     void create_graphics_pipeline();
     void create_graphics_pipeline_chunk();
+    void create_graphics_pipeline_overlay();
     void create_compute_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
@@ -77,6 +78,8 @@ private:
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_chunk_ = VK_NULL_HANDLE;
     VkPipeline pipeline_chunk_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout_overlay_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_overlay_ = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
 
     // Compute pipeline (no-op dispatch)
@@ -136,6 +139,14 @@ private:
     // HUD / stats
     double hud_accum_ = 0.0;
     float fps_smooth_ = 0.0f;
+
+    // Overlay geometry buffers (per frame slot)
+    VkBuffer overlay_vbuf_[kFramesInFlight] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDeviceMemory overlay_vmem_[kFramesInFlight] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t overlay_vertex_count_[kFramesInFlight] = {0,0};
+    VkDeviceSize overlay_capacity_bytes_[kFramesInFlight] = {0,0};
+    size_t overlay_draw_slot_ = 0;
+    void update_overlay_buffer(size_t slot, const void* data, VkDeviceSize bytes);
 };
 
 } // namespace wf

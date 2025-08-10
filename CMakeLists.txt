@@ -107,6 +107,8 @@ set(WF_SHADER_SOURCES
   shaders/noop.comp
   shaders/chunk.vert
   shaders/chunk.frag
+  shaders/overlay.vert
+  shaders/overlay.frag
 )
 set(WF_SHADER_OUTPUTS)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
