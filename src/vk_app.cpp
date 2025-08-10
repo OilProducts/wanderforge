@@ -85,6 +85,8 @@ VulkanApp::~VulkanApp() {
 
     // Overlay resources
     overlay_.cleanup(device_);
+    // Chunk renderer
+    chunk_renderer_.cleanup(device_);
 
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
@@ -168,6 +170,7 @@ void VulkanApp::init_vulkan() {
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    chunk_renderer_.init(device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
     overlay_text_valid_.fill(false);
     hud_force_refresh_ = true;
     create_framebuffers();
@@ -587,14 +590,10 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
         auto MVP = mul4(V, P);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
-        vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
-        for (const auto& rc : render_chunks_) {
-            VkDeviceSize offs = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &rc.vbuf, &offs);
-            vkCmdBindIndexBuffer(cmd, rc.ibuf, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, rc.index_count, 1, 0, 0, 0);
-        }
+        std::vector<ChunkDrawItem> items;
+        items.reserve(render_chunks_.size());
+        for (const auto& rc : render_chunks_) items.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+        chunk_renderer_.record(cmd, MVP.data(), items);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -803,6 +802,7 @@ void VulkanApp::recreate_swapchain() {
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.recreate_swapchain(render_pass_, swapchain_extent_, WF_SHADER_DIR);
+    chunk_renderer_.recreate(render_pass_, swapchain_extent_, WF_SHADER_DIR);
     overlay_text_valid_.fill(false);
     hud_force_refresh_ = true;
     create_framebuffers();
