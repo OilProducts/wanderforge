@@ -569,14 +569,12 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         auto s = norm3(cross(fwd, upv));
         auto u = cross(s, fwd);
         float ex = cam_pos_[0], ey = cam_pos_[1], ez = cam_pos_[2];
+        // Column-major look-at: columns are s, u, -f; bottom row is translation
         float Vcol[16] = {
-            s[0], s[1], s[2], 0,
-            u[0], u[1], u[2], 0,
-            -fwd[0], -fwd[1], -fwd[2], 0,
-            -(s[0]*ex + s[1]*ey + s[2]*ez),
-            -(u[0]*ex + u[1]*ey + u[2]*ez),
-            (fwd[0]*ex + fwd[1]*ey + fwd[2]*ez),
-            1
+            s[0], s[1], s[2], -(s[0]*ex + s[1]*ey + s[2]*ez),
+            u[0], u[1], u[2], -(u[0]*ex + u[1]*ey + u[2]*ez),
+            -fwd[0], -fwd[1], -fwd[2], (fwd[0]*ex + fwd[1]*ey + fwd[2]*ez),
+            0, 0, 0, 1
         };
         // Column-major multiply: R = P * V
         float MVPcol[16];
