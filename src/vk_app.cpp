@@ -543,9 +543,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             // Build view from local basis (updir, heading)
             Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
             Float3 world_up{0,1,0};
-            Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
-                                              world_up.z*updir.x - world_up.x*updir.z,
-                                              world_up.x*updir.y - world_up.y*updir.x });
+            Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
+                                              updir.z*world_up.x - updir.x*world_up.z,
+                                              updir.x*world_up.y - updir.y*world_up.x });
             if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
             Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
                                               updir.z*r0.x - updir.x*r0.z,
@@ -591,9 +591,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             } else {
                 Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
                 Float3 world_up{0,1,0};
-                Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
-                                                  world_up.z*updir.x - world_up.x*updir.z,
-                                                  world_up.x*updir.y - world_up.y*updir.x });
+                Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
+                                                  updir.z*world_up.x - updir.x*world_up.z,
+                                                  updir.x*world_up.y - updir.y*world_up.x });
                 if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
                 Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
                                                   updir.z*r0.x - updir.x*r0.z,
@@ -755,9 +755,9 @@ void VulkanApp::update_input(float dt) {
         Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
         Float3 updir = normalize(pos);
         Float3 world_up{0,1,0};
-        Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
-                                          world_up.z*updir.x - world_up.x*updir.z,
-                                          world_up.x*updir.y - world_up.y*updir.x });
+        Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
+                                          updir.z*world_up.x - updir.x*world_up.z,
+                                          updir.x*world_up.y - updir.y*world_up.x });
         if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
         Float3 f0 = wf::normalize(Float3{ updir.y*r0.z - updir.z*r0.y,
                                           updir.z*r0.x - updir.x*r0.z,
