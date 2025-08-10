@@ -157,21 +157,34 @@ void mesh_chunk_greedy_neighbors(const Chunk64& c,
                     float plane = d * s;
                     if (axis == 0) {
                         origin = Float3{plane, v * s, u * s};
-                        udir = Float3{0, 0, 1};
-                        vdir = Float3{0, 1, 0};
+                        if (c0.sign > 0) { // +X
+                            udir = Float3{0, 1, 0}; // Y
+                            vdir = Float3{0, 0, 1}; // Z
+                        } else { // -X
+                            udir = Float3{0, 0, 1}; // Z
+                            vdir = Float3{0, 1, 0}; // Y
+                        }
                     } else if (axis == 1) {
                         origin = Float3{u * s, plane, v * s};
-                        udir = Float3{1, 0, 0};
-                        vdir = Float3{0, 0, 1};
+                        if (c0.sign > 0) { // +Y
+                            udir = Float3{0, 0, 1}; // Z
+                            vdir = Float3{1, 0, 0}; // X
+                        } else { // -Y
+                            udir = Float3{1, 0, 0}; // X
+                            vdir = Float3{0, 0, 1}; // Z
+                        }
                     } else {
                         origin = Float3{u * s, v * s, plane};
-                        udir = Float3{1, 0, 0};
-                        vdir = Float3{0, 1, 0};
+                        if (c0.sign > 0) { // +Z
+                            udir = Float3{0, 1, 0}; // Y
+                            vdir = Float3{1, 0, 0}; // X
+                        } else { // -Z
+                            udir = Float3{1, 0, 0}; // X
+                            vdir = Float3{0, 1, 0}; // Y
+                        }
                     }
-                    // Match naive mesher winding under VK_FRONT_FACE_CLOCKWISE:
-                    // For positive faces (+X,+Y,+Z) flip indices.
-                    bool flip = (c0.sign > 0);
-                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, flip);
+                    // With sign-dependent u/v selection matching naive mesher, no index flip is needed
+                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, /*flip=*/false);
                     u += w;
                 }
             }
