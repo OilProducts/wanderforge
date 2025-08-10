@@ -633,7 +633,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
-    overlay_.record_draw(cmd, overlay_draw_slot_);
+    if (overlay_enabled_) overlay_.record_draw(cmd, overlay_draw_slot_);
     vkCmdEndRenderPass(cmd);
 
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
@@ -752,6 +752,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_ENABLE_COMPUTE_NOOP")) compute_enabled_ = parse_bool(s, compute_enabled_);
+    if (const char* s = std::getenv("WF_DISABLE_OVERLAY")) overlay_enabled_ = !parse_bool(s, false);
 
     std::ifstream in("wanderforge.cfg");
     if (!in.good()) return;
@@ -768,6 +769,7 @@ void VulkanApp::load_config() {
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
         else if (key == "enable_compute_noop") compute_enabled_ = parse_bool(val, compute_enabled_);
+        else if (key == "overlay") overlay_enabled_ = parse_bool(val, overlay_enabled_);
     }
 }
 
@@ -780,12 +782,14 @@ void VulkanApp::draw_frame() {
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) { recreate_swapchain(); return; }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) throw_if_failed(acq, "vkAcquireNextImageKHR failed");
 
-    // Prepare overlay text only if needed for this frame slot (content changed or slot invalid)
-    overlay_draw_slot_ = current_frame_;
-    if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
-        overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
-        overlay_text_valid_[overlay_draw_slot_] = true;
-        overlay_last_text_ = hud_text_;
+    // Prepare overlay text only if needed and overlay enabled
+    if (overlay_enabled_) {
+        overlay_draw_slot_ = current_frame_;
+        if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
+            overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+            overlay_text_valid_[overlay_draw_slot_] = true;
+            overlay_last_text_ = hud_text_;
+        }
     }
 
     // Overlay text is prepared once per frame above

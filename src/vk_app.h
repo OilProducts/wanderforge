@@ -148,6 +148,7 @@ private:
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
     ChunkRenderer chunk_renderer_;
+    bool overlay_enabled_ = true;
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
     std::string hud_text_;
