@@ -192,12 +192,15 @@ void VulkanApp::init_vulkan() {
         const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
         Float3 right, up, forward; face_basis(face, right, up, forward);
 
+        const int W = 2*tile_span + 1;
+        std::vector<Chunk64> chunks(W * W);
+        auto idx_of = [&](int di, int dj){ int ix = di + tile_span; int jy = dj + tile_span; return jy * W + ix; };
+        // First pass: load or generate all chunks
         for (int dj = -tile_span; dj <= tile_span; ++dj) {
             for (int di = -tile_span; di <= tile_span; ++di) {
                 FaceChunkKey key{face, di, dj, k0};
-                Chunk64 c;
+                Chunk64& c = chunks[idx_of(di, dj)];
                 if (!RegionIO::load_chunk(key, c)) {
-                    // Generate from base sampler
                     for (int z = 0; z < N; ++z) {
                         for (int y = 0; y < N; ++y) {
                             for (int x = 0; x < N; ++x) {
@@ -213,11 +216,19 @@ void VulkanApp::init_vulkan() {
                     }
                     RegionIO::save_chunk(key, c);
                 }
-
+            }
+        }
+        // Second pass: mesh each with neighbor awareness
+        for (int dj = -tile_span; dj <= tile_span; ++dj) {
+            for (int di = -tile_span; di <= tile_span; ++di) {
+                const Chunk64& c = chunks[idx_of(di, dj)];
+                const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj)] : nullptr;
+                const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj)] : nullptr;
+                const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1)] : nullptr;
+                const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1)] : nullptr;
                 Mesh m;
-                mesh_chunk_greedy(c, m, s);
+                mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nullptr, nullptr, m, s);
                 if (!m.indices.empty()) {
-                    // Transform vertices from face-local chunk to world space
                     float S0 = (float)(di * chunk_m);
                     float T0 = (float)(dj * chunk_m);
                     float R0 = (float)(k0 * chunk_m);

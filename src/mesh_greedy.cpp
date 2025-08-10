@@ -45,7 +45,17 @@ static void add_quad(Mesh& m, Float3 origin, Float3 udir, Float3 vdir, Float3 n,
     }
 }
 
-void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
+static inline bool get_neighbor_solid(const Chunk64* n, int x, int y, int z) {
+    if (!n) return false; // treat as air when no neighbor provided (no outer walls)
+    if (x < 0 || y < 0 || z < 0 || x >= Chunk64::N || y >= Chunk64::N || z >= Chunk64::N) return false;
+    return n->is_solid(x, y, z);
+}
+
+void mesh_chunk_greedy_neighbors(const Chunk64& c,
+                                 const Chunk64* negX, const Chunk64* posX,
+                                 const Chunk64* negY, const Chunk64* posY,
+                                 const Chunk64* negZ, const Chunk64* posZ,
+                                 Mesh& out, float s) {
     out.vertices.clear(); out.indices.clear();
     const int N = Chunk64::N;
     // For each axis
@@ -83,10 +93,15 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                             else       { cell.mat = c.get_material(bx, by, bz); cell.sign = -1; }
                         }
                     } else if (a_in && !b_in) {
-                        // Positive chunk boundary (d == N): emit face owned by this chunk if inside is solid
-                        if (c.is_solid(ax, ay, az)) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
+                        // Positive chunk boundary (d == N): consult neighbor to decide seam face; if no neighbor, treat as no face (avoid outer walls)
+                        bool a_sol = c.is_solid(ax, ay, az);
+                        bool b_sol = false;
+                        if (axis == 0)      b_sol = get_neighbor_solid(posX, 0, by, bz);
+                        else if (axis == 1) b_sol = get_neighbor_solid(posY, bx, 0, bz);
+                        else                b_sol = get_neighbor_solid(posZ, bx, by, 0);
+                        if (a_sol != b_sol && a_sol) { cell.mat = c.get_material(ax, ay, az); cell.sign = +1; }
                     } else if (!a_in && b_in) {
-                        // Negative chunk boundary (d == 0): skip to avoid double faces; neighbor will own this seam
+                        // Negative chunk boundary (d == 0): ownership rule — neighbor (negative side) will emit; skip here
                         cell = {0, 0};
                     }
                     mask[u + v * U] = cell;
@@ -135,8 +150,7 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
                         vdir = Float3{0, 1, 0};
                     }
                     // Match naive mesher winding under VK_FRONT_FACE_CLOCKWISE:
-                    // For positive faces (+X,+Y,+Z), swap u/v orientation relative to negative faces.
-                    // Since we keep udir/vdir fixed per axis here, flip indices for all positive faces.
+                    // For positive faces (+X,+Y,+Z) flip indices.
                     bool flip = (c0.sign > 0);
                     add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, flip);
                     u += w;
@@ -144,6 +158,11 @@ void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
             }
         }
     }
+}
+
+// Backward-compatible entry: no neighbors considered
+void mesh_chunk_greedy(const Chunk64& c, Mesh& out, float s) {
+    mesh_chunk_greedy_neighbors(c, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, out, s);
 }
 
 } // namespace wf
