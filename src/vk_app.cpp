@@ -639,7 +639,34 @@ void VulkanApp::update_input(float dt) {
 
     // Toggle walk mode with F key
     int kwalk = glfwGetKey(window_, GLFW_KEY_F);
-    if (kwalk == GLFW_PRESS && !key_prev_toggle_walk_) { walk_mode_ = !walk_mode_; hud_force_refresh_ = true; }
+    if (kwalk == GLFW_PRESS && !key_prev_toggle_walk_) {
+        walk_mode_ = !walk_mode_;
+        hud_force_refresh_ = true;
+        if (walk_mode_) {
+            // Align camera forward to local tangent to avoid looking into the ground on snap
+            Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+            Float3 updir = wf::normalize(pos);
+            // Current forward from yaw/pitch
+            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+            Float3 fwdv{ cp*cyaw, sp, cp*syaw };
+            // Project onto tangent and normalize
+            float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
+            Float3 fwd_t{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu };
+            float len = wf::length(fwd_t);
+            if (len < 1e-5f) {
+                // Degenerate: choose a stable axis not parallel to updir and project it
+                Float3 axis = (std::fabs(updir.x) < 0.9f) ? Float3{1,0,0} : Float3{0,0,1};
+                float d = axis.x*updir.x + axis.y*updir.y + axis.z*updir.z;
+                fwd_t = wf::normalize(Float3{ axis.x - updir.x*d, axis.y - updir.y*d, axis.z - updir.z*d });
+            } else {
+                fwd_t = fwd_t / len;
+            }
+            // Recompute yaw/pitch from tangent forward in world axes
+            cam_yaw_ = std::atan2(fwd_t.z, fwd_t.x);
+            cam_pitch_ = std::asin(std::clamp(fwd_t.y, -1.0f, 1.0f));
+        }
+    }
     key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
 
     if (!walk_mode_) {
@@ -659,7 +686,8 @@ void VulkanApp::update_input(float dt) {
         Float3 fwdv{fwd[0], fwd[1], fwd[2]};
         float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
         Float3 fwd_t = normalize(Float3{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu });
-        Float3 right_t = normalize(Float3{ fwd_t.y*updir.z - fwd_t.z*updir.y, fwd_t.z*updir.x - fwd_t.x*updir.z, fwd_t.x*updir.y - fwd_t.y*updir.x });
+        // Right vector: use up x forward (right-handed) so D moves to screen-right
+        Float3 right_t = normalize(Float3{ updir.y*fwd_t.z - updir.z*fwd_t.y, updir.z*fwd_t.x - updir.x*fwd_t.z, updir.x*fwd_t.y - updir.y*fwd_t.x });
         float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
         Float3 delta{0,0,0};
         if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { delta = delta + fwd_t * speed; }
