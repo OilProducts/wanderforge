@@ -403,7 +403,10 @@ void VulkanApp::create_swapchain() {
     VkSurfaceFormatKHR chosenFmt = fmts[0];
     for (auto f : fmts) if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { chosenFmt = f; break; }
     VkPresentModeKHR chosenPm = VK_PRESENT_MODE_FIFO_KHR; // guaranteed
-    for (auto m : pms) if (m == VK_PRESENT_MODE_MAILBOX_KHR) { chosenPm = m; break; }
+    for (auto m : pms) if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) { chosenPm = m; break; }
+    if (chosenPm == VK_PRESENT_MODE_FIFO_KHR) {
+        for (auto m : pms) if (m == VK_PRESENT_MODE_MAILBOX_KHR) { chosenPm = m; break; }
+    }
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFF) { extent = { (uint32_t)width_, (uint32_t)height_ }; }
@@ -423,6 +426,8 @@ void VulkanApp::create_swapchain() {
     sci.presentMode = chosenPm;
     sci.clipped = VK_TRUE;
     throw_if_failed(vkCreateSwapchainKHR(device_, &sci, nullptr, &swapchain_), "vkCreateSwapchainKHR failed");
+    const char* pmName = (chosenPm==VK_PRESENT_MODE_IMMEDIATE_KHR)?"IMMEDIATE":(chosenPm==VK_PRESENT_MODE_MAILBOX_KHR)?"MAILBOX":"FIFO";
+    std::cout << "Swapchain present mode: " << pmName << "\n";
 
     uint32_t count=0; vkGetSwapchainImagesKHR(device_, swapchain_, &count, nullptr);
     swapchain_images_.resize(count); vkGetSwapchainImagesKHR(device_, swapchain_, &count, swapchain_images_.data());
