@@ -20,6 +20,7 @@
 #include "planet.h"
 #include "region_io.h"
 #include "vk_utils.h"
+#include "camera.h"
 
 namespace wf {
 
@@ -249,6 +250,12 @@ void VulkanApp::init_vulkan() {
                     rc.index_count = (uint32_t)m.indices.size();
                     create_host_buffer(sizeof(Vertex) * m.vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, rc.vbuf, rc.vmem, m.vertices.data());
                     create_host_buffer(sizeof(uint32_t) * m.indices.size(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, rc.ibuf, rc.imem, m.indices.data());
+                    // Compute world-space bounding sphere for frustum culling
+                    const float half = (float)(N * s * 0.5);
+                    const float diag_half = half * 1.73205080757f; // sqrt(3)
+                    Float3 center_local{half, half, half};
+                    Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
+                    rc.center[0] = wc.x; rc.center[1] = wc.y; rc.center[2] = wc.z; rc.radius = diag_half;
                     render_chunks_.push_back(rc);
                 }
             }
@@ -565,38 +572,45 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
-        // Row-major projection (OpenGL-style) and view; multiply as row-major V*P and pass directly
+        // Row-major projection and view via camera helpers; multiply as V * P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        float fov = 60.0f * 0.01745329252f;
-        float zn = 0.1f, zf = 1000.0f;
-        float f = 1.0f / std::tan(fov * 0.5f);
-        float P[16] = { f/aspect,0,0,0,  0,f,0,0,  0,0,(zf+zn)/(zn-zf),-1,  0,0,(2*zf*zn)/(zn-zf),0 };
-        // Camera look-at from yaw/pitch/pos (row-major)
-        auto norm3=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
-        auto cross=[&](std::array<float,3> a,std::array<float,3> b){return std::array<float,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
-        float cy = std::cos(cam_yaw_), sy = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-        std::array<float,3> fwd = { cp*cy, sp, cp*sy };
-        std::array<float,3> upv = { 0.0f, 1.0f, 0.0f };
-        auto s = norm3(cross(fwd, upv));
-        auto u = cross(s, fwd);
+        auto P = wf::perspective_row_major(60.0f, aspect, 0.1f, 1000.0f);
         float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
-        float V[16] = { s[0], u[0], -fwd[0], 0,
-                        s[1], u[1], -fwd[1], 0,
-                        s[2], u[2], -fwd[2], 0,
-                        -(s[0]*eye[0]+s[1]*eye[1]+s[2]*eye[2]),
-                        -(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]),
-                        fwd[0]*eye[0]+fwd[1]*eye[1]+fwd[2]*eye[2], 1 };
-        auto mul4=[&](const float A[16], const float B[16]){
-            float R[16]{};
-            for(int r=0;r<4;++r) for(int c=0;c<4;++c){ R[r*4+c]=A[r*4+0]*B[0*4+c]+A[r*4+1]*B[1*4+c]+A[r*4+2]*B[2*4+c]+A[r*4+3]*B[3*4+c]; }
-            return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
-        auto MVP = mul4(V, P);
+        auto V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
+        auto MVP = wf::mul_row_major(V, P);
+
+        // Frustum culling (simple sphere vs frustum)
+        // Build camera basis
+        float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+        float fwd[3] = { cp*cyaw, sp, cp*syaw };
+        float upv[3]  = { 0.0f, 1.0f, 0.0f };
+        float rightv[3] = { fwd[1]*upv[2]-fwd[2]*upv[1], fwd[2]*upv[0]-fwd[0]*upv[2], fwd[0]*upv[1]-fwd[1]*upv[0] };
+        float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
+        if (rl > 0) { rightv[0]/=rl; rightv[1]/=rl; rightv[2]/=rl; }
+        // FOVs
+        float fovy = 60.0f * 0.01745329252f;
+        float tan_y = std::tan(fovy * 0.5f);
+        float tan_x = tan_y * aspect;
 
         // Reuse preallocated container
         chunk_items_tmp_.clear();
         chunk_items_tmp_.reserve(render_chunks_.size());
-        for (const auto& rc : render_chunks_) chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+        for (const auto& rc : render_chunks_) {
+            float dx = rc.center[0] - eye[0];
+            float dy = rc.center[1] - eye[1];
+            float dz = rc.center[2] - eye[2];
+            float dist_f = dx*fwd[0] + dy*fwd[1] + dz*fwd[2];
+            float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
+            float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
+            // near/far
+            if (dist_f + rc.radius < 0.1f) continue;
+            if (dist_f - rc.radius > 1000.0f) continue;
+            // side planes
+            if (std::fabs(dist_r) > dist_f * tan_x + rc.radius) continue;
+            if (std::fabs(dist_u) > dist_f * tan_y + rc.radius) continue;
+            chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
+        }
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);

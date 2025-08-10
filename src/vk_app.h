@@ -93,6 +93,8 @@ private:
         VkBuffer ibuf = VK_NULL_HANDLE;
         VkDeviceMemory imem = VK_NULL_HANDLE;
         uint32_t index_count = 0;
+        float center[3] = {0,0,0};
+        float radius = 0.0f;
     };
     std::vector<RenderChunk> render_chunks_;
 
