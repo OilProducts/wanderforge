@@ -157,34 +157,20 @@ void mesh_chunk_greedy_neighbors(const Chunk64& c,
                     float plane = d * s;
                     if (axis == 0) {
                         origin = Float3{plane, v * s, u * s};
-                        if (c0.sign > 0) { // +X
-                            udir = Float3{0, 1, 0}; // Y
-                            vdir = Float3{0, 0, 1}; // Z
-                        } else { // -X
-                            udir = Float3{0, 0, 1}; // Z
-                            vdir = Float3{0, 1, 0}; // Y
-                        }
+                        udir = Float3{0, 0, 1}; // Z (du)
+                        vdir = Float3{0, 1, 0}; // Y (dv)
                     } else if (axis == 1) {
                         origin = Float3{u * s, plane, v * s};
-                        if (c0.sign > 0) { // +Y
-                            udir = Float3{0, 0, 1}; // Z
-                            vdir = Float3{1, 0, 0}; // X
-                        } else { // -Y
-                            udir = Float3{1, 0, 0}; // X
-                            vdir = Float3{0, 0, 1}; // Z
-                        }
+                        udir = Float3{1, 0, 0}; // X (du)
+                        vdir = Float3{0, 0, 1}; // Z (dv)
                     } else {
                         origin = Float3{u * s, v * s, plane};
-                        if (c0.sign > 0) { // +Z
-                            udir = Float3{0, 1, 0}; // Y
-                            vdir = Float3{1, 0, 0}; // X
-                        } else { // -Z
-                            udir = Float3{1, 0, 0}; // X
-                            vdir = Float3{0, 1, 0}; // Y
-                        }
+                        udir = Float3{1, 0, 0}; // X (du)
+                        vdir = Float3{0, 1, 0}; // Y (dv)
                     }
-                    // With sign-dependent u/v selection matching naive mesher, no index flip is needed
-                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, /*flip=*/false);
+                    // Flip indices depending on axis/sign to make outward faces front-facing under CLOCKWISE
+                    bool flip = (axis == 0 || axis == 1) ? (c0.sign > 0) : (c0.sign < 0);
+                    add_quad(out, origin, udir, vdir, n, w * s, h * s, c0.mat, flip);
                     u += w;
                 }
             }
