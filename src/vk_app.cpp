@@ -1074,7 +1074,7 @@ void VulkanApp::create_graphics_pipeline() {
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    VkViewport vp{}; vp.x = 0; vp.y = 0; vp.width = (float)swapchain_extent_.width; vp.height = (float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
+    VkViewport vp{}; vp.x = 0; vp.y = (float)swapchain_extent_.height; vp.width = (float)swapchain_extent_.width; vp.height = -(float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
     VkRect2D sc{}; sc.offset = {0,0}; sc.extent = swapchain_extent_;
     VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;

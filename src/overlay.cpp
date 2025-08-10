@@ -138,7 +138,7 @@ void OverlayRenderer::init(VkPhysicalDevice phys, VkDevice dev, VkRenderPass ren
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bind; vi.vertexAttributeDescriptionCount = 2; vi.pVertexAttributeDescriptions = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkViewport vp{}; vp.x = 0; vp.y = 0; vp.width = (float)extent.width; vp.height = (float)extent.height; vp.minDepth = 0; vp.maxDepth = 1;
+    VkViewport vp{}; vp.x = 0; vp.y = (float)extent.height; vp.width = (float)extent.width; vp.height = -(float)extent.height; vp.minDepth = 0; vp.maxDepth = 1;
     VkRect2D sc{}; sc.offset = {0,0}; sc.extent = extent;
     VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
