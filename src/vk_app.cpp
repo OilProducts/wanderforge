@@ -547,19 +547,13 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if (pipeline_chunk_ && !render_chunks_.empty()) {
-        // Build projection (Vulkan 0..1 depth) and view (column-major) and push P*V
+        // Row-major projection (OpenGL-style) and view; multiply as row-major V*P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         float fov = 60.0f * 0.01745329252f;
         float zn = 0.1f, zf = 1000.0f;
-        float fct = 1.0f / std::tan(fov * 0.5f);
-        // Column-major Vulkan projection (right-handed)
-        float Pcol[16] = {
-            fct/aspect, 0, 0, 0,
-            0, fct, 0, 0,
-            0, 0, zf/(zn - zf), -1,
-            0, 0, (zf*zn)/(zn - zf), 0
-        };
-        // View matrix (column-major) from yaw/pitch/pos
+        float f = 1.0f / std::tan(fov * 0.5f);
+        float P[16] = { f/aspect,0,0,0,  0,f,0,0,  0,0,(zf+zn)/(zn-zf),-1,  0,0,(2*zf*zn)/(zn-zf),0 };
+        // Camera look-at from yaw/pitch/pos (row-major)
         auto norm3=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
         auto cross=[&](std::array<float,3> a,std::array<float,3> b){return std::array<float,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
         float cy = std::cos(cam_yaw_), sy = std::sin(cam_yaw_);
@@ -568,27 +562,21 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         std::array<float,3> upv = { 0.0f, 1.0f, 0.0f };
         auto s = norm3(cross(fwd, upv));
         auto u = cross(s, fwd);
-        float ex = cam_pos_[0], ey = cam_pos_[1], ez = cam_pos_[2];
-        // Column-major look-at: columns are s, u, -f; bottom row is translation
-        float Vcol[16] = {
-            s[0], s[1], s[2], -(s[0]*ex + s[1]*ey + s[2]*ez),
-            u[0], u[1], u[2], -(u[0]*ex + u[1]*ey + u[2]*ez),
-            -fwd[0], -fwd[1], -fwd[2], (fwd[0]*ex + fwd[1]*ey + fwd[2]*ez),
-            0, 0, 0, 1
-        };
-        // Column-major multiply: R = P * V
-        float MVPcol[16];
-        for (int c = 0; c < 4; ++c) {
-            for (int r = 0; r < 4; ++r) {
-                MVPcol[c*4 + r] = Pcol[0*4 + r] * Vcol[c*4 + 0]
-                                 + Pcol[1*4 + r] * Vcol[c*4 + 1]
-                                 + Pcol[2*4 + r] * Vcol[c*4 + 2]
-                                 + Pcol[3*4 + r] * Vcol[c*4 + 3];
-            }
-        }
+        float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
+        float V[16] = { s[0], u[0], -fwd[0], 0,
+                        s[1], u[1], -fwd[1], 0,
+                        s[2], u[2], -fwd[2], 0,
+                        -(s[0]*eye[0]+s[1]*eye[1]+s[2]*eye[2]),
+                        -(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]),
+                        fwd[0]*eye[0]+fwd[1]*eye[1]+fwd[2]*eye[2], 1 };
+        auto mul4=[&](const float A[16], const float B[16]){
+            float R[16]{};
+            for(int r=0;r<4;++r) for(int c=0;c<4;++c){ R[r*4+c]=A[r*4+0]*B[0*4+c]+A[r*4+1]*B[1*4+c]+A[r*4+2]*B[2*4+c]+A[r*4+3]*B[3*4+c]; }
+            return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
+        auto MVP = mul4(V, P);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
-        vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVPcol);
+        vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
         for (const auto& rc : render_chunks_) {
             VkDeviceSize offs = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &rc.vbuf, &offs);
