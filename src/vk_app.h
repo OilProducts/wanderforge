@@ -36,6 +36,7 @@ private:
     void record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex);
     void draw_frame();
     void update_input(float dt);
+    void load_config();
 
     void cleanup_swapchain();
     void recreate_swapchain();
@@ -125,6 +126,11 @@ private:
     double last_time_ = 0.0;
     bool rmb_down_ = false;
     double last_cursor_x_ = 0.0, last_cursor_y_ = 0.0;
+
+    bool invert_mouse_x_ = false;
+    bool invert_mouse_y_ = false;
+    bool key_prev_toggle_x_ = false;
+    bool key_prev_toggle_y_ = false;
 };
 
 } // namespace wf

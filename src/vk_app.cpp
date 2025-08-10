@@ -12,6 +12,8 @@
 #include <optional>
 #include <set>
 #include <vector>
+#include <fstream>
+#include <sstream>
 
 #include "chunk.h"
 #include "mesh.h"
@@ -112,6 +114,7 @@ VulkanApp::~VulkanApp() {
 
 void VulkanApp::run() {
     init_window();
+    load_config();
     init_vulkan();
     last_time_ = glfwGetTime();
     while (!glfwWindowShouldClose(window_)) {
@@ -594,8 +597,10 @@ void VulkanApp::update_input(float dt) {
         double dx = cx - last_cursor_x_;
         double dy = cy - last_cursor_y_;
         last_cursor_x_ = cx; last_cursor_y_ = cy;
-        cam_yaw_   += (float)(dx * cam_sensitivity_);
-        cam_pitch_ -= (float)(dy * cam_sensitivity_);
+        float sx = invert_mouse_x_ ? -1.0f : 1.0f;
+        float sy = invert_mouse_y_ ?  1.0f : -1.0f;
+        cam_yaw_   += sx * (float)(dx * cam_sensitivity_);
+        cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
         const float maxp = 1.55334306f; // ~89 deg
         if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
     } else {
@@ -619,6 +624,57 @@ void VulkanApp::update_input(float dt) {
     if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { cam_pos_[0]+=right[0]*speed; cam_pos_[1]+=right[1]*speed; cam_pos_[2]+=right[2]*speed; }
     if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
     if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
+
+    // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
+    int kx = glfwGetKey(window_, GLFW_KEY_X);
+    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; }
+    key_prev_toggle_x_ = (kx == GLFW_PRESS);
+    int ky = glfwGetKey(window_, GLFW_KEY_Y);
+    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; }
+    key_prev_toggle_y_ = (ky == GLFW_PRESS);
+}
+
+static inline std::string trim(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && std::isspace((unsigned char)s[a])) ++a;
+    while (b > a && std::isspace((unsigned char)s[b-1])) --b;
+    return s.substr(a, b - a);
+}
+
+static inline std::string lower(std::string s) {
+    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+static inline bool parse_bool(std::string v, bool defv) {
+    v = lower(trim(v));
+    if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
+    if (v == "0" || v == "false" || v == "no" || v == "off") return false;
+    return defv;
+}
+
+void VulkanApp::load_config() {
+    // Environment overrides
+    if (const char* s = std::getenv("WF_INVERT_MOUSE_X")) invert_mouse_x_ = parse_bool(s, invert_mouse_x_);
+    if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
+    if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
+
+    std::ifstream in("wanderforge.cfg");
+    if (!in.good()) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = lower(trim(line.substr(0, eq)));
+        std::string val = trim(line.substr(eq + 1));
+        if (key == "invert_mouse_x") invert_mouse_x_ = parse_bool(val, invert_mouse_x_);
+        else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
+        else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
+        else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
+    }
 }
 
 void VulkanApp::draw_frame() {

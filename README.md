@@ -60,6 +60,14 @@ Controls (chunk view):
 - Right mouse drag: look around (yaw/pitch)
 - Shift: hold to move faster
 
+Config options:
+- File `wanderforge.cfg` (same directory) or env vars:
+  - `invert_mouse_x=true|false` (or `WF_INVERT_MOUSE_X=1`)
+  - `invert_mouse_y=true|false` (or `WF_INVERT_MOUSE_Y=1`)
+  - `mouse_sensitivity=0.0025` (or `WF_MOUSE_SENSITIVITY`)
+  - `move_speed=12.0` (or `WF_MOVE_SPEED`)
+  - Toggle at runtime: press `X` (invert X) or `Y` (invert Y)
+
 ## Voxels On A Sphere (Cube‑Sphere)
 
 - Plain‑English picture: Imagine a cube gently wrapped around a ball. To locate a point on the planet, we shoot a line from the center to that point. Whichever cube side the line passes through is the “face,” and the spot on that face is a simple 2D coordinate. This avoids the nasty stretching near the poles you’d get with a latitude/longitude grid.
