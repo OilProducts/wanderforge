@@ -623,6 +623,26 @@ void VulkanApp::update_input(float dt) {
         cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
         const float maxp = 1.55334306f; // ~89 deg
         if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
+        // In walk mode, keep horizon aligned by projecting view into the local tangent plane
+        if (walk_mode_) {
+            Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+            Float3 updir = wf::normalize(pos);
+            float cyaw2 = std::cos(cam_yaw_), syaw2 = std::sin(cam_yaw_);
+            float cp2 = std::cos(cam_pitch_), sp2 = std::sin(cam_pitch_);
+            Float3 fwdv{ cp2*cyaw2, sp2, cp2*syaw2 };
+            float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
+            Float3 fwd_t{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu };
+            float len = wf::length(fwd_t);
+            if (len < 1e-5f) {
+                Float3 axis = (std::fabs(updir.x) < 0.9f) ? Float3{1,0,0} : Float3{0,0,1};
+                float d = axis.x*updir.x + axis.y*updir.y + axis.z*updir.z;
+                fwd_t = wf::normalize(Float3{ axis.x - updir.x*d, axis.y - updir.y*d, axis.z - updir.z*d });
+            } else {
+                fwd_t = fwd_t / len;
+            }
+            cam_yaw_ = std::atan2(fwd_t.z, fwd_t.x);
+            cam_pitch_ = 0.0f; // keep horizon aligned relative to local up
+        }
     } else {
         rmb_down_ = false;
     }
