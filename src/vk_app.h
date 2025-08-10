@@ -145,6 +145,11 @@ private:
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
     ChunkRenderer chunk_renderer_;
+    // Reused per-frame container to avoid allocations when building draw items
+    std::vector<ChunkDrawItem> chunk_items_tmp_;
+
+    // Parity toggle: use new ChunkRenderer path vs legacy pipeline
+    bool use_chunk_renderer_ = true;
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
     std::string hud_text_;
