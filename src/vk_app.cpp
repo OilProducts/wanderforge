@@ -853,8 +853,8 @@ void VulkanApp::draw_frame() {
             for (int ry = 0; ry < ch_h; ++ry) {
                 uint8_t bits = rows[ry];
                 for (int rx = 0; rx < ch_w; ++rx) {
-                    // Use MSB on the left so text isn't mirrored.
-                    if (bits & (1u << (ch_w - 1 - rx))) {
+                    // Treat bit 0 as leftmost pixel, increasing to the right.
+                    if (bits & (1u << rx)) {
                         float px = x0 + (ci * ch_w + rx) * scale;
                         float py = y0 + ry * scale;
                         quad(px, py, scale, scale, 1, 1, 1, 1);
