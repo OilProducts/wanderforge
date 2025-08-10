@@ -30,7 +30,7 @@ private:
     void create_image_views();
     void create_render_pass();
     void create_graphics_pipeline();
-    void create_graphics_pipeline_chunk(); // deprecated (kept during transition)
+    // Legacy chunk pipeline removed; ChunkRenderer is authoritative
     void create_compute_pipeline();
     void create_framebuffers();
     void create_command_pool_and_buffers();
@@ -78,9 +78,7 @@ private:
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
-    // Deprecated chunk pipeline members (replaced by ChunkRenderer)
-    VkPipelineLayout pipeline_layout_chunk_ = VK_NULL_HANDLE; // legacy
-    VkPipeline pipeline_chunk_ = VK_NULL_HANDLE;              // legacy
+    // Legacy chunk pipeline removed
 
     std::vector<VkFramebuffer> framebuffers_;
 

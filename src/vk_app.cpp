@@ -166,7 +166,6 @@ void VulkanApp::init_vulkan() {
     create_image_views();
     create_render_pass();
     create_depth_resources();
-    create_graphics_pipeline_chunk();
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.init(physical_device_, device_, render_pass_, swapchain_extent_, WF_SHADER_DIR);
@@ -563,7 +562,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     clears[1].depthStencil = {1.0f, 0};
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if ((!render_chunks_.empty()) && use_chunk_renderer_ && chunk_renderer_.is_ready()) {
+    if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
         // Row-major projection (OpenGL-style) and view; multiply as row-major V*P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         float fov = 60.0f * 0.01745329252f;
@@ -597,42 +596,6 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         chunk_items_tmp_.reserve(render_chunks_.size());
         for (const auto& rc : render_chunks_) chunk_items_tmp_.push_back(ChunkDrawItem{rc.vbuf, rc.ibuf, rc.index_count});
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
-    } else if (!render_chunks_.empty() && pipeline_chunk_) {
-        // Legacy draw path (A/B parity testing)
-        float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        float fov = 60.0f * 0.01745329252f;
-        float zn = 0.1f, zf = 1000.0f;
-        float f = 1.0f / std::tan(fov * 0.5f);
-        float P[16] = { f/aspect,0,0,0,  0,f,0,0,  0,0,(zf+zn)/(zn-zf),-1,  0,0,(2*zf*zn)/(zn-zf),0 };
-        auto norm3=[&](std::array<float,3> v){ float l=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]); return std::array<float,3>{v[0]/l,v[1]/l,v[2]/l}; };
-        auto cross=[&](std::array<float,3> a,std::array<float,3> b){return std::array<float,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
-        float cy = std::cos(cam_yaw_), sy = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-        std::array<float,3> fwd = { cp*cy, sp, cp*sy };
-        std::array<float,3> upv = { 0.0f, 1.0f, 0.0f };
-        auto s = norm3(cross(fwd, upv));
-        auto u = cross(s, fwd);
-        float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
-        float V[16] = { s[0], u[0], -fwd[0], 0,
-                        s[1], u[1], -fwd[1], 0,
-                        s[2], u[2], -fwd[2], 0,
-                        -(s[0]*eye[0]+s[1]*eye[1]+s[2]*eye[2]),
-                        -(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]),
-                        fwd[0]*eye[0]+fwd[1]*eye[1]+fwd[2]*eye[2], 1 };
-        auto mul4=[&](const float A[16], const float B[16]){
-            float R[16]{};
-            for(int r=0;r<4;++r) for(int c=0;c<4;++c){ R[r*4+c]=A[r*4+0]*B[0*4+c]+A[r*4+1]*B[1*4+c]+A[r*4+2]*B[2*4+c]+A[r*4+3]*B[3*4+c]; }
-            return std::array<float,16>{R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]}; };
-        auto MVP = mul4(V, P);
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_chunk_);
-        vkCmdPushConstants(cmd, pipeline_layout_chunk_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float)*16, MVP.data());
-        for (const auto& rc : render_chunks_) {
-            VkDeviceSize offs = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &rc.vbuf, &offs);
-            vkCmdBindIndexBuffer(cmd, rc.ibuf, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, rc.index_count, 1, 0, 0, 0);
-        }
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -816,8 +779,6 @@ void VulkanApp::draw_frame() {
 }
 
 void VulkanApp::cleanup_swapchain() {
-    if (pipeline_chunk_) { vkDestroyPipeline(device_, pipeline_chunk_, nullptr); pipeline_chunk_ = VK_NULL_HANDLE; }
-    if (pipeline_layout_chunk_) { vkDestroyPipelineLayout(device_, pipeline_layout_chunk_, nullptr); pipeline_layout_chunk_ = VK_NULL_HANDLE; }
     if (pipeline_triangle_) { vkDestroyPipeline(device_, pipeline_triangle_, nullptr); pipeline_triangle_ = VK_NULL_HANDLE; }
     if (pipeline_layout_) { vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr); pipeline_layout_ = VK_NULL_HANDLE; }
     // Overlay pipelines are handled by overlay_ during recreate
@@ -839,7 +800,6 @@ void VulkanApp::recreate_swapchain() {
     create_image_views();
     create_render_pass();
     create_depth_resources();
-    create_graphics_pipeline_chunk();
     create_graphics_pipeline();
 #include "wf_config.h"
     overlay_.recreate_swapchain(render_pass_, swapchain_extent_, WF_SHADER_DIR);
@@ -938,95 +898,7 @@ void VulkanApp::create_graphics_pipeline() {
     vkDestroyShaderModule(device_, fs, nullptr);
 }
 
-void VulkanApp::create_graphics_pipeline_chunk() {
-    // Vertex-input pipeline for chunk rendering
-    const std::string base = std::string(WF_SHADER_DIR);
-    const std::string vsPath = base + "/chunk.vert.spv";
-    const std::string fsPath = base + "/chunk.frag.spv";
-    VkShaderModule vs = load_shader_module(vsPath);
-    VkShaderModule fs = load_shader_module(fsPath);
-    if (!vs || !fs) {
-        if (vs) vkDestroyShaderModule(device_, vs, nullptr);
-        if (fs) vkDestroyShaderModule(device_, fs, nullptr);
-        std::cout << "[info] Chunk shaders not found. Chunk rendering disabled." << std::endl;
-        return;
-    }
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
-    stages[1].pName = "main";
-
-    // Only position attribute used; stride is sizeof(Vertex) from mesh.h (x,y,z,...)
-    VkVertexInputBindingDescription bind{};
-    bind.binding = 0; bind.stride = sizeof(float)*7; bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attrs[3]{};
-    attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[0].offset = 0;   // position
-    attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT; attrs[1].offset = 12;  // normal
-    attrs[2].location = 2; attrs[2].binding = 0; attrs[2].format = VK_FORMAT_R16_UINT;          attrs[2].offset = 24;  // material id
-    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bind;
-    vi.vertexAttributeDescriptionCount = 3; vi.pVertexAttributeDescriptions = attrs;
-
-    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkViewport vp{}; vp.x = 0; vp.y = 0; vp.width = (float)swapchain_extent_.width; vp.height = (float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
-    VkRect2D sc{}; sc.offset = {0,0}; sc.extent = swapchain_extent_;
-    VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
-
-    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth = 1.0f;
-
-    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
-    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1; cb.pAttachments = &cba;
-    // Depth state
-    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_TRUE;
-    ds.depthWriteEnable = VK_TRUE;
-    ds.depthCompareOp = VK_COMPARE_OP_LESS;
-
-    // Push constant for MVP matrix
-    VkPushConstantRange pcr{}; pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; pcr.offset = 0; pcr.size = sizeof(float)*16;
-    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
-    if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_chunk_) != VK_SUCCESS) {
-        vkDestroyShaderModule(device_, vs, nullptr);
-        vkDestroyShaderModule(device_, fs, nullptr);
-        return;
-    }
-
-    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    gpi.stageCount = 2; gpi.pStages = stages;
-    gpi.pVertexInputState = &vi;
-    gpi.pInputAssemblyState = &ia;
-    gpi.pViewportState = &vpstate;
-    gpi.pRasterizationState = &rs;
-    gpi.pMultisampleState = &ms;
-    gpi.pDepthStencilState = &ds;
-    gpi.pColorBlendState = &cb;
-    gpi.layout = pipeline_layout_chunk_;
-    gpi.renderPass = render_pass_;
-    gpi.subpass = 0;
-    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_chunk_) != VK_SUCCESS) {
-        std::cerr << "Failed to create chunk graphics pipeline.\n";
-        vkDestroyPipelineLayout(device_, pipeline_layout_chunk_, nullptr); pipeline_layout_chunk_ = VK_NULL_HANDLE;
-    }
-    vkDestroyShaderModule(device_, vs, nullptr);
-    vkDestroyShaderModule(device_, fs, nullptr);
-}
+// legacy chunk pipeline removed (ChunkRenderer owns chunk graphics pipeline)
 // removed overlay pipeline (handled by OverlayRenderer)
 
 
