@@ -162,6 +162,7 @@ private:
     float walk_pitch_ = 0.0f;   // radians, local pitch relative to horizon (positive up)
     float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
     float walk_surface_bias_m_ = 1.0f; // extra offset above computed surface to avoid clipping
+    float surface_push_m_ = 0.0f;      // optional outward push for near-horizontal faces (mesh visual alignment)
 
     // Planet configuration (defaults can be overridden via config file/env)
     PlanetConfig planet_cfg_{};

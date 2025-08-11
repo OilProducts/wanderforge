@@ -858,7 +858,7 @@ void VulkanApp::update_hud(float dt) {
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
     glfwSetWindowTitle(window_, title);
 
-    char hud[512];
+    char hud[768];
     if (draw_stats_enabled_) {
         float tris_m = (float)last_draw_indices_ / 3.0f / 1.0e6f;
         VkDeviceSize v_used=0,v_cap=0,i_used=0,i_cap=0;
@@ -879,8 +879,16 @@ void VulkanApp::update_hud(float dt) {
         double mesh_ms_per = (meshed > 0) ? (mesh_ms / (double)meshed) : 0.0;
         double up_ms = last_upload_ms_;
         int up_count = last_upload_count_;
+        // Ground-follow diagnostics: camera vs. target surface radius
+        float cam_r = wf::length(Float3{cam_pos_[0], cam_pos_[1], cam_pos_[2]});
+        const PlanetConfig& pcfg = planet_cfg_;
+        Float3 ndir = wf::normalize(Float3{cam_pos_[0], cam_pos_[1], cam_pos_[2]});
+        double h_surf = terrain_height_m(pcfg, ndir);
+        double ground_r = pcfg.radius_m + h_surf; if (ground_r < pcfg.sea_level_m) ground_r = pcfg.sea_level_m;
+        double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
+        double dr = (double)cam_r - target_r;
         std::snprintf(hud, sizeof(hud),
-                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)  Mesh:%.0fms (%d ch, %.2f ms/ch)  Upload:%d in %.1fms (avg %.1fms)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
+                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)  Mesh:%.0fms (%d ch, %.2f ms/ch)  Upload:%d in %.1fms (avg %.1fms)\nRad: cam=%.1f  tgt=%.1f  d=%.2f  (eye=%.2f bias=%.2f)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
                        fps_smooth_,
                        cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                        invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
@@ -889,6 +897,7 @@ void VulkanApp::update_hud(float dt) {
                       qdepth, gen_ms, gen_chunks, ms_per,
                       mesh_ms, meshed, mesh_ms_per,
                       up_count, up_ms, upload_ms_avg_,
+                      cam_r, (float)target_r, (float)dr, eye_height_m_, walk_surface_bias_m_,
                       v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
@@ -954,6 +963,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
     if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
     if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
+    if (const char* s = std::getenv("WF_SURFACE_PUSH_M")) { try { surface_push_m_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_PROFILE_CSV")) profile_csv_enabled_ = parse_bool(s, profile_csv_enabled_);
     if (const char* s = std::getenv("WF_PROFILE_CSV_PATH")) { try { profile_csv_path_ = s; } catch(...){} }
     if (const char* s = std::getenv("WF_DEVICE_LOCAL")) device_local_enabled_ = parse_bool(s, device_local_enabled_);
@@ -988,6 +998,7 @@ void VulkanApp::load_config() {
         else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
         else if (key == "walk_pitch_max_deg") { try { walk_pitch_max_deg_ = std::stof(val); } catch(...){} }
         else if (key == "walk_surface_bias_m") { try { walk_surface_bias_m_ = std::stof(val); } catch(...){} }
+        else if (key == "surface_push_m") { try { surface_push_m_ = std::stof(val); } catch(...){} }
         // Planet / terrain controls
         else if (key == "terrain_amp_m") { try { planet_cfg_.terrain_amp_m = std::stod(val); } catch(...){} }
         else if (key == "terrain_freq") { try { planet_cfg_.terrain_freq = std::stof(val); } catch(...){} }
@@ -1500,6 +1511,22 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                 Float3 e1 = sub(p1, p0);
                 Float3 e2 = sub(p2, p0);
                 Float3 n = wf::normalize(cross(e1, e2));
+                // Optional outward push for near-horizontal (radial) faces to better align with continuous surface
+                if (surface_push_m_ > 0.0f) {
+                    Float3 r0 = wf::normalize(p0);
+                    float radial = std::fabs(n.x*r0.x + n.y*r0.y + n.z*r0.z);
+                    if (radial > 0.8f) {
+                        Float3 push = Float3{ r0.x * surface_push_m_, r0.y * surface_push_m_, r0.z * surface_push_m_ };
+                        m.vertices[i0].x = p0.x + push.x; m.vertices[i0].y = p0.y + push.y; m.vertices[i0].z = p0.z + push.z;
+                        m.vertices[i1].x = p1.x + push.x; m.vertices[i1].y = p1.y + push.y; m.vertices[i1].z = p1.z + push.z;
+                        m.vertices[i2].x = p2.x + push.x; m.vertices[i2].y = p2.y + push.y; m.vertices[i2].z = p2.z + push.z;
+                        p0 = Float3{m.vertices[i0].x, m.vertices[i0].y, m.vertices[i0].z};
+                        p1 = Float3{m.vertices[i1].x, m.vertices[i1].y, m.vertices[i1].z};
+                        p2 = Float3{m.vertices[i2].x, m.vertices[i2].y, m.vertices[i2].z};
+                        e1 = sub(p1, p0); e2 = sub(p2, p0);
+                        n = wf::normalize(cross(e1, e2));
+                    }
+                }
                 m.vertices[i0].nx = n.x; m.vertices[i0].ny = n.y; m.vertices[i0].nz = n.z;
                 m.vertices[i1].nx = n.x; m.vertices[i1].ny = n.y; m.vertices[i1].nz = n.z;
                 m.vertices[i2].nx = n.x; m.vertices[i2].ny = n.y; m.vertices[i2].nz = n.z;
