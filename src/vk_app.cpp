@@ -1405,7 +1405,11 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                                 double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
                                 double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
                                 double r0 = (double)kk * chunk_m + (z + 0.5) * cfg.voxel_size_m;
-                                Float3 p = right * (float)s0 + up * (float)t0 + forward * (float)r0;
+                                // Map face-local s/t at radius r0 to a spherical direction, then back to world at radius r0
+                                float u = (float)(s0 / r0);
+                                float v = (float)(t0 / r0);
+                                Float3 dir_sph = direction_from_face_uv(face, u, v);
+                                Float3 p = dir_sph * (float)r0;
                                 Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
                                 auto sb = sample_base(cfg, v);
                                 c.set_voxel(x, y, z, sb.material);
@@ -1460,7 +1464,14 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             float R0 = (float)(kk * chunk_m);
             for (auto& vert : m.vertices) {
                 Float3 lp{vert.x, vert.y, vert.z};
-                Float3 wp = right * (S0 + lp.x) + up * (T0 + lp.y) + forward * (R0 + lp.z);
+                float S = S0 + lp.x;
+                float T = T0 + lp.y;
+                float R = R0 + lp.z;
+                float u = (R != 0.0f) ? (S / R) : 0.0f;
+                float v = (R != 0.0f) ? (T / R) : 0.0f;
+                Float3 dir_sph = direction_from_face_uv(face, u, v);
+                Float3 wp = dir_sph * R;
+                // Approximate normal transform via face-basis; good enough for flat-shaded voxels
                 Float3 ln{vert.nx, vert.ny, vert.nz};
                 Float3 wn = right * ln.x + up * ln.y + forward * ln.z;
                 vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
@@ -1471,8 +1482,11 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             res.indices = std::move(m.indices);
             const float half = (float)(N * s * 0.5);
             const float diag_half = half * 1.73205080757f; // sqrt(3)
-            Float3 center_local{half, half, half};
-            Float3 wc = right * (S0 + center_local.x) + up * (T0 + center_local.y) + forward * (R0 + center_local.z);
+            float Sc = S0 + half, Tc = T0 + half, Rc = R0 + half;
+            float uc = (Rc != 0.0f) ? (Sc / Rc) : 0.0f;
+            float vc = (Rc != 0.0f) ? (Tc / Rc) : 0.0f;
+            Float3 dirc = direction_from_face_uv(face, uc, vc);
+            Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
             {
