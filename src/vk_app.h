@@ -174,6 +174,7 @@ private:
     bool log_pool_ = false;
     int pool_vtx_mb_ = 256;
     int pool_idx_mb_ = 128;
+    bool save_chunks_enabled_ = false; // skip disk saves by default for faster streaming
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
@@ -212,6 +213,8 @@ private:
     float fov_deg_ = 60.0f;
     float near_m_ = 0.1f;
     float far_m_  = 300.0f;
+    // Streaming prioritization cone (degrees) around camera forward for meshing
+    float stream_cone_deg_ = 75.0f;
 
     // Profiling/metrics
     std::atomic<double> loader_last_mesh_ms_{0.0};
@@ -242,7 +245,7 @@ private:
     bool loader_quit_ = false;
     bool loader_busy_ = false;
     std::deque<MeshResult> results_queue_;
-    int uploads_per_frame_limit_ = 8;
+    int uploads_per_frame_limit_ = 16;
     int loader_threads_ = 0; // 0 = auto
     std::atomic<double> loader_last_gen_ms_{0.0};
     std::atomic<int> loader_last_chunks_{0};

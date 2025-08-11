@@ -982,6 +982,7 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
     if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
     if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
+    if (const char* s = std::getenv("WF_SAVE_CHUNKS")) save_chunks_enabled_ = parse_bool(s, save_chunks_enabled_);
     if (const char* s = std::getenv("WF_SURFACE_PUSH_M")) { try { surface_push_m_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_PROFILE_CSV")) profile_csv_enabled_ = parse_bool(s, profile_csv_enabled_);
     if (const char* s = std::getenv("WF_PROFILE_CSV_PATH")) { try { profile_csv_path_ = s; } catch(...){} }
@@ -1035,6 +1036,7 @@ void VulkanApp::load_config() {
         else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
         else if (key == "log_stream") log_stream_ = parse_bool(val, log_stream_);
         else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
+        else if (key == "save_chunks") save_chunks_enabled_ = parse_bool(val, save_chunks_enabled_);
         else if (key == "profile_csv") profile_csv_enabled_ = parse_bool(val, profile_csv_enabled_);
         else if (key == "profile_csv_path") { profile_csv_path_ = val; }
         else if (key == "device_local") device_local_enabled_ = parse_bool(val, device_local_enabled_);
@@ -1450,7 +1452,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                             }
                         }
                     }
-                    RegionIO::save_chunk(key, c);
+                    if (save_chunks_enabled_) RegionIO::save_chunk(key, c);
                 }
             }
         });
@@ -1464,6 +1466,16 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
 
     // Meshing pass: parallelize over prioritized tasks (di,dj,dk)
     int meshed_count = 0;
+    // Precompute camera forward world vector from fwd_s/fwd_t (projective ratios)
+    float u_cam = fwd_s;
+    float v_cam = fwd_t;
+    float inv_len_cam = 1.0f / std::sqrt(1.0f + u_cam*u_cam + v_cam*v_cam);
+    Float3 fwd_world_cam = wf::normalize(Float3{
+        right.x * (u_cam * inv_len_cam) + up.x * (v_cam * inv_len_cam) + forward.x * (1.0f * inv_len_cam),
+        right.y * (u_cam * inv_len_cam) + up.y * (v_cam * inv_len_cam) + forward.y * (1.0f * inv_len_cam),
+        right.z * (u_cam * inv_len_cam) + up.z * (v_cam * inv_len_cam) + forward.z * (1.0f * inv_len_cam)
+    });
+    float cone_cos = std::cos(stream_cone_deg_ * 0.01745329252f);
     struct MTask { int di, dj, dk; };
     std::vector<MTask> mtasks; mtasks.reserve(W * W * KD);
     for (const auto& off : order) {
@@ -1483,6 +1495,21 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             int di = t.di, dj = t.dj, dk = t.dk;
             std::int64_t kk = k0 + dk;
             const Chunk64& c = chunks[idx_of(di, dj, dk)];
+            // Tile center direction for meshing cone test
+            float S0 = (float)((center_i + di) * chunk_m);
+            float T0 = (float)((center_j + dj) * chunk_m);
+            float R0 = (float)(kk * chunk_m);
+            const float halfm = (float)(N * s * 0.5f);
+            float Sc = S0 + halfm, Tc = T0 + halfm, Rc = R0 + halfm;
+            float cr = Sc / Rc, cu = Tc / Rc;
+            float cf = std::sqrt(std::max(0.0f, 1.0f - (cr*cr + cu*cu)));
+            Float3 dirc = wf::normalize(Float3{ right.x*cr + up.x*cu + forward.x*cf,
+                                                right.y*cr + up.y*cu + forward.y*cf,
+                                                right.z*cr + up.z*cu + forward.z*cf });
+            float dcam = fwd_world_cam.x*dirc.x + fwd_world_cam.y*dirc.y + fwd_world_cam.z*dirc.z;
+            if (dcam < cone_cos) {
+                continue; // outside forward cone, skip meshing this tile for now
+            }
             const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj, dk)] : nullptr;
             const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj, dk)] : nullptr;
             const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1, dk)] : nullptr;
@@ -1493,9 +1520,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nz, pz, m, s);
             if (m.indices.empty()) continue;
             local_meshed++;
-            float S0 = (float)((center_i + di) * chunk_m);
-            float T0 = (float)((center_j + dj) * chunk_m);
-            float R0 = (float)(kk * chunk_m);
+            // S0/T0/R0 already computed above
             for (auto& vert : m.vertices) {
                 Float3 lp{vert.x, vert.y, vert.z};
                 float S = S0 + lp.x;
