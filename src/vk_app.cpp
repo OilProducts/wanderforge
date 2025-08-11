@@ -814,14 +814,25 @@ void VulkanApp::update_input(float dt) {
         Float3 right_t{ fwd_t.y*updir.z - fwd_t.z*updir.y, fwd_t.z*updir.x - fwd_t.x*updir.z, fwd_t.x*updir.y - fwd_t.y*updir.x };
         right_t = wf::normalize(right_t);
         float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
-        Float3 delta{0,0,0};
-        if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { delta = delta + fwd_t * speed; }
-        if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { delta = delta - fwd_t * speed; }
-        if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { delta = delta - right_t * speed; }
-        if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { delta = delta + right_t * speed; }
-        // Update position and reproject onto ground + eye height
-        Float3 npos = pos + delta;
-        Float3 ndir = normalize(npos);
+        // Build tangent step vector (meters) in the local tangent basis
+        Float3 step{0,0,0};
+        if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { step = step + fwd_t   * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { step = step - fwd_t   * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { step = step - right_t * speed; }
+        if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { step = step + right_t * speed; }
+        // Exact great-circle update: rotate updir toward the step direction by angle phi = |step| / radius
+        Float3 ndir = updir;
+        float step_len = wf::length(step);
+        if (step_len > 0.0f) {
+            Float3 tdir = step / step_len; // unit tangent direction
+            float cam_r = wf::length(pos); // current radius equals last target radius
+            float phi = step_len / std::max(cam_r, 1e-6f);
+            float c = std::cos(phi), s = std::sin(phi);
+            // Since tdir is tangent to updir, Rodrigues reduces to ndir = updir*c + tdir*s
+            ndir = wf::normalize(Float3{ updir.x * c + tdir.x * s,
+                                          updir.y * c + tdir.y * s,
+                                          updir.z * c + tdir.z * s });
+        }
         double h = terrain_height_m(cfg, ndir);
         double surface_r = cfg.radius_m + h;
         if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m; // keep above water surface
