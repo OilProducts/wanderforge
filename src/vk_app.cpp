@@ -1578,16 +1578,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             MeshResult res;
             res.vertices = std::move(m.vertices);
             res.indices = std::move(m.indices);
-            const float half = (float)(N * s * 0.5);
-            const float diag_half = half * 1.73205080757f; // sqrt(3)
-            float Sc = S0 + half, Tc = T0 + half, Rc = R0 + half;
-            float ucc = (Rc != 0.0f) ? (Sc / Rc) : 0.0f;
-            float vcc = (Rc != 0.0f) ? (Tc / Rc) : 0.0f;
-            float w2c = std::max(0.0f, 1.0f - (ucc*ucc + vcc*vcc));
-            float wcc = std::sqrt(w2c);
-            Float3 dirc = wf::normalize(Float3{ right.x*ucc + up.x*vcc + forward.x*wcc,
-                                                right.y*ucc + up.y*vcc + forward.y*wcc,
-                                                right.z*ucc + up.z*vcc + forward.z*wcc });
+            const float diag_half = halfm * 1.73205080757f; // sqrt(3)
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
