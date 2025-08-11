@@ -1471,10 +1471,30 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                 float vv = (R != 0.0f) ? (T / R) : 0.0f;
                 Float3 dir_sph = direction_from_face_uv(face, uu, vv);
                 Float3 wp = dir_sph * R;
-                // Fully radial normals at world position
-                Float3 wn = wf::normalize(wp);
                 vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
-                vert.nx = wn.x; vert.ny = wn.y; vert.nz = wn.z;
+                // Temporarily keep existing normal; we will recompute face normals below
+            }
+            // Recompute flat face normals from world-space triangle geometry for clearer shading
+            auto cross = [](Float3 a, Float3 b) -> Float3 {
+                return Float3{ a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+            };
+            auto sub = [](Float3 a, Float3 b) -> Float3 { return Float3{a.x-b.x, a.y-b.y, a.z-b.z}; };
+            for (size_t ii = 0; ii + 2 < m.indices.size(); ii += 3) {
+                uint32_t i0 = m.indices[ii+0];
+                uint32_t i1 = m.indices[ii+1];
+                uint32_t i2 = m.indices[ii+2];
+                const Vertex &v0 = m.vertices[i0];
+                const Vertex &v1 = m.vertices[i1];
+                const Vertex &v2 = m.vertices[i2];
+                Float3 p0{v0.x, v0.y, v0.z};
+                Float3 p1{v1.x, v1.y, v1.z};
+                Float3 p2{v2.x, v2.y, v2.z};
+                Float3 e1 = sub(p1, p0);
+                Float3 e2 = sub(p2, p0);
+                Float3 n = wf::normalize(cross(e1, e2));
+                m.vertices[i0].nx = n.x; m.vertices[i0].ny = n.y; m.vertices[i0].nz = n.z;
+                m.vertices[i1].nx = n.x; m.vertices[i1].ny = n.y; m.vertices[i1].nz = n.z;
+                m.vertices[i2].nx = n.x; m.vertices[i2].ny = n.y; m.vertices[i2].nz = n.z;
             }
             MeshResult res;
             res.vertices = std::move(m.vertices);
