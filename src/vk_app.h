@@ -14,6 +14,7 @@
 #include <atomic>
 #include <deque>
 #include <tuple>
+#include <chrono>
 
 struct GLFWwindow;
 
@@ -210,6 +211,20 @@ private:
     float fov_deg_ = 60.0f;
     float near_m_ = 0.1f;
     float far_m_  = 300.0f;
+
+    // Profiling/metrics
+    std::atomic<double> loader_last_mesh_ms_{0.0};
+    std::atomic<double> loader_last_total_ms_{0.0};
+    std::atomic<int>    loader_last_meshed_{0};
+    int                 last_upload_count_ = 0;
+    double              last_upload_ms_ = 0.0;
+    double              upload_ms_avg_ = 0.0;
+    bool                profile_csv_enabled_ = false;
+    std::string         profile_csv_path_ = "profile.csv";
+    bool                profile_header_written_ = false;
+    std::chrono::steady_clock::time_point app_start_tp_{};
+    std::mutex          profile_mutex_;
+    void profile_append_csv(const std::string& line);
     void schedule_delete_chunk(const RenderChunk& rc);
 
     // Async loading/meshing

@@ -145,6 +145,7 @@ void VulkanApp::run() {
     init_window();
     load_config();
     init_vulkan();
+    app_start_tp_ = std::chrono::steady_clock::now();
     last_time_ = glfwGetTime();
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
@@ -873,14 +874,21 @@ void VulkanApp::update_hud(float dt) {
         double gen_ms = loader_last_gen_ms_.load();
         int gen_chunks = loader_last_chunks_.load();
         double ms_per = (gen_chunks > 0) ? (gen_ms / (double)gen_chunks) : 0.0;
+        double mesh_ms = loader_last_mesh_ms_.load();
+        int meshed = loader_last_meshed_.load();
+        double mesh_ms_per = (meshed > 0) ? (mesh_ms / (double)meshed) : 0.0;
+        double up_ms = last_upload_ms_;
+        int up_count = last_upload_count_;
         std::snprintf(hud, sizeof(hud),
-                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
+                      "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)  Mesh:%.0fms (%d ch, %.2f ms/ch)  Upload:%d in %.1fms (avg %.1fms)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
                        fps_smooth_,
                        cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                        invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_,
                       last_draw_visible_, last_draw_total_, tris_m, cull_enabled_?"on":"off", ring_radius_,
                       stream_face_, (long long)ring_center_i_, (long long)ring_center_j_, (long long)ring_center_k_, k_down_, k_up_, (double)face_keep_timer_s_,
                       qdepth, gen_ms, gen_chunks, ms_per,
+                      mesh_ms, meshed, mesh_ms_per,
+                      up_count, up_ms, upload_ms_avg_,
                       v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
@@ -946,6 +954,8 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
     if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
     if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
+    if (const char* s = std::getenv("WF_PROFILE_CSV")) profile_csv_enabled_ = parse_bool(s, profile_csv_enabled_);
+    if (const char* s = std::getenv("WF_PROFILE_CSV_PATH")) { try { profile_csv_path_ = s; } catch(...){} }
     if (const char* s = std::getenv("WF_DEVICE_LOCAL")) device_local_enabled_ = parse_bool(s, device_local_enabled_);
     if (const char* s = std::getenv("WF_POOL_VTX_MB")) { try { pool_vtx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
     if (const char* s = std::getenv("WF_POOL_IDX_MB")) { try { pool_idx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
@@ -995,6 +1005,8 @@ void VulkanApp::load_config() {
         else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
         else if (key == "log_stream") log_stream_ = parse_bool(val, log_stream_);
         else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
+        else if (key == "profile_csv") profile_csv_enabled_ = parse_bool(val, profile_csv_enabled_);
+        else if (key == "profile_csv_path") { profile_csv_path_ = val; }
         else if (key == "device_local") device_local_enabled_ = parse_bool(val, device_local_enabled_);
         else if (key == "pool_vtx_mb") { try { pool_vtx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
         else if (key == "pool_idx_mb") { try { pool_idx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
@@ -1229,6 +1241,19 @@ void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
     if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
 
 
+void VulkanApp::profile_append_csv(const std::string& line) {
+    if (!profile_csv_enabled_) return;
+    std::lock_guard<std::mutex> lk(profile_mutex_);
+    std::ofstream out;
+    out.open(profile_csv_path_, profile_header_written_ ? (std::ios::app) : (std::ios::out));
+    if (!out.good()) return;
+    if (!profile_header_written_) {
+        out << "event,time_s,items,meshed,gen_ms,mesh_ms,total_or_frame_ms" << '\n';
+        profile_header_written_ = true;
+    }
+    out << line;
+}
+
 } // namespace wf
 
 void VulkanApp::loader_thread_main() {
@@ -1396,12 +1421,13 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     }
     for (auto& th : workers) th.join();
     auto t1 = std::chrono::steady_clock::now();
-    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    loader_last_gen_ms_.store(ms);
+    double gen_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    loader_last_gen_ms_.store(gen_ms);
     loader_last_chunks_.store((int)tasks.size());
     if (loader_quit_ || request_gen_.load() != job_gen) return;
 
     // Meshing pass: prioritized s/t order, iterate k for each tile
+    int meshed_count = 0;
     for (const auto& off : order) {
         if (loader_quit_ || request_gen_.load() != job_gen) break;
         int di = off.di, dj = off.dj;
@@ -1418,6 +1444,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             Mesh m;
             mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nz, pz, m, s);
             if (m.indices.empty()) continue;
+            meshed_count++;
             float S0 = (float)((center_i + di) * chunk_m);
             float T0 = (float)((center_j + dj) * chunk_m);
             float R0 = (float)(kk * chunk_m);
@@ -1445,11 +1472,25 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             loader_cv_.notify_one();
         }
     }
+    auto t2 = std::chrono::steady_clock::now();
+    double mesh_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    loader_last_mesh_ms_.store(mesh_ms);
+    loader_last_meshed_.store(meshed_count);
+    loader_last_total_ms_.store(gen_ms + mesh_ms);
+    if (profile_csv_enabled_) {
+        double tsec = std::chrono::duration<double>(t2 - app_start_tp_).count();
+        char line[256];
+        std::snprintf(line, sizeof(line),
+                      "job,%.3f,%d,%d,%.3f,%.3f,%.3f\n",
+                      tsec, (int)tasks.size(), meshed_count, gen_ms, mesh_ms, gen_ms + mesh_ms);
+        profile_append_csv(line);
+    }
 }
 
 void VulkanApp::drain_mesh_results() {
     // Drain up to uploads_per_frame_limit_ results and create GPU buffers
     int uploaded = 0;
+    auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         MeshResult res;
         {
@@ -1503,6 +1544,20 @@ void VulkanApp::drain_mesh_results() {
             }
         }
         if (++uploaded >= uploads_per_frame_limit_) break;
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    last_upload_count_ = uploaded;
+    last_upload_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    // Simple moving average
+    if (uploaded > 0) {
+        if (upload_ms_avg_ <= 0.0) upload_ms_avg_ = last_upload_ms_;
+        else upload_ms_avg_ = upload_ms_avg_ * 0.8 + last_upload_ms_ * 0.2;
+    }
+    if (profile_csv_enabled_ && uploaded > 0) {
+        double tsec = std::chrono::duration<double>(t1 - app_start_tp_).count();
+        char line[128];
+        std::snprintf(line, sizeof(line), "upload,%.3f,%d,%.3f\n", tsec, uploaded, last_upload_ms_);
+        profile_append_csv(line);
     }
 }
 
