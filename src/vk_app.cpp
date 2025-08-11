@@ -1405,14 +1405,10 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                                 double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
                                 double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
                                 double r0 = (double)kk * chunk_m + (z + 0.5) * cfg.voxel_size_m;
-                                // Map face-local s/t at radius r0 to spherical direction via face basis cosines
-                                float uc = (float)(s0 / r0);
-                                float vc = (float)(t0 / r0);
-                                float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
-                                float wc = std::sqrt(w2);
-                                Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
-                                                                       right.y*uc + up.y*vc + forward.y*wc,
-                                                                       right.z*uc + up.z*vc + forward.z*wc });
+                                // Map face-local s/t at radius r0 using the same UV mapping as direction_from_face_uv
+                                float uu = (float)(s0 / r0);
+                                float vv = (float)(t0 / r0);
+                                Float3 dir_sph = direction_from_face_uv(face, uu, vv);
                                 Float3 p = dir_sph * (float)r0;
                                 Int3 voxel{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
                                 auto sb = sample_base(cfg, voxel);
@@ -1471,17 +1467,12 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                 float S = S0 + lp.x;
                 float T = T0 + lp.y;
                 float R = R0 + lp.z;
-                float uc = (R != 0.0f) ? (S / R) : 0.0f;
-                float vc = (R != 0.0f) ? (T / R) : 0.0f;
-                float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
-                float wc = std::sqrt(w2);
-                Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
-                                                       right.y*uc + up.y*vc + forward.y*wc,
-                                                       right.z*uc + up.z*vc + forward.z*wc });
+                float uu = (R != 0.0f) ? (S / R) : 0.0f;
+                float vv = (R != 0.0f) ? (T / R) : 0.0f;
+                Float3 dir_sph = direction_from_face_uv(face, uu, vv);
                 Float3 wp = dir_sph * R;
-                // Approximate normal transform via face-basis; good enough for flat-shaded voxels
-                Float3 ln{vert.nx, vert.ny, vert.nz};
-                Float3 wn = right * ln.x + up * ln.y + forward * ln.z;
+                // Fully radial normals at world position
+                Float3 wn = wf::normalize(wp);
                 vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
                 vert.nx = wn.x; vert.ny = wn.y; vert.nz = wn.z;
             }
@@ -1493,11 +1484,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             float Sc = S0 + half, Tc = T0 + half, Rc = R0 + half;
             float ucc = (Rc != 0.0f) ? (Sc / Rc) : 0.0f;
             float vcc = (Rc != 0.0f) ? (Tc / Rc) : 0.0f;
-            float w2c = std::max(0.0f, 1.0f - (ucc*ucc + vcc*vcc));
-            float wcc = std::sqrt(w2c);
-            Float3 dirc = wf::normalize(Float3{ right.x*ucc + up.x*vcc + forward.x*wcc,
-                                                right.y*ucc + up.y*vcc + forward.y*wcc,
-                                                right.z*ucc + up.z*vcc + forward.z*wcc });
+            Float3 dirc = direction_from_face_uv(face, ucc, vcc);
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
