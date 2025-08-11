@@ -20,6 +20,12 @@ struct PlanetConfig {
     double voxel_size_m = 0.10; // 10 cm base voxels
     double sea_level_m = 1135.0;// slightly below radius to create water basins
     uint32_t seed = 1337u;
+    // Terrain elevation FBM parameters (app-load configurable)
+    double terrain_amp_m = 12.0;  // peak-to-peak amplitude in meters (approx)
+    float  terrain_freq = 64.0f;  // base frequency scaling for face-UV
+    int    terrain_octaves = 4;   // number of FBM octaves
+    float  terrain_lacunarity = 2.0f; // octave frequency multiplier
+    float  terrain_gain = 0.5f;        // amplitude falloff per octave
 };
 
 // Map a 3D direction to cube face index (0..5) – utility for future chunking

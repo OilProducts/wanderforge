@@ -81,14 +81,25 @@ Controls (chunk view):
 - Q/E: move down/up
 - Right mouse drag: look around (yaw/pitch)
 - Shift: hold to move faster
+ - Default: horizontal mouse is inverted (A.K.A. swap left/right). Press `X` to toggle.
  - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in‑window overlay mirrors the same info.
 
 Config options:
 - File `wanderforge.cfg` (same directory) or env vars:
-  - `invert_mouse_x=true|false` (or `WF_INVERT_MOUSE_X=1`)
+  - `invert_mouse_x=true|false` (default true; or `WF_INVERT_MOUSE_X=1`)
   - `invert_mouse_y=true|false` (or `WF_INVERT_MOUSE_Y=1`)
   - `mouse_sensitivity=0.0025` (or `WF_MOUSE_SENSITIVITY`)
   - `move_speed=12.0` (or `WF_MOVE_SPEED`)
+  - Camera:
+    - `fov_deg=60.0` (or `WF_FOV_DEG`)
+    - `near_m=0.1` (or `WF_NEAR_M`)
+    - `far_m=1000.0` (or `WF_FAR_M`)
+  - Terrain shaping:
+    - `terrain_amp_m=12.0` (or `WF_TERRAIN_AMP_M`)
+    - `terrain_freq=64.0` (or `WF_TERRAIN_FREQ`)
+    - `terrain_octaves=4` (or `WF_TERRAIN_OCTAVES`)
+    - `terrain_lacunarity=2.0` (or `WF_TERRAIN_LACUNARITY`)
+    - `terrain_gain=0.5` (or `WF_TERRAIN_GAIN`)
   - Toggle at runtime: press `X` (invert X) or `Y` (invert Y)
 
 ## Current Render Conventions (Phase 3)

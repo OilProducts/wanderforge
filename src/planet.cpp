@@ -132,12 +132,17 @@ BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel) {
 }
 
 double terrain_height_m(const PlanetConfig& cfg, Float3 direction) {
-    // Map to face-UV and compute the same FBM elevation as sample_base
+    // Map to face-UV and compute FBM elevation using configurable parameters
     int face = 0; float u = 0.0f, v = 0.0f;
     (void)face_uv_from_direction(direction, face, u, v);
-    float elev = fbm({u*128.0f, v*128.0f, 0.0f}, 5, 2.0f, 0.5f, cfg.seed); // [-1,1]
+    const float freq = cfg.terrain_freq;
+    const int   octs = cfg.terrain_octaves;
+    const float lac  = cfg.terrain_lacunarity;
+    const float gain = cfg.terrain_gain;
+    float elev = fbm({u*freq, v*freq, 0.0f}, octs, lac, gain, cfg.seed); // [-1,1]
     elev = (elev + 1.0f) * 0.5f; // [0,1]
-    double height_m = 40.0 * elev; // up to ~40 m hills
+    const double amp_m = cfg.terrain_amp_m;
+    double height_m = amp_m * elev; // [0, amp_m]
     return height_m;
 }
 

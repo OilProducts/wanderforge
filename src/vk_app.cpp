@@ -163,6 +163,27 @@ void VulkanApp::init_window() {
     window_ = glfwCreateWindow(width_, height_, "Wanderforge", nullptr, nullptr);
 }
 
+void VulkanApp::set_mouse_capture(bool capture) {
+    if (!window_) return;
+    if (mouse_captured_ == capture) return;
+    if (capture) {
+        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+#if GLFW_VERSION_MAJOR >= 3
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window_, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        }
+#endif
+    } else {
+#if GLFW_VERSION_MAJOR >= 3
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window_, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        }
+#endif
+        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
+    mouse_captured_ = capture;
+}
+
 void VulkanApp::init_vulkan() {
     create_instance();
     setup_debug_messenger();
@@ -217,7 +238,7 @@ void VulkanApp::init_vulkan() {
 
     // Place camera slightly outside the loaded shell, looking inward (matches previous behavior)
     {
-        PlanetConfig cfg;
+        const PlanetConfig& cfg = planet_cfg_;
         const int N = Chunk64::N;
         const double chunk_m = (double)N * cfg.voxel_size_m;
         const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
@@ -534,7 +555,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
         // Row-major projection and view via camera helpers; multiply as V * P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        auto P = wf::perspective_row_major(60.0f, aspect, 0.1f, 1000.0f);
+        auto P = wf::perspective_row_major(fov_deg_, aspect, near_m_, far_m_);
         float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
         wf::Mat4 V;
         if (!walk_mode_) {
@@ -635,8 +656,8 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
                 float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
                 // near/far
-                if (dist_f + rc.radius < 0.1f) continue;
-                if (dist_f - rc.radius > 1000.0f) continue;
+                if (dist_f + rc.radius < near_m_) continue;
+                if (dist_f - rc.radius > far_m_) continue;
                 // side planes
                 if (std::fabs(dist_r) > dist_f * tan_x + rc.radius) continue;
                 if (std::fabs(dist_u) > dist_f * tan_y + rc.radius) continue;
@@ -679,7 +700,13 @@ void VulkanApp::update_input(float dt) {
     int rmb = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT);
     double cx, cy; glfwGetCursorPos(window_, &cx, &cy);
     if (rmb == GLFW_PRESS) {
-        if (!rmb_down_) { rmb_down_ = true; last_cursor_x_ = cx; last_cursor_y_ = cy; }
+        if (!rmb_down_) {
+            rmb_down_ = true;
+            // Enable cursor-disabled/raw mode for consistent relative deltas
+            set_mouse_capture(true);
+            // Reset deltas to avoid an initial jump
+            last_cursor_x_ = cx; last_cursor_y_ = cy;
+        }
         double dx = cx - last_cursor_x_;
         double dy = cy - last_cursor_y_;
         last_cursor_x_ = cx; last_cursor_y_ = cy;
@@ -700,7 +727,11 @@ void VulkanApp::update_input(float dt) {
             if (walk_pitch_ > maxp) walk_pitch_ = maxp; if (walk_pitch_ < -maxp) walk_pitch_ = -maxp;
         }
     } else {
-        rmb_down_ = false;
+        if (rmb_down_) {
+            rmb_down_ = false;
+            // Restore normal cursor when leaving mouse-look
+            set_mouse_capture(false);
+        }
     }
 
     // Compute basis from yaw/pitch
@@ -741,7 +772,7 @@ void VulkanApp::update_input(float dt) {
             walk_heading_ = std::atan2(y, x);
             walk_pitch_ = 0.0f;
             // Snap to surface radius immediately on entering walk mode
-            PlanetConfig cfg;
+            const PlanetConfig& cfg = planet_cfg_;
             double h = terrain_height_m(cfg, updir);
             double ground_r = cfg.radius_m + h; if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m;
             double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
@@ -761,7 +792,7 @@ void VulkanApp::update_input(float dt) {
         if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
     } else {
         // Walk mode: move along tangent plane using heading; keep camera at surface + eye_height
-        PlanetConfig cfg;
+        const PlanetConfig& cfg = planet_cfg_;
         Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
         Float3 updir = normalize(pos);
         Float3 world_up{0,1,0};
@@ -891,6 +922,19 @@ void VulkanApp::load_config() {
     if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
     if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_FOV_DEG")) { try { fov_deg_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_NEAR_M")) { try { near_m_ = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_FAR_M"))  { try { far_m_  = std::stof(s); } catch(...){} }
+    // Planet/terrain
+    if (const char* s = std::getenv("WF_TERRAIN_AMP_M")) { try { planet_cfg_.terrain_amp_m = std::stod(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_TERRAIN_FREQ")) { try { planet_cfg_.terrain_freq = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_TERRAIN_OCTAVES")) { try { planet_cfg_.terrain_octaves = std::max(1, std::stoi(s)); } catch(...){} }
+    if (const char* s = std::getenv("WF_TERRAIN_LACUNARITY")) { try { planet_cfg_.terrain_lacunarity = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_TERRAIN_GAIN")) { try { planet_cfg_.terrain_gain = std::stof(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_PLANET_SEED")) { try { planet_cfg_.seed = (uint32_t)std::stoul(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_RADIUS_M")) { try { planet_cfg_.radius_m = std::stod(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_SEA_LEVEL_M")) { try { planet_cfg_.sea_level_m = std::stod(s); } catch(...){} }
+    if (const char* s = std::getenv("WF_VOXEL_SIZE_M")) { try { planet_cfg_.voxel_size_m = std::stod(s); } catch(...){} }
     if (const char* s = std::getenv("WF_WALK_MODE")) walk_mode_ = parse_bool(s, walk_mode_);
     if (const char* s = std::getenv("WF_EYE_HEIGHT")) { try { eye_height_m_ = std::stof(s); } catch(...){} }
     if (const char* s = std::getenv("WF_WALK_SPEED")) { try { walk_speed_ = std::stof(s); } catch(...){} }
@@ -926,11 +970,24 @@ void VulkanApp::load_config() {
         else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
         else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
         else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
+        else if (key == "fov_deg") { try { fov_deg_ = std::stof(val); } catch(...){} }
+        else if (key == "near_m") { try { near_m_ = std::stof(val); } catch(...){} }
+        else if (key == "far_m")  { try { far_m_  = std::stof(val); } catch(...){} }
         else if (key == "walk_mode") walk_mode_ = parse_bool(val, walk_mode_);
         else if (key == "eye_height") { try { eye_height_m_ = std::stof(val); } catch(...){} }
         else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
         else if (key == "walk_pitch_max_deg") { try { walk_pitch_max_deg_ = std::stof(val); } catch(...){} }
         else if (key == "walk_surface_bias_m") { try { walk_surface_bias_m_ = std::stof(val); } catch(...){} }
+        // Planet / terrain controls
+        else if (key == "terrain_amp_m") { try { planet_cfg_.terrain_amp_m = std::stod(val); } catch(...){} }
+        else if (key == "terrain_freq") { try { planet_cfg_.terrain_freq = std::stof(val); } catch(...){} }
+        else if (key == "terrain_octaves") { try { planet_cfg_.terrain_octaves = std::max(1, std::stoi(val)); } catch(...){} }
+        else if (key == "terrain_lacunarity") { try { planet_cfg_.terrain_lacunarity = std::stof(val); } catch(...){} }
+        else if (key == "terrain_gain") { try { planet_cfg_.terrain_gain = std::stof(val); } catch(...){} }
+        else if (key == "planet_seed") { try { planet_cfg_.seed = (uint32_t)std::stoul(val); } catch(...){} }
+        else if (key == "radius_m") { try { planet_cfg_.radius_m = std::stod(val); } catch(...){} }
+        else if (key == "sea_level_m") { try { planet_cfg_.sea_level_m = std::stod(val); } catch(...){} }
+        else if (key == "voxel_size_m") { try { planet_cfg_.voxel_size_m = std::stod(val); } catch(...){} }
         else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
         else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
         else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
@@ -1228,7 +1285,7 @@ void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t cen
 void VulkanApp::start_initial_ring_async() {
     // Initialize persistent worker and enqueue initial ring around current camera on the appropriate face
     start_loader_thread();
-    PlanetConfig cfg;
+    const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
     // Determine face from camera position
@@ -1257,7 +1314,7 @@ void VulkanApp::start_initial_ring_async() {
 }
 
 void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t, uint64_t job_gen) {
-    PlanetConfig cfg;
+    const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const float s = (float)cfg.voxel_size_m;
     const double chunk_m = (double)N * cfg.voxel_size_m;
@@ -1502,7 +1559,7 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
 
 void VulkanApp::update_streaming() {
     // Recenter the ring based on camera position; dynamically choose face by camera direction
-    PlanetConfig cfg;
+    const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
     Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};

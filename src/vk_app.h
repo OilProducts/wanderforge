@@ -147,8 +147,9 @@ private:
     double last_time_ = 0.0;
     bool rmb_down_ = false;
     double last_cursor_x_ = 0.0, last_cursor_y_ = 0.0;
+    bool mouse_captured_ = false; // true when cursor is disabled for mouse-look
 
-    bool invert_mouse_x_ = false;
+    bool invert_mouse_x_ = true; // default: inverted horizontal look (swap left/right)
     bool invert_mouse_y_ = false;
     bool key_prev_toggle_x_ = false;
     bool key_prev_toggle_y_ = false;
@@ -161,13 +162,16 @@ private:
     float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
     float walk_surface_bias_m_ = 1.0f; // extra offset above computed surface to avoid clipping
 
+    // Planet configuration (defaults can be overridden via config file/env)
+    PlanetConfig planet_cfg_{};
+
     // HUD / stats
     double hud_accum_ = 0.0;
     float fps_smooth_ = 0.0f;
     bool log_stream_ = false;
     bool log_pool_ = false;
-    int pool_vtx_mb_ = 64;
-    int pool_idx_mb_ = 64;
+    int pool_vtx_mb_ = 256;
+    int pool_idx_mb_ = 128;
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
@@ -185,8 +189,8 @@ private:
     std::array<bool, kFramesInFlight> overlay_text_valid_{{false, false}};
 
     // Rendering controls
-    int ring_radius_ = 4;         // loads (2*ring_radius_+1)^2 chunks
-    int prune_margin_ = 2;        // hysteresis: keep extra radius around load ring
+    int ring_radius_ = 14;        // loads (2*ring_radius_+1)^2 chunks
+    int prune_margin_ = 3;        // hysteresis: keep extra radius around load ring
     bool cull_enabled_ = true;    // CPU frustum culling toggle
     bool draw_stats_enabled_ = true; // show draw stats in HUD
     // Per-frame draw stats captured last frame
@@ -198,6 +202,14 @@ private:
 
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
+
+    // Input helpers
+    void set_mouse_capture(bool capture);
+
+    // Camera projection params (configurable)
+    float fov_deg_ = 60.0f;
+    float near_m_ = 0.1f;
+    float far_m_  = 300.0f;
     void schedule_delete_chunk(const RenderChunk& rc);
 
     // Async loading/meshing
@@ -214,7 +226,7 @@ private:
     bool loader_quit_ = false;
     bool loader_busy_ = false;
     std::deque<MeshResult> results_queue_;
-    int uploads_per_frame_limit_ = 1024;
+    int uploads_per_frame_limit_ = 8;
     int loader_threads_ = 0; // 0 = auto
     std::atomic<double> loader_last_gen_ms_{0.0};
     std::atomic<int> loader_last_chunks_{0};
@@ -251,7 +263,7 @@ private:
     float face_keep_time_cfg_s_ = 0.75f; // configurable hold time
 
     // Radial depth control (number of shells).
-    int k_down_ = 3; // shells below center (toward planet center)
+    int k_down_ = 0; // shells below center (toward planet center)
     int k_up_ = 1;   // shells above center (toward space)
     int k_prune_margin_ = 1; // hysteresis for k pruning
 };
