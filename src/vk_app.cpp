@@ -1424,13 +1424,25 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     loader_last_chunks_.store((int)tasks.size());
     if (loader_quit_ || request_gen_.load() != job_gen) return;
 
-    // Meshing pass: prioritized s/t order, iterate k for each tile
+    // Meshing pass: parallelize over prioritized tasks (di,dj,dk)
     int meshed_count = 0;
+    struct MTask { int di, dj, dk; };
+    std::vector<MTask> mtasks; mtasks.reserve(W * W * KD);
     for (const auto& off : order) {
-        if (loader_quit_ || request_gen_.load() != job_gen) break;
-        int di = off.di, dj = off.dj;
-        for (int dk = -k_down; dk <= k_up; ++dk) {
+        for (int dk = -k_down; dk <= k_up; ++dk) mtasks.push_back(MTask{off.di, off.dj, dk});
+    }
+    std::atomic<size_t> mi{0};
+    std::atomic<int> meshed_accum{0};
+    std::vector<std::thread> mesh_workers;
+    mesh_workers.reserve(nthreads);
+    auto mesh_worker = [&]() {
+        int local_meshed = 0;
+        while (true) {
             if (loader_quit_ || request_gen_.load() != job_gen) break;
+            size_t idx = mi.fetch_add(1, std::memory_order_relaxed);
+            if (idx >= mtasks.size()) break;
+            const auto t = mtasks[idx];
+            int di = t.di, dj = t.dj, dk = t.dk;
             std::int64_t kk = k0 + dk;
             const Chunk64& c = chunks[idx_of(di, dj, dk)];
             const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj, dk)] : nullptr;
@@ -1442,7 +1454,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             Mesh m;
             mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nz, pz, m, s);
             if (m.indices.empty()) continue;
-            meshed_count++;
+            local_meshed++;
             float S0 = (float)((center_i + di) * chunk_m);
             float T0 = (float)((center_j + dj) * chunk_m);
             float R0 = (float)(kk * chunk_m);
@@ -1469,7 +1481,11 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             }
             loader_cv_.notify_one();
         }
-    }
+        if (local_meshed) meshed_accum.fetch_add(local_meshed, std::memory_order_relaxed);
+    };
+    for (int w = 0; w < nthreads; ++w) mesh_workers.emplace_back(mesh_worker);
+    for (auto& th : mesh_workers) th.join();
+    meshed_count = meshed_accum.load();
     auto t2 = std::chrono::steady_clock::now();
     double mesh_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
     loader_last_mesh_ms_.store(mesh_ms);

@@ -57,6 +57,17 @@ void mesh_chunk_greedy_neighbors(const Chunk64& c,
                                  const Chunk64* negZ, const Chunk64* posZ,
                                  Mesh& out, float s) {
     out.vertices.clear(); out.indices.clear();
+    // Early outs for empty or fully solid volumes where no seam faces are possible
+    if (c.is_all_air()) return;
+    if (c.is_all_solid()) {
+        bool posX_s = posX ? posX->is_all_solid() : true;
+        bool negX_s = negX ? negX->is_all_solid() : true;
+        bool posY_s = posY ? posY->is_all_solid() : true;
+        bool negY_s = negY ? negY->is_all_solid() : true;
+        bool posZ_s = posZ ? posZ->is_all_solid() : true;
+        bool negZ_s = negZ ? negZ->is_all_solid() : true;
+        if (posX_s && negX_s && posY_s && negY_s && posZ_s && negZ_s) return;
+    }
     const int N = Chunk64::N;
     // For each axis
     for (int axis = 0; axis < 3; ++axis) {

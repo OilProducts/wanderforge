@@ -55,7 +55,26 @@ struct Chunk64 {
         const uint32_t w = i >> 6; const uint64_t bit = 1ull << (i & 63);
         return (occ[w] & bit) != 0ull;
     }
+
+    bool is_all_air() const {
+        const size_t words = occ.size();
+        if (words == 0) return true;
+        // All words must be zero (ignoring padded bits in the last word)
+        for (size_t i = 0; i + 1 < words; ++i) if (occ[i] != 0ull) return false;
+        // Last word: mask valid bits only
+        const uint32_t valid = (uint32_t)(N3 & 63);
+        uint64_t mask = (valid == 0) ? ~0ull : ((1ull << valid) - 1ull);
+        return (occ[words - 1] & mask) == 0ull;
+    }
+
+    bool is_all_solid() const {
+        const size_t words = occ.size();
+        if (words == 0) return false;
+        for (size_t i = 0; i + 1 < words; ++i) if (occ[i] != ~0ull) return false;
+        const uint32_t valid = (uint32_t)(N3 & 63);
+        uint64_t mask = (valid == 0) ? ~0ull : ((1ull << valid) - 1ull);
+        return (occ[words - 1] & mask) == mask;
+    }
 };
 
 } // namespace wf
-

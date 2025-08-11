@@ -219,7 +219,7 @@ private:
     int                 last_upload_count_ = 0;
     double              last_upload_ms_ = 0.0;
     double              upload_ms_avg_ = 0.0;
-    bool                profile_csv_enabled_ = false;
+    bool                profile_csv_enabled_ = true;
     std::string         profile_csv_path_ = "profile.csv";
     bool                profile_header_written_ = false;
     std::chrono::steady_clock::time_point app_start_tp_{};
@@ -278,8 +278,8 @@ private:
     float face_keep_time_cfg_s_ = 0.75f; // configurable hold time
 
     // Radial depth control (number of shells).
-    int k_down_ = 0; // shells below center (toward planet center)
-    int k_up_ = 1;   // shells above center (toward space)
+    int k_down_ = 3; // shells below center (toward planet center)
+    int k_up_ = 3;   // shells above center (toward space)
     int k_prune_margin_ = 1; // hysteresis for k pruning
 };
 
