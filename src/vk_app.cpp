@@ -775,8 +775,12 @@ void VulkanApp::update_input(float dt) {
             // Snap to surface radius immediately on entering walk mode
             const PlanetConfig& cfg = planet_cfg_;
             double h = terrain_height_m(cfg, updir);
-            double ground_r = cfg.radius_m + h; if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m;
-            double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
+            double surface_r = cfg.radius_m + h;
+            if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m;
+            // Snap camera to the voxelized mesh surface: floor(surface_r/s)*s + s/2 aligns to top face
+            double s_m = cfg.voxel_size_m;
+            double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
+            double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
             Float3 final = updir * (float)target_r;
             cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
         }
@@ -819,9 +823,11 @@ void VulkanApp::update_input(float dt) {
         Float3 npos = pos + delta;
         Float3 ndir = normalize(npos);
         double h = terrain_height_m(cfg, ndir);
-        double ground_r = cfg.radius_m + h;
-        if (ground_r < cfg.sea_level_m) ground_r = cfg.sea_level_m; // keep above water surface
-        double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
+        double surface_r = cfg.radius_m + h;
+        if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m; // keep above water surface
+        double s_m = cfg.voxel_size_m;
+        double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
+        double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
         Float3 final = ndir * (float)target_r;
         cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
     }
