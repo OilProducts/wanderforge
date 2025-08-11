@@ -1407,11 +1407,11 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                                 double r0 = (double)kk * chunk_m + (z + 0.5) * cfg.voxel_size_m;
                                 // Map face-local s/t at radius r0 to a spherical direction, then back to world at radius r0
                                 float u = (float)(s0 / r0);
-                                float v = (float)(t0 / r0);
-                                Float3 dir_sph = direction_from_face_uv(face, u, v);
+                                float v_uv = (float)(t0 / r0);
+                                Float3 dir_sph = direction_from_face_uv(face, u, v_uv);
                                 Float3 p = dir_sph * (float)r0;
-                                Int3 v{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
-                                auto sb = sample_base(cfg, v);
+                                Int3 voxel{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
+                                auto sb = sample_base(cfg, voxel);
                                 c.set_voxel(x, y, z, sb.material);
                             }
                         }
