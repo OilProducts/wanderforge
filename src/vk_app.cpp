@@ -557,7 +557,7 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         // Row-major projection and view via camera helpers; multiply as V * P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
         auto P = wf::perspective_row_major(fov_deg_, aspect, near_m_, far_m_);
-        float eye[3] = { cam_pos_[0], cam_pos_[1], cam_pos_[2] };
+        float eye[3] = { (float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2] };
         wf::Mat4 V;
         if (!walk_mode_) {
             V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
@@ -781,8 +781,9 @@ void VulkanApp::update_input(float dt) {
             double s_m = cfg.voxel_size_m;
             double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
             double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
-            Float3 final = updir * (float)target_r;
-            cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
+            cam_pos_[0] = (double)updir.x * target_r;
+            cam_pos_[1] = (double)updir.y * target_r;
+            cam_pos_[2] = (double)updir.z * target_r;
         }
     }
     key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
@@ -798,7 +799,7 @@ void VulkanApp::update_input(float dt) {
     } else {
         // Walk mode: move along tangent plane using heading; keep camera at surface + eye_height
         const PlanetConfig& cfg = planet_cfg_;
-        Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+        Float3 pos{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
         Float3 updir = normalize(pos);
         Float3 world_up{0,1,0};
         Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
@@ -825,8 +826,8 @@ void VulkanApp::update_input(float dt) {
         float step_len = wf::length(step);
         if (step_len > 0.0f) {
             Float3 tdir = step / step_len; // unit tangent direction
-            float cam_r = wf::length(pos); // current radius equals last target radius
-            float phi = step_len / std::max(cam_r, 1e-6f);
+            double cam_rd = std::sqrt(cam_pos_[0]*cam_pos_[0] + cam_pos_[1]*cam_pos_[1] + cam_pos_[2]*cam_pos_[2]);
+            float phi = (float)(step_len / std::max(cam_rd, 1e-9));
             float c = std::cos(phi), s = std::sin(phi);
             // Since tdir is tangent to updir, Rodrigues reduces to ndir = updir*c + tdir*s
             ndir = wf::normalize(Float3{ updir.x * c + tdir.x * s,
@@ -839,8 +840,9 @@ void VulkanApp::update_input(float dt) {
         double s_m = cfg.voxel_size_m;
         double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
         double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
-        Float3 final = ndir * (float)target_r;
-        cam_pos_[0] = final.x; cam_pos_[1] = final.y; cam_pos_[2] = final.z;
+        cam_pos_[0] = (double)ndir.x * target_r;
+        cam_pos_[1] = (double)ndir.y * target_r;
+        cam_pos_[2] = (double)ndir.z * target_r;
     }
 
     // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
@@ -897,13 +899,13 @@ void VulkanApp::update_hud(float dt) {
         double up_ms = last_upload_ms_;
         int up_count = last_upload_count_;
         // Ground-follow diagnostics: camera vs. target surface radius
-        float cam_r = wf::length(Float3{cam_pos_[0], cam_pos_[1], cam_pos_[2]});
+        double cam_rd_hud = std::sqrt(cam_pos_[0]*cam_pos_[0] + cam_pos_[1]*cam_pos_[1] + cam_pos_[2]*cam_pos_[2]);
         const PlanetConfig& pcfg = planet_cfg_;
-        Float3 ndir = wf::normalize(Float3{cam_pos_[0], cam_pos_[1], cam_pos_[2]});
+        Float3 ndir = wf::normalize(Float3{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]});
         double h_surf = terrain_height_m(pcfg, ndir);
         double ground_r = pcfg.radius_m + h_surf; if (ground_r < pcfg.sea_level_m) ground_r = pcfg.sea_level_m;
         double target_r = ground_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
-        double dr = (double)cam_r - target_r;
+        double dr = cam_rd_hud - target_r;
         std::snprintf(hud, sizeof(hud),
                       "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f\nDraw:%d/%d  Tris:%.2fM  Cull:%s  Ring:%d  Face:%d ci:%lld cj:%lld ck:%lld  k:%d/%d  Hold:%.2fs\nQueue:%zu  Gen:%.0fms (%d ch, %.2f ms/ch)  Mesh:%.0fms (%d ch, %.2f ms/ch)  Upload:%d in %.1fms (avg %.1fms)\nRad: cam=%.1f  tgt=%.1f  d=%.2f  (eye=%.2f bias=%.2f)\nPoolV: %.1f/%.1f MB  PoolI: %.1f/%.1f MB  Loader:%s",
                        fps_smooth_,
@@ -914,7 +916,7 @@ void VulkanApp::update_hud(float dt) {
                       qdepth, gen_ms, gen_chunks, ms_per,
                       mesh_ms, meshed, mesh_ms_per,
                       up_count, up_ms, upload_ms_avg_,
-                      cam_r, (float)target_r, (float)dr, eye_height_m_, walk_surface_bias_m_,
+                      (float)cam_rd_hud, (float)target_r, (float)dr, eye_height_m_, walk_surface_bias_m_,
                       v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
@@ -1340,7 +1342,7 @@ void VulkanApp::start_initial_ring_async() {
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
     // Determine face from camera position
-    Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+    Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
     Float3 dir = normalize(eye);
     int face = face_from_direction(dir);
     Float3 right, up, forward; face_basis(face, right, up, forward);

@@ -144,7 +144,7 @@ private:
     float cam_pitch_ = 0.0f; // radians
     float cam_speed_ = 12.0f; // m/s
     float cam_sensitivity_ = 0.0025f; // radians per pixel
-    float cam_pos_[3] = { 1165.0f, 12.0f, 0.0f }; // near face0 surface by default
+    double cam_pos_[3] = { 1165.0, 12.0, 0.0 }; // store camera position at double precision
     double last_time_ = 0.0;
     bool rmb_down_ = false;
     double last_cursor_x_ = 0.0, last_cursor_y_ = 0.0;
