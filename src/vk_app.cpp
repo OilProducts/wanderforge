@@ -1239,7 +1239,7 @@ void VulkanApp::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           buf, mem);
     if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
-
+}
 
 void VulkanApp::profile_append_csv(const std::string& line) {
     if (!profile_csv_enabled_) return;
@@ -1253,8 +1253,6 @@ void VulkanApp::profile_append_csv(const std::string& line) {
     }
     out << line;
 }
-
-} // namespace wf
 
 void VulkanApp::loader_thread_main() {
     for (;;) {
