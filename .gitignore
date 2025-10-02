@@ -24,3 +24,9 @@ Thumbs.db
 # Logs
 *.log
 profile.csv
+
+# Local captures
+screenshots/
+
+# Generated region fixtures
+regions_flat/
