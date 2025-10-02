@@ -75,6 +75,10 @@ VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
 }
 
+void VulkanApp::set_config_path(std::string path) {
+    config_path_override_ = std::move(path);
+}
+
 VulkanApp::~VulkanApp() {
     // Stop loader thread if running
     {
@@ -248,14 +252,37 @@ void VulkanApp::init_vulkan() {
     {
         const PlanetConfig& cfg = planet_cfg_;
         const int N = Chunk64::N;
-        const double chunk_m = (double)N * cfg.voxel_size_m;
+        const double voxel_m = cfg.voxel_size_m;
+        const double chunk_m = (double)N * voxel_m;
+        const double half_m = chunk_m * 0.5;
         const std::int64_t k0 = (std::int64_t)std::floor(cfg.radius_m / chunk_m);
+        const double R0 = (double)k0 * chunk_m;
+        const double Rc = R0 + half_m;
         Float3 right, up, forward; face_basis(0, right, up, forward);
-        float R0f = (float)(k0 * chunk_m);
-        Float3 pos = forward * (R0f + 10.0f) + up * 4.0f; // 10m radially outward, 4m up
-        cam_pos_[0] = pos.x; cam_pos_[1] = pos.y; cam_pos_[2] = pos.z;
-        cam_yaw_ = 3.14159265f;   // look toward -forward (inward)
-        cam_pitch_ = -0.05f;
+        double Sc = half_m;
+        double Tc = half_m;
+        float cr = (float)(Sc / Rc);
+        float cu = (float)(Tc / Rc);
+        float cf = std::sqrt(std::max(0.0f, 1.0f - (cr*cr + cu*cu)));
+        Float3 dirc = wf::normalize(Float3{
+            right.x * cr + up.x * cu + forward.x * cf,
+            right.y * cr + up.y * cu + forward.y * cf,
+            right.z * cr + up.z * cu + forward.z * cf
+        });
+        Float3 chunk_center = dirc * (float)Rc;
+        float view_back = 12.0f;
+        Float3 eye = dirc * (float)(Rc + view_back) + up * 2.0f;
+        cam_pos_[0] = eye.x; cam_pos_[1] = eye.y; cam_pos_[2] = eye.z;
+        Float3 look = wf::normalize(chunk_center - eye);
+        cam_yaw_ = std::atan2(look.z, look.x);
+        cam_pitch_ = std::asin(std::clamp(look.y, -1.0f, 1.0f));
+        bool chunk_outside = (Rc > (eye.x*dirc.x + eye.y*dirc.y + eye.z*dirc.z));
+        if (chunk_outside) {
+            cam_yaw_ += 3.14159265f;
+            cam_pitch_ = -cam_pitch_;
+        }
+        std::cout << "[spawn] look=" << look.x << "," << look.y << "," << look.z
+                  << " yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
     }
     // Start persistent loader and enqueue initial ring based on current camera
     start_initial_ring_async();
@@ -561,50 +588,116 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
-        // Row-major projection and view via camera helpers; multiply as V * P and pass directly
         float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        auto P = wf::perspective_row_major(fov_deg_, aspect, near_m_, far_m_);
-        float eye[3] = { (float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2] };
+        auto P = wf::perspective_from_deg(fov_deg_, aspect, near_m_, far_m_);
+        float eye_arr[3] = { (float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2] };
+        Float3 eye{eye_arr[0], eye_arr[1], eye_arr[2]};
+
         wf::Mat4 V;
+        Float3 forward{};
+        Float3 up_vec{};
+        Float3 right_vec{};
+
         if (!walk_mode_) {
-            V = wf::view_row_major(cam_yaw_, cam_pitch_, eye);
-        } else {
-            // Build view from local basis (updir, heading)
-            Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
-            Float3 world_up{0,1,0};
-            Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
-                                              updir.z*world_up.x - updir.x*world_up.z,
-                                              updir.x*world_up.y - updir.y*world_up.x });
-            if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-            Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
-                                              r0.z*updir.x - r0.x*updir.z,
-                                              r0.x*updir.y - r0.y*updir.x });
-            float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-            Float3 fwd_h{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-            float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
-            Float3 fwd{ fwd_h.x*cp + updir.x*sp, fwd_h.y*cp + updir.y*sp, fwd_h.z*cp + updir.z*sp };
-            Float3 up_rot{ updir.x*cp - fwd_h.x*sp, updir.y*cp - fwd_h.y*sp, updir.z*cp - fwd_h.z*sp };
-            // Build right and recompute up via cross to ensure right-handed triad
-            Float3 rightv{ fwd.y*up_rot.z - fwd.z*up_rot.y, fwd.z*up_rot.x - fwd.x*up_rot.z, fwd.x*up_rot.y - fwd.y*up_rot.x };
-            // Recompute up_final = right x forward
-            Float3 up_final{ rightv.y*fwd.z - rightv.z*fwd.y, rightv.z*fwd.x - rightv.x*fwd.z, rightv.x*fwd.y - rightv.y*fwd.x };
-            // If the frame is rolled (terrain appears on top), flip right and up simultaneously
-            if (up_final.y < 0.0f && std::fabs(updir.y) > 0.2f) {
-                rightv = Float3{ -rightv.x, -rightv.y, -rightv.z };
-                up_final = Float3{ -up_final.x, -up_final.y, -up_final.z };
-            }
-            // Row-major view matrix from basis
-            V = wf::Mat4{
-                rightv.x, up_final.x, -fwd.x, 0.0f,
-                rightv.y, up_final.y, -fwd.y, 0.0f,
-                rightv.z, up_final.z, -fwd.z, 0.0f,
-                -(rightv.x*eye[0] + rightv.y*eye[1] + rightv.z*eye[2]),
-                -(up_final.x*eye[0] + up_final.y*eye[1] + up_final.z*eye[2]),
-                 ( fwd.x*eye[0] +  fwd.y*eye[1] +  fwd.z*eye[2]),
-                 1.0f
+            V = wf::view_from_yaw_pitch(cam_yaw_, cam_pitch_, eye_arr);
+            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+            forward = Float3{cp * cyaw, sp, cp * syaw};
+            Float3 world_up{0.0f, 1.0f, 0.0f};
+            right_vec = wf::normalize(Float3{
+                forward.y * world_up.z - forward.z * world_up.y,
+                forward.z * world_up.x - forward.x * world_up.z,
+                forward.x * world_up.y - forward.y * world_up.x
+            });
+            up_vec = Float3{
+                right_vec.y * forward.z - right_vec.z * forward.y,
+                right_vec.z * forward.x - right_vec.x * forward.z,
+                right_vec.x * forward.y - right_vec.y * forward.x
             };
+        } else {
+            Float3 updir = wf::normalize(eye);
+            Float3 world_up{0.0f, 1.0f, 0.0f};
+            Float3 r0 = wf::normalize(Float3{
+                updir.y * world_up.z - updir.z * world_up.y,
+                updir.z * world_up.x - updir.x * world_up.z,
+                updir.x * world_up.y - updir.y * world_up.x
+            });
+            if (wf::length(r0) < 1e-5f) r0 = Float3{1, 0, 0};
+            Float3 f0 = wf::normalize(Float3{
+                r0.y * updir.z - r0.z * updir.y,
+                r0.z * updir.x - r0.x * updir.z,
+                r0.x * updir.y - r0.y * updir.x
+            });
+            float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
+            Float3 fwd_h{f0.x * ch + r0.x * sh, f0.y * ch + r0.y * sh, f0.z * ch + r0.z * sh};
+            float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
+            forward = Float3{
+                fwd_h.x * cp + updir.x * sp,
+                fwd_h.y * cp + updir.y * sp,
+                fwd_h.z * cp + updir.z * sp
+            };
+            Float3 up_rot{
+                updir.x * cp - fwd_h.x * sp,
+                updir.y * cp - fwd_h.y * sp,
+                updir.z * cp - fwd_h.z * sp
+            };
+            right_vec = wf::normalize(Float3{
+                forward.y * up_rot.z - forward.z * up_rot.y,
+                forward.z * up_rot.x - forward.x * up_rot.z,
+                forward.x * up_rot.y - forward.y * up_rot.x
+            });
+            up_vec = wf::normalize(Float3{
+                right_vec.y * forward.z - right_vec.z * forward.y,
+                right_vec.z * forward.x - right_vec.x * forward.z,
+                right_vec.x * forward.y - right_vec.y * forward.x
+            });
+            if (up_vec.y < 0.0f && std::fabs(updir.y) > 0.2f) {
+                right_vec = Float3{-right_vec.x, -right_vec.y, -right_vec.z};
+                up_vec = Float3{-up_vec.x, -up_vec.y, -up_vec.z};
+            }
+            wf::Vec3 eye_v{eye.x, eye.y, eye.z};
+            wf::Vec3 center{eye_v.x + forward.x, eye_v.y + forward.y, eye_v.z + forward.z};
+            wf::Vec3 up_v{up_vec.x, up_vec.y, up_vec.z};
+            V = wf::look_at_rh(eye_v, center, up_v);
         }
-        auto MVP = wf::mul_row_major(V, P);
+
+        forward = wf::normalize(forward);
+        right_vec = wf::normalize(right_vec);
+        up_vec = wf::normalize(up_vec);
+
+        auto MVP = wf::mul(P, V);
+
+        if (debug_chunk_keys_) {
+            static bool logged_clip = false;
+            if (!logged_clip) {
+                std::cout << "VP matrix:\n";
+                for (int r = 0; r < 4; ++r) {
+                    std::cout << "  ["
+                              << MVP.at(r, 0) << ", "
+                              << MVP.at(r, 1) << ", "
+                              << MVP.at(r, 2) << ", "
+                              << MVP.at(r, 3) << "]\n";
+                }
+                if (!render_chunks_.empty()) {
+                    const auto& rc0 = render_chunks_[0];
+                    wf::Vec4 c0{rc0.center[0], rc0.center[1], rc0.center[2], 1.0f};
+                    wf::Vec4 view = wf::mul(V, c0);
+                    auto clip = wf::mul(P, view);
+                    std::cout << "eye:" << eye.x << "," << eye.y << "," << eye.z
+                              << "  forward:" << forward.x << "," << forward.y << "," << forward.z << "\n";
+                    std::cout << "chunk0 center:" << rc0.center[0] << "," << rc0.center[1] << "," << rc0.center[2]
+                              << " radius:" << rc0.radius << "\n";
+                    std::cout << "delta:" << (rc0.center[0]-eye.x) << "," << (rc0.center[1]-eye.y) << "," << (rc0.center[2]-eye.z) << "\n";
+                    std::cout << "view-space:" << view.x << "," << view.y << "," << view.z << "," << view.w << "\n";
+                    std::cout << "clip test: "
+                              << clip.x << ", "
+                              << clip.y << ", "
+                              << clip.z << ", "
+                              << clip.w << "\n";
+                }
+                logged_clip = true;
+            }
+        }
 
         // Prepare preallocated container and compute draw stats
         chunk_items_tmp_.clear();
@@ -614,52 +707,20 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         last_draw_indices_ = 0;
 
         if (cull_enabled_) {
-            // Frustum culling (simple sphere vs frustum)
-            float fwd[3]; float upv[3]; float rightv[3];
-            if (!walk_mode_) {
-                float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-                float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-                fwd[0] = cp*cyaw; fwd[1] = sp; fwd[2] = cp*syaw;
-                upv[0] = 0.0f; upv[1] = 1.0f; upv[2] = 0.0f;
-                rightv[0] = fwd[1]*upv[2]-fwd[2]*upv[1]; rightv[1] = fwd[2]*upv[0]-fwd[0]*upv[2]; rightv[2] = fwd[0]*upv[1]-fwd[1]*upv[0];
-            } else {
-                Float3 updir = wf::normalize(Float3{eye[0], eye[1], eye[2]});
-                Float3 world_up{0,1,0};
-                Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
-                                                  updir.z*world_up.x - updir.x*world_up.z,
-                                                  updir.x*world_up.y - updir.y*world_up.x });
-                if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-                Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
-                                                  r0.z*updir.x - r0.x*updir.z,
-                                                  r0.x*updir.y - r0.y*updir.x });
-                float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-                Float3 fwh{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-                float cp2 = std::cos(walk_pitch_), sp2 = std::sin(walk_pitch_);
-                Float3 fw{ fwh.x*cp2 + updir.x*sp2, fwh.y*cp2 + updir.y*sp2, fwh.z*cp2 + updir.z*sp2 };
-                Float3 up2{ updir.x*cp2 - fwh.x*sp2, updir.y*cp2 - fwh.y*sp2, updir.z*cp2 - fwh.z*sp2 };
-                // right = forward x up; up = right x forward
-                Float3 rv{ fw.y*up2.z - fw.z*up2.y, fw.z*up2.x - fw.x*up2.z, fw.x*up2.y - fw.y*up2.x };
-                Float3 upf{ rv.y*fw.z - rv.z*fw.y, rv.z*fw.x - rv.x*fw.z, rv.x*fw.y - rv.y*fw.x };
-                // Flip both if inverted relative to world up to avoid upside-down view
-                if (upf.y < 0.0f && std::fabs(updir.y) > 0.2f) {
-                    rv = Float3{ -rv.x, -rv.y, -rv.z };
-                    upf = Float3{ -upf.x, -upf.y, -upf.z };
-                }
-                fwd[0]=fw.x; fwd[1]=fw.y; fwd[2]=fw.z;
-                upv[0]=upf.x; upv[1]=upf.y; upv[2]=upf.z;
-                rightv[0]=rv.x; rightv[1]=rv.y; rightv[2]=rv.z;
-            }
-            float rl = std::sqrt(rightv[0]*rightv[0]+rightv[1]*rightv[1]+rightv[2]*rightv[2]);
-            if (rl > 0) { rightv[0]/=rl; rightv[1]/=rl; rightv[2]/=rl; }
+            float fwd[3] = {forward.x, forward.y, forward.z};
+            float upv[3] = {up_vec.x, up_vec.y, up_vec.z};
+            float rightv[3] = {right_vec.x, right_vec.y, right_vec.z};
+            float rl = std::sqrt(rightv[0]*rightv[0] + rightv[1]*rightv[1] + rightv[2]*rightv[2]);
+            if (rl > 0) { rightv[0] /= rl; rightv[1] /= rl; rightv[2] /= rl; }
             // FOVs
             float fovy = 60.0f * 0.01745329252f;
             float tan_y = std::tan(fovy * 0.5f);
             float tan_x = tan_y * aspect;
 
             for (const auto& rc : render_chunks_) {
-                float dx = rc.center[0] - eye[0];
-                float dy = rc.center[1] - eye[1];
-                float dz = rc.center[2] - eye[2];
+                float dx = rc.center[0] - eye.x;
+                float dy = rc.center[1] - eye.y;
+                float dz = rc.center[2] - eye.z;
                 float dist_f = dx*fwd[0] + dy*fwd[1] + dz*fwd[2];
                 float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
                 float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
@@ -672,6 +733,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 ChunkDrawItem item{};
                 item.vbuf = rc.vbuf; item.ibuf = rc.ibuf; item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
+                item.vertex_count = rc.vertex_count;
+                item.center[0] = rc.center[0]; item.center[1] = rc.center[1]; item.center[2] = rc.center[2];
+                item.radius = rc.radius;
                 chunk_items_tmp_.push_back(item);
                 last_draw_visible_++;
                 last_draw_indices_ += rc.index_count;
@@ -681,6 +745,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
                 ChunkDrawItem item{};
                 item.vbuf = rc.vbuf; item.ibuf = rc.ibuf; item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
+                item.vertex_count = rc.vertex_count;
+                item.center[0] = rc.center[0]; item.center[1] = rc.center[1]; item.center[2] = rc.center[2];
+                item.radius = rc.radius;
                 chunk_items_tmp_.push_back(item);
                 last_draw_visible_++;
                 last_draw_indices_ += rc.index_count;
@@ -940,122 +1007,108 @@ void VulkanApp::update_hud(float dt) {
     }
 }
 
-static inline std::string trim(const std::string& s) {
-    size_t a = 0, b = s.size();
-    while (a < b && std::isspace((unsigned char)s[a])) ++a;
-    while (b > a && std::isspace((unsigned char)s[b-1])) --b;
-    return s.substr(a, b - a);
-}
-
-static inline std::string lower(std::string s) {
-    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-    return s;
-}
-
-static inline bool parse_bool(std::string v, bool defv) {
-    v = lower(trim(v));
-    if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
-    if (v == "0" || v == "false" || v == "no" || v == "off") return false;
-    return defv;
-}
-
 void VulkanApp::load_config() {
-    // Environment overrides
-    if (const char* s = std::getenv("WF_INVERT_MOUSE_X")) invert_mouse_x_ = parse_bool(s, invert_mouse_x_);
-    if (const char* s = std::getenv("WF_INVERT_MOUSE_Y")) invert_mouse_y_ = parse_bool(s, invert_mouse_y_);
-    if (const char* s = std::getenv("WF_MOUSE_SENSITIVITY")) { try { cam_sensitivity_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_MOVE_SPEED")) { try { cam_speed_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_FOV_DEG")) { try { fov_deg_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_NEAR_M")) { try { near_m_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_FAR_M"))  { try { far_m_  = std::stof(s); } catch(...){} }
-    // Planet/terrain
-    if (const char* s = std::getenv("WF_TERRAIN_AMP_M")) { try { planet_cfg_.terrain_amp_m = std::stod(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_TERRAIN_FREQ")) { try { planet_cfg_.terrain_freq = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_TERRAIN_OCTAVES")) { try { planet_cfg_.terrain_octaves = std::max(1, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_TERRAIN_LACUNARITY")) { try { planet_cfg_.terrain_lacunarity = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_TERRAIN_GAIN")) { try { planet_cfg_.terrain_gain = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_PLANET_SEED")) { try { planet_cfg_.seed = (uint32_t)std::stoul(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_RADIUS_M")) { try { planet_cfg_.radius_m = std::stod(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_SEA_LEVEL_M")) { try { planet_cfg_.sea_level_m = std::stod(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_VOXEL_SIZE_M")) { try { planet_cfg_.voxel_size_m = std::stod(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_WALK_MODE")) walk_mode_ = parse_bool(s, walk_mode_);
-    if (const char* s = std::getenv("WF_EYE_HEIGHT")) { try { eye_height_m_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_WALK_SPEED")) { try { walk_speed_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_WALK_PITCH_MAX_DEG")) { try { walk_pitch_max_deg_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_USE_CHUNK_RENDERER")) use_chunk_renderer_ = parse_bool(s, use_chunk_renderer_);
-    if (const char* s = std::getenv("WF_RING_RADIUS")) { try { ring_radius_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_PRUNE_MARGIN")) { try { prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_CULL")) cull_enabled_ = parse_bool(s, cull_enabled_);
-    if (const char* s = std::getenv("WF_DRAW_STATS")) draw_stats_enabled_ = parse_bool(s, draw_stats_enabled_);
-    if (const char* s = std::getenv("WF_LOG_STREAM")) log_stream_ = parse_bool(s, log_stream_);
-    if (const char* s = std::getenv("WF_LOG_POOL")) log_pool_ = parse_bool(s, log_pool_);
-    if (const char* s = std::getenv("WF_SAVE_CHUNKS")) save_chunks_enabled_ = parse_bool(s, save_chunks_enabled_);
-    if (const char* s = std::getenv("WF_SURFACE_PUSH_M")) { try { surface_push_m_ = std::stof(s); } catch(...){} }
-    if (const char* s = std::getenv("WF_PROFILE_CSV")) profile_csv_enabled_ = parse_bool(s, profile_csv_enabled_);
-    if (const char* s = std::getenv("WF_PROFILE_CSV_PATH")) { try { profile_csv_path_ = s; } catch(...){} }
-    if (const char* s = std::getenv("WF_DEVICE_LOCAL")) device_local_enabled_ = parse_bool(s, device_local_enabled_);
-    if (const char* s = std::getenv("WF_POOL_VTX_MB")) { try { pool_vtx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_POOL_IDX_MB")) { try { pool_idx_mb_ = std::max(1, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_UPLOADS_PER_FRAME")) { try { uploads_per_frame_limit_ = std::max(1, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_LOADER_THREADS")) { try { loader_threads_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_K_DOWN")) { try { k_down_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_K_UP")) { try { k_up_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_K_PRUNE_MARGIN")) { try { k_prune_margin_ = std::max(0, std::stoi(s)); } catch(...){} }
-    if (const char* s = std::getenv("WF_FACE_KEEP_SEC")) { try { face_keep_time_cfg_s_ = std::max(0.0f, std::stof(s)); } catch(...){} }
+    AppConfig defaults = snapshot_config();
+    AppConfig loaded = load_app_config(defaults, config_path_override_);
+    apply_config(loaded);
+}
 
-    std::ifstream in("wanderforge.cfg");
-    if (!in.good()) return;
-    std::string line;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = lower(trim(line.substr(0, eq)));
-        std::string val = trim(line.substr(eq + 1));
-        if (key == "invert_mouse_x") invert_mouse_x_ = parse_bool(val, invert_mouse_x_);
-        else if (key == "invert_mouse_y") invert_mouse_y_ = parse_bool(val, invert_mouse_y_);
-        else if (key == "mouse_sensitivity") { try { cam_sensitivity_ = std::stof(val); } catch(...){} }
-        else if (key == "move_speed") { try { cam_speed_ = std::stof(val); } catch(...){} }
-        else if (key == "fov_deg") { try { fov_deg_ = std::stof(val); } catch(...){} }
-        else if (key == "near_m") { try { near_m_ = std::stof(val); } catch(...){} }
-        else if (key == "far_m")  { try { far_m_  = std::stof(val); } catch(...){} }
-        else if (key == "walk_mode") walk_mode_ = parse_bool(val, walk_mode_);
-        else if (key == "eye_height") { try { eye_height_m_ = std::stof(val); } catch(...){} }
-        else if (key == "walk_speed") { try { walk_speed_ = std::stof(val); } catch(...){} }
-        else if (key == "walk_pitch_max_deg") { try { walk_pitch_max_deg_ = std::stof(val); } catch(...){} }
-        else if (key == "walk_surface_bias_m") { try { walk_surface_bias_m_ = std::stof(val); } catch(...){} }
-        else if (key == "surface_push_m") { try { surface_push_m_ = std::stof(val); } catch(...){} }
-        // Planet / terrain controls
-        else if (key == "terrain_amp_m") { try { planet_cfg_.terrain_amp_m = std::stod(val); } catch(...){} }
-        else if (key == "terrain_freq") { try { planet_cfg_.terrain_freq = std::stof(val); } catch(...){} }
-        else if (key == "terrain_octaves") { try { planet_cfg_.terrain_octaves = std::max(1, std::stoi(val)); } catch(...){} }
-        else if (key == "terrain_lacunarity") { try { planet_cfg_.terrain_lacunarity = std::stof(val); } catch(...){} }
-        else if (key == "terrain_gain") { try { planet_cfg_.terrain_gain = std::stof(val); } catch(...){} }
-        else if (key == "planet_seed") { try { planet_cfg_.seed = (uint32_t)std::stoul(val); } catch(...){} }
-        else if (key == "radius_m") { try { planet_cfg_.radius_m = std::stod(val); } catch(...){} }
-        else if (key == "sea_level_m") { try { planet_cfg_.sea_level_m = std::stod(val); } catch(...){} }
-        else if (key == "voxel_size_m") { try { planet_cfg_.voxel_size_m = std::stod(val); } catch(...){} }
-        else if (key == "use_chunk_renderer") use_chunk_renderer_ = parse_bool(val, use_chunk_renderer_);
-        else if (key == "ring_radius") { try { ring_radius_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "prune_margin") { try { prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "cull") cull_enabled_ = parse_bool(val, cull_enabled_);
-        else if (key == "draw_stats") draw_stats_enabled_ = parse_bool(val, draw_stats_enabled_);
-        else if (key == "log_stream") log_stream_ = parse_bool(val, log_stream_);
-        else if (key == "log_pool") log_pool_ = parse_bool(val, log_pool_);
-        else if (key == "save_chunks") save_chunks_enabled_ = parse_bool(val, save_chunks_enabled_);
-        else if (key == "profile_csv") profile_csv_enabled_ = parse_bool(val, profile_csv_enabled_);
-        else if (key == "profile_csv_path") { profile_csv_path_ = val; }
-        else if (key == "device_local") device_local_enabled_ = parse_bool(val, device_local_enabled_);
-        else if (key == "pool_vtx_mb") { try { pool_vtx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
-        else if (key == "pool_idx_mb") { try { pool_idx_mb_ = std::max(1, std::stoi(val)); } catch(...){} }
-        else if (key == "uploads_per_frame") { try { uploads_per_frame_limit_ = std::max(1, std::stoi(val)); } catch(...){} }
-        else if (key == "loader_threads") { try { loader_threads_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "k_down") { try { k_down_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "k_up") { try { k_up_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "k_prune_margin") { try { k_prune_margin_ = std::max(0, std::stoi(val)); } catch(...){} }
-        else if (key == "face_keep_sec") { try { face_keep_time_cfg_s_ = std::max(0.0f, std::stof(val)); } catch(...){} }
-    }
+AppConfig VulkanApp::snapshot_config() const {
+    AppConfig cfg;
+    cfg.invert_mouse_x = invert_mouse_x_;
+    cfg.invert_mouse_y = invert_mouse_y_;
+    cfg.cam_sensitivity = cam_sensitivity_;
+    cfg.cam_speed = cam_speed_;
+    cfg.fov_deg = fov_deg_;
+    cfg.near_m = near_m_;
+    cfg.far_m = far_m_;
+
+    cfg.walk_mode = walk_mode_;
+    cfg.eye_height_m = eye_height_m_;
+    cfg.walk_speed = walk_speed_;
+    cfg.walk_pitch_max_deg = walk_pitch_max_deg_;
+    cfg.walk_surface_bias_m = walk_surface_bias_m_;
+    cfg.surface_push_m = surface_push_m_;
+
+    cfg.use_chunk_renderer = use_chunk_renderer_;
+    cfg.ring_radius = ring_radius_;
+    cfg.prune_margin = prune_margin_;
+    cfg.cull_enabled = cull_enabled_;
+    cfg.draw_stats_enabled = draw_stats_enabled_;
+
+    cfg.log_stream = log_stream_;
+    cfg.log_pool = log_pool_;
+    cfg.save_chunks_enabled = save_chunks_enabled_;
+    cfg.debug_chunk_keys = debug_chunk_keys_;
+
+    cfg.profile_csv_enabled = profile_csv_enabled_;
+    cfg.profile_csv_path = profile_csv_path_;
+
+    cfg.device_local_enabled = device_local_enabled_;
+    cfg.pool_vtx_mb = pool_vtx_mb_;
+    cfg.pool_idx_mb = pool_idx_mb_;
+
+    cfg.uploads_per_frame_limit = uploads_per_frame_limit_;
+    cfg.loader_threads = loader_threads_;
+    cfg.k_down = k_down_;
+    cfg.k_up = k_up_;
+    cfg.k_prune_margin = k_prune_margin_;
+    cfg.face_keep_time_cfg_s = face_keep_time_cfg_s_;
+
+    cfg.planet_cfg = planet_cfg_;
+    cfg.config_path = config_path_used_;
+    cfg.region_root = region_root_;
+
+    return cfg;
+}
+
+void VulkanApp::apply_config(const AppConfig& cfg) {
+    invert_mouse_x_ = cfg.invert_mouse_x;
+    invert_mouse_y_ = cfg.invert_mouse_y;
+    cam_sensitivity_ = cfg.cam_sensitivity;
+    cam_speed_ = cfg.cam_speed;
+    fov_deg_ = cfg.fov_deg;
+    near_m_ = cfg.near_m;
+    far_m_ = cfg.far_m;
+
+    walk_mode_ = cfg.walk_mode;
+    eye_height_m_ = cfg.eye_height_m;
+    walk_speed_ = cfg.walk_speed;
+    walk_pitch_max_deg_ = cfg.walk_pitch_max_deg;
+    walk_surface_bias_m_ = cfg.walk_surface_bias_m;
+    surface_push_m_ = cfg.surface_push_m;
+
+    use_chunk_renderer_ = cfg.use_chunk_renderer;
+    ring_radius_ = cfg.ring_radius;
+    prune_margin_ = cfg.prune_margin;
+    cull_enabled_ = cfg.cull_enabled;
+    draw_stats_enabled_ = cfg.draw_stats_enabled;
+
+    log_stream_ = cfg.log_stream;
+    log_pool_ = cfg.log_pool;
+    save_chunks_enabled_ = cfg.save_chunks_enabled;
+    debug_chunk_keys_ = cfg.debug_chunk_keys;
+
+    profile_csv_enabled_ = cfg.profile_csv_enabled;
+    profile_csv_path_ = cfg.profile_csv_path;
+
+    device_local_enabled_ = cfg.device_local_enabled;
+    pool_vtx_mb_ = cfg.pool_vtx_mb;
+    pool_idx_mb_ = cfg.pool_idx_mb;
+
+    uploads_per_frame_limit_ = cfg.uploads_per_frame_limit;
+    loader_threads_ = cfg.loader_threads;
+    k_down_ = cfg.k_down;
+    k_up_ = cfg.k_up;
+    k_prune_margin_ = cfg.k_prune_margin;
+    face_keep_time_cfg_s_ = cfg.face_keep_time_cfg_s;
+
+    planet_cfg_ = cfg.planet_cfg;
+    config_path_used_ = cfg.config_path;
+    region_root_ = cfg.region_root;
+
+    std::cout << "[config] region_root=" << region_root_ << " (active)\n";
+    std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 }
 
 void VulkanApp::draw_frame() {
@@ -1436,8 +1489,18 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                 int di = t.di, dj = t.dj, dk = t.dk;
                 std::int64_t kk = k0 + dk;
                 FaceChunkKey key{face, center_i + di, center_j + dj, kk};
+                if (debug_chunk_keys_) {
+                    static std::atomic<int> debug_chunk_log_count{0};
+                    if (debug_chunk_log_count.load(std::memory_order_relaxed) < 32) {
+                        int prev = debug_chunk_log_count.fetch_add(1, std::memory_order_relaxed);
+                        if (prev < 32) {
+                            std::cout << "[chunk-load] face=" << key.face
+                                      << " i=" << key.i << " j=" << key.j << " k=" << key.k << "\n";
+                        }
+                    }
+                }
                 Chunk64& c = chunks[idx_of(di, dj, dk)];
-                if (!RegionIO::load_chunk(key, c)) {
+                if (!RegionIO::load_chunk(key, c, 32, region_root_)) {
                     for (int z = 0; z < N; ++z) {
                         for (int y = 0; y < N; ++y) {
                             for (int x = 0; x < N; ++x) {
@@ -1459,7 +1522,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                             }
                         }
                     }
-                    if (save_chunks_enabled_) RegionIO::save_chunk(key, c);
+                    if (save_chunks_enabled_) RegionIO::save_chunk(key, c, 32, region_root_);
                 }
             }
         });
@@ -1514,7 +1577,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                                                 right.y*cr + up.y*cu + forward.y*cf,
                                                 right.z*cr + up.z*cu + forward.z*cf });
             float dcam = fwd_world_cam.x*dirc.x + fwd_world_cam.y*dirc.y + fwd_world_cam.z*dirc.z;
-            if (dcam < cone_cos) {
+            if (!debug_chunk_keys_ && dcam < cone_cos) {
                 continue; // outside forward cone, skip meshing this tile for now
             }
             const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj, dk)] : nullptr;
@@ -1645,6 +1708,15 @@ void VulkanApp::drain_mesh_results() {
         rc.vbuf = VK_NULL_HANDLE; rc.vmem = VK_NULL_HANDLE; rc.ibuf = VK_NULL_HANDLE; rc.imem = VK_NULL_HANDLE;
         rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
         rc.key = res.key;
+        if (debug_chunk_keys_) {
+            if (!res.vertices.empty()) {
+                const auto &v0 = res.vertices.front();
+                std::cout << "[mesh] key face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                          << " v0=(" << v0.x << "," << v0.y << "," << v0.z << ")" << std::endl;
+            }
+            std::cout << "[mesh] center=(" << rc.center[0] << "," << rc.center[1] << "," << rc.center[2]
+                      << ") radius=" << rc.radius << " idx=" << rc.index_count << " vtx=" << rc.vertex_count << std::endl;
+        }
         // Replace existing chunk with same key, if present
         bool replaced = false;
         for (size_t i = 0; i < render_chunks_.size(); ++i) {
@@ -1670,6 +1742,15 @@ void VulkanApp::drain_mesh_results() {
                           << " idx_count=" << rc.index_count << " vtx_count=" << rc.vertex_count
                           << " first_index=" << rc.first_index << " base_vertex=" << rc.base_vertex << "\n";
             }
+        }
+        if (debug_chunk_keys_ && !debug_auto_aim_done_) {
+            Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
+            Float3 center{rc.center[0], rc.center[1], rc.center[2]};
+            Float3 dir = wf::normalize(center - eye);
+            cam_yaw_ = std::atan2(dir.z, dir.x);
+            cam_pitch_ = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
+            debug_auto_aim_done_ = true;
+            std::cout << "[debug-aim] yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
         }
         if (++uploaded >= uploads_per_frame_limit_) break;
     }

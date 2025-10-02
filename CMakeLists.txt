@@ -56,6 +56,7 @@ add_executable(wanderforge
   src/overlay.cpp
   src/chunk_renderer.cpp
   src/camera.cpp
+  src/config_loader.cpp
   src/vk_utils.cpp
 )
 
@@ -77,6 +78,7 @@ target_compile_definitions(wanderforge PRIVATE
 
 target_include_directories(wanderforge PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
 # On macOS with MoltenVK via Vulkan SDK, ensure rpath can find frameworks if needed.

@@ -8,6 +8,7 @@
 #include "chunk_renderer.h"
 #include "mesh.h"
 #include "planet.h"
+#include "config_loader.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -26,6 +27,7 @@ public:
     ~VulkanApp();
 
     void run();
+    void set_config_path(std::string path);
 
 private:
     void init_window();
@@ -50,6 +52,8 @@ private:
     void update_input(float dt);
     void update_hud(float dt);
     void load_config();
+    AppConfig snapshot_config() const;
+    void apply_config(const AppConfig& cfg);
 
     void cleanup_swapchain();
     void recreate_swapchain();
@@ -175,6 +179,7 @@ private:
     int pool_vtx_mb_ = 256;
     int pool_idx_mb_ = 128;
     bool save_chunks_enabled_ = false; // skip disk saves by default for faster streaming
+    std::string region_root_ = "regions";
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
@@ -202,6 +207,8 @@ private:
     uint64_t last_draw_indices_ = 0;
 
     bool device_local_enabled_ = true; // default to device-local pools with staging
+    bool front_face_cw_ = true;        // default winding for chunk renderer
+    bool debug_chunk_keys_ = false;
 
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
@@ -215,6 +222,8 @@ private:
     float far_m_  = 300.0f;
     // Streaming prioritization cone (degrees) around camera forward for meshing
     float stream_cone_deg_ = 75.0f;
+    // Surface-band prefilter: pad in whole chunk shells to avoid misses
+    int surface_band_pad_shells_ = 2; // intersects [minR-pad*chunk_thickness, maxR+pad*chunk_thickness]
 
     // Profiling/metrics
     std::atomic<double> loader_last_mesh_ms_{0.0};
@@ -285,6 +294,10 @@ private:
     int k_down_ = 3; // shells below center (toward planet center)
     int k_up_ = 3;   // shells above center (toward space)
     int k_prune_margin_ = 1; // hysteresis for k pruning
+
+    // Config state
+    std::string config_path_override_;
+    std::string config_path_used_ = "wanderforge.cfg";
 };
 
 } // namespace wf

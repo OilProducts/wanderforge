@@ -51,7 +51,7 @@ void ChunkRenderer::init(VkPhysicalDevice phys, VkDevice device, VkRenderPass re
     VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
 
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT; rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount = 1; cb.pAttachments = &cba;
@@ -105,7 +105,13 @@ void ChunkRenderer::cleanup(VkDevice device) {
 }
 
 void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items) {
-    if (!pipeline_ || items.empty()) return;
+    if (!pipeline_ || items.empty()) {
+        if (log_) {
+            std::cout << "[chunk] skip draw pipeline=" << (pipeline_ ? 1 : 0)
+                      << " items=" << items.size() << "\n";
+        }
+        return;
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
     // If items reference the shared pools (no per-chunk buffers), build and issue indirect multi-draw
@@ -121,6 +127,14 @@ void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::
         for (const auto& it : items) {
             Cmd c{ it.index_count, 1u, it.first_index, it.base_vertex, 0u };
             cmds.push_back(c);
+            if (log_) {
+                std::cout << "[pool] draw first_index=" << it.first_index
+                          << " base_vertex=" << it.base_vertex
+                          << " idx_count=" << it.index_count
+                          << " vtx_count=" << it.vertex_count
+                          << " center=(" << it.center[0] << "," << it.center[1] << "," << it.center[2] << ")"
+                          << " radius=" << it.radius << "\n";
+            }
         }
         wf::vk::upload_host_visible(device_, indirect_mem_, sizeof(Cmd) * cmds.size(), cmds.data(), 0);
         if (log_ && (++log_frame_cnt_ % log_every_n_ == 0)) {
@@ -135,10 +149,17 @@ void ChunkRenderer::record(VkCommandBuffer cmd, const float mvp[16], const std::
     } else {
         // Fallback to direct per-chunk draws
         for (const auto& it : items) {
+            if (log_) {
+                std::cout << "[chunk] draw direct idx=" << it.index_count
+                          << " first_index=" << it.first_index
+                          << " base_vertex=" << it.base_vertex
+                          << " vbuf=" << (void*)it.vbuf
+                          << " ibuf=" << (void*)it.ibuf << "\n";
+            }
             VkDeviceSize offs = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &it.vbuf, &offs);
             vkCmdBindIndexBuffer(cmd, it.ibuf, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, it.index_count, 1, 0, 0, 0);
+            vkCmdDrawIndexed(cmd, it.index_count, 1, it.first_index, it.base_vertex, 0);
         }
     }
 }
