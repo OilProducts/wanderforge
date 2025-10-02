@@ -75,6 +75,29 @@ struct Chunk64 {
         uint64_t mask = (valid == 0) ? ~0ull : ((1ull << valid) - 1ull);
         return (occ[words - 1] & mask) == mask;
     }
+
+    // Fast fills to avoid per-voxel generation when chunk is uniformly air or solid
+    void fill_all_air() {
+        // Clear occupancy; keep indices at zero; clear palette
+        for (auto &w : occ) w = 0ull;
+        palette.clear();
+        palette_lut.clear();
+        dirty_mesh = true;
+    }
+
+    void fill_all_solid(uint16_t mat) {
+        // Occupancy full; palette with single material at index 0; indices already zero
+        for (size_t i = 0; i + 1 < occ.size(); ++i) occ[i] = ~0ull;
+        // Last word: set only valid bits
+        const uint32_t valid = (uint32_t)(N3 & 63);
+        uint64_t mask = (valid == 0) ? ~0ull : ((1ull << valid) - 1ull);
+        if (!occ.empty()) occ.back() = mask;
+        palette.clear();
+        palette_lut.clear();
+        palette.push_back(mat);
+        palette_lut.emplace(mat, 0u);
+        dirty_mesh = true;
+    }
 };
 
 } // namespace wf
