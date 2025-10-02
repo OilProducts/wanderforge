@@ -9,6 +9,7 @@
 #include "mesh.h"
 #include "planet.h"
 #include "config_loader.h"
+#include "ui/ui_context.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -172,6 +173,9 @@ private:
     // HUD / stats
     double hud_accum_ = 0.0;
     float fps_smooth_ = 0.0f;
+    float hud_scale_ = 2.0f;
+    bool hud_shadow_enabled_ = false;
+    float hud_shadow_offset_px_ = 1.5f;
     bool log_stream_ = false;
     bool log_pool_ = false;
     int pool_vtx_mb_ = 256;
@@ -181,6 +185,7 @@ private:
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
+    ui::UIContext hud_ui_context_;
     ChunkRenderer chunk_renderer_;
     // Reused per-frame container to avoid allocations when building draw items
     std::vector<ChunkDrawItem> chunk_items_tmp_;

@@ -78,6 +78,10 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
     apply_env("WF_SEA_LEVEL_M", cfg.planet_cfg.sea_level_m, [&](const char* s) { cfg.planet_cfg.sea_level_m = std::stod(s); });
     apply_env("WF_VOXEL_SIZE_M", cfg.planet_cfg.voxel_size_m, [&](const char* s) { cfg.planet_cfg.voxel_size_m = std::stod(s); });
 
+    apply_env("WF_HUD_SCALE", cfg.hud_scale, [&](const char* s) { cfg.hud_scale = std::stof(s); });
+    apply_env_bool("WF_HUD_SHADOW", cfg.hud_shadow);
+    apply_env("WF_HUD_SHADOW_OFFSET", cfg.hud_shadow_offset_px, [&](const char* s) { cfg.hud_shadow_offset_px = std::stof(s); });
+
     apply_env_bool("WF_WALK_MODE", cfg.walk_mode);
     apply_env("WF_EYE_HEIGHT", cfg.eye_height_m, [&](const char* s) { cfg.eye_height_m = std::stof(s); });
     apply_env("WF_WALK_SPEED", cfg.walk_speed, [&](const char* s) { cfg.walk_speed = std::stof(s); });
@@ -156,6 +160,9 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
             else if (key == "prune_margin") { cfg.prune_margin = std::max(0, std::stoi(val)); std::cout << "[config] prune_margin=" << cfg.prune_margin << " (file)\n"; }
             else if (key == "cull") { cfg.cull_enabled = parse_bool(val, cfg.cull_enabled); std::cout << "[config] cull=" << (cfg.cull_enabled ? "true" : "false") << " (file)\n"; }
             else if (key == "draw_stats") { cfg.draw_stats_enabled = parse_bool(val, cfg.draw_stats_enabled); std::cout << "[config] draw_stats=" << (cfg.draw_stats_enabled ? "true" : "false") << " (file)\n"; }
+            else if (key == "hud_scale") { cfg.hud_scale = std::stof(val); std::cout << "[config] hud_scale=" << cfg.hud_scale << " (file)\n"; }
+            else if (key == "hud_shadow") { cfg.hud_shadow = parse_bool(val, cfg.hud_shadow); std::cout << "[config] hud_shadow=" << (cfg.hud_shadow ? "true" : "false") << " (file)\n"; }
+            else if (key == "hud_shadow_offset") { cfg.hud_shadow_offset_px = std::stof(val); std::cout << "[config] hud_shadow_offset=" << cfg.hud_shadow_offset_px << " (file)\n"; }
             else if (key == "log_stream") { cfg.log_stream = parse_bool(val, cfg.log_stream); std::cout << "[config] log_stream=" << (cfg.log_stream ? "true" : "false") << " (file)\n"; }
             else if (key == "log_pool") { cfg.log_pool = parse_bool(val, cfg.log_pool); std::cout << "[config] log_pool=" << (cfg.log_pool ? "true" : "false") << " (file)\n"; }
             else if (key == "save_chunks") { cfg.save_chunks_enabled = parse_bool(val, cfg.save_chunks_enabled); std::cout << "[config] save_chunks=" << (cfg.save_chunks_enabled ? "true" : "false") << " (file)\n"; }

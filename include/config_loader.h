@@ -28,6 +28,10 @@ struct AppConfig {
     bool cull_enabled = true;
     bool draw_stats_enabled = true;
 
+    float hud_scale = 2.0f;
+    bool hud_shadow = false;
+    float hud_shadow_offset_px = 1.5f;
+
     bool log_stream = false;
     bool log_pool = false;
     bool save_chunks_enabled = false;

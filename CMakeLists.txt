@@ -58,6 +58,9 @@ add_executable(wanderforge
   src/camera.cpp
   src/config_loader.cpp
   src/vk_utils.cpp
+  src/ui/ui_context.cpp
+  src/ui/ui_backend.cpp
+  src/ui/ui_text.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)

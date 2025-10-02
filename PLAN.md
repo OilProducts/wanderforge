@@ -167,6 +167,36 @@ This document is a self-contained plan to build an experimental, planetary-scale
   - No culling inversions; seams remain closed; overlay orientation correct.
   - Debug gizmos confirm axes and screen‑space orientation.
 
+### UI Module Plan — Immediate-Mode Overlay & HUD
+
+To keep the HUD lightweight yet extensible (and ultimately reusable outside Wanderforge), the UI layer will live under a `ui/` directory with no project-specific dependencies. The end state is an immediate-mode GUI toolkit that emits batched geometry for a single Vulkan draw while supporting interactive widgets.
+
+- **Goals**
+  - Resolution-independent layout with configurable DPI scale and optional shadows/outlines.
+  - Explicit separation of per-frame command building (`UIContext`) and persistent interaction/input state (`UIBackend`).
+  - Modular widgets (text, rectangles, meters, later sliders/toggles) composed via lightweight layout helpers.
+  - Keep renderer agnostic: the overlay pipeline simply consumes vertex/index buffers supplied by the UI module.
+
+- **Architecture**
+  - `ui/ui_context.h|cpp`: builds vertices for primitives, manages style stack, converts screen-space rects to NDC.
+  - `ui/ui_backend.h|cpp`: ingests input events, tracks widget state (hovered/pressed/value), and resolves interaction results each frame.
+  - `ui/layout.h`: helper functions for anchored boxes, vertical stacks, gutters, etc.
+  - `ui/primitives.h`: immediate-mode helpers (`button`, `toggle`, `text`, `rect`, …) built atop context/backend.
+  - Overlay renderer becomes a thin wrapper (pipeline + upload) that accepts `UIContext::DrawData`.
+
+- **Phased Rollout**
+  1. **Phase A:** Introduce UIContext/UIBackend, move existing HUD text into the new system, add config-driven `hud_scale` and optional drop shadow.
+  2. **Phase B:** Add basic interactive widgets (buttons/toggles) and simple layout helpers; wire mouse input from `VulkanApp` through UIBackend.
+  3. **Phase C:** Extend primitives (sliders, progress bars, tooltips), add persistent widget state/animations, and expose focus/navigation hooks.
+  4. **Phase D:** Optional future work—text input, icons, SDF fonts—without changing the renderer contract.
+
+- **Reusability Checklist**
+  - Keep public headers free of Wanderforge-specific types (only standard + Vulkan types needed for uploads).
+  - Provide a small adapter struct (`UIDrawData`) so other projects can plug in their own GPU backend.
+  - Document the input event format and expected call order (backend `begin_frame`, build widgets, renderer `submit`).
+
+Completion of Phase A satisfies the current Phase 3 HUD requirements; subsequent phases can iterate alongside gameplay features without entangling the render core.
+
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:
   - Sparse delta map keyed by `(chunk, localIndex)`; read-path overlays base; write-path persists edits and marks dirty neighbors.

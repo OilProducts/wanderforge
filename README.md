@@ -103,6 +103,10 @@ Config options:
   - Profiling/metrics:
     - `profile_csv=true|false` (or `WF_PROFILE_CSV=1`)
     - `profile_csv_path=profile.csv` (or `WF_PROFILE_CSV_PATH`)
+  - HUD:
+    - `hud_scale=2.0` (or `WF_HUD_SCALE`) to scale text/layout (applied uniformly)
+    - `hud_shadow=true|false` (or `WF_HUD_SHADOW`) to toggle drop shadow
+    - `hud_shadow_offset=1.5` (or `WF_HUD_SHADOW_OFFSET`) for pixel offset of the shadow
 
 HUD shows loader and upload stats: queue depth, generation and meshing times (total and per-chunk), and uploads per frame with timing. Enable CSV to log per-job and per-frame upload events for offline analysis.
   - Toggle at runtime: press `X` (invert X) or `Y` (invert Y)

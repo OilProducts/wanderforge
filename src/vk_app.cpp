@@ -24,6 +24,7 @@
 #include "vk_utils.h"
 #include "camera.h"
 #include "planet.h"
+#include "ui/ui_text.h"
 
 namespace wf {
 
@@ -1129,6 +1130,10 @@ AppConfig VulkanApp::snapshot_config() const {
     cfg.cull_enabled = cull_enabled_;
     cfg.draw_stats_enabled = draw_stats_enabled_;
 
+    cfg.hud_scale = hud_scale_;
+    cfg.hud_shadow = hud_shadow_enabled_;
+    cfg.hud_shadow_offset_px = hud_shadow_offset_px_;
+
     cfg.log_stream = log_stream_;
     cfg.log_pool = log_pool_;
     cfg.save_chunks_enabled = save_chunks_enabled_;
@@ -1177,6 +1182,10 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     cull_enabled_ = cfg.cull_enabled;
     draw_stats_enabled_ = cfg.draw_stats_enabled;
 
+    hud_scale_ = cfg.hud_scale;
+    hud_shadow_enabled_ = cfg.hud_shadow;
+    hud_shadow_offset_px_ = cfg.hud_shadow_offset_px;
+
     log_stream_ = cfg.log_stream;
     log_pool_ = cfg.log_pool;
     save_chunks_enabled_ = cfg.save_chunks_enabled;
@@ -1202,6 +1211,9 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
 
     std::cout << "[config] region_root=" << region_root_ << " (active)\n";
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
+
+    hud_force_refresh_ = true;
+    overlay_text_valid_.fill(false);
 }
 
 void VulkanApp::draw_frame() {
@@ -1232,7 +1244,21 @@ void VulkanApp::draw_frame() {
     // Prepare overlay text only if needed for this frame slot (content changed or slot invalid)
     overlay_draw_slot_ = current_frame_;
     if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
-        overlay_.build_text(overlay_draw_slot_, hud_text_.c_str(), (int)swapchain_extent_.width, (int)swapchain_extent_.height);
+        ui::ContextParams ui_params;
+        ui_params.screen_width = static_cast<int>(swapchain_extent_.width);
+        ui_params.screen_height = static_cast<int>(swapchain_extent_.height);
+        ui_params.style.enable_shadow = hud_shadow_enabled_;
+        ui_params.style.shadow_offset_px = hud_shadow_offset_px_;
+        ui_params.style.shadow_color = ui::Color{0.0f, 0.0f, 0.0f, 0.6f};
+        hud_ui_context_.begin(ui_params);
+
+        ui::TextDrawParams text_params;
+        text_params.scale = hud_scale_;
+        text_params.color = ui::Color{1.0f, 1.0f, 1.0f, 1.0f};
+        ui::add_text_block(hud_ui_context_, hud_text_.c_str(), ui_params.screen_width, text_params);
+
+        ui::UIDrawData draw_data = hud_ui_context_.end();
+        overlay_.upload_draw_data(overlay_draw_slot_, draw_data);
         overlay_text_valid_[overlay_draw_slot_] = true;
         overlay_last_text_ = hud_text_;
     }

@@ -3,11 +3,6 @@
 
 #include <cstring>
 #include <algorithm>
-#include <vector>
-#include <array>
-#include <string>
-#include <cstdio>
-#include <cmath>
 #include <iostream>
 
 namespace wf {
@@ -236,71 +231,24 @@ void OverlayRenderer::create_host_buffer(VkDeviceSize size, VkBufferUsageFlags u
     if (data) wf::vk::upload_host_visible(device_, mem, size, data, 0);
 }
 
-void OverlayRenderer::build_text(size_t frameSlot, const char* text, int W, int H) {
-    struct OV { float x, y, r, g, b, a; };
-    std::vector<OV> verts;
-    const int ch_w = 6, ch_h = 8; const float scale = 2.0f;
-    const float x0 = 6.0f, y0 = 6.0f, xr = 6.0f; // margins in pixels
-    auto to_ndc = [&](float px, float py){ float xn = (px / (float)W) * 2.0f - 1.0f; float yn = (py / (float)H) * 2.0f - 1.0f; return std::array<float,2>{{xn, yn}}; };
-    auto quad = [&](float x, float y, float w, float h, float r, float g, float b, float a){ auto p0 = to_ndc(x, y); auto p1 = to_ndc(x + w, y); auto p2 = to_ndc(x + w, y + h); auto p3 = to_ndc(x, y + h); verts.push_back(OV{p0[0], p0[1], r,g,b,a}); verts.push_back(OV{p1[0], p1[1], r,g,b,a}); verts.push_back(OV{p2[0], p2[1], r,g,b,a}); verts.push_back(OV{p0[0], p0[1], r,g,b,a}); verts.push_back(OV{p2[0], p2[1], r,g,b,a}); verts.push_back(OV{p3[0], p3[1], r,g,b,a}); };
-
-    // Split incoming text on newlines and render each line separately with optional ellipsis per line
-    std::vector<std::string> lines;
-    {
-        const char* p = text;
-        const int cap = 512; // safety cap per line build
-        std::string cur;
-        cur.reserve(128);
-        int total = 0;
-        while (*p && total < cap) {
-            if (*p == '\n') { lines.push_back(cur); cur.clear(); ++p; continue; }
-            cur.push_back(*p++);
-            ++total;
-        }
-        lines.push_back(cur);
+void OverlayRenderer::upload_draw_data(size_t frameSlot, const ui::UIDrawData& drawData) {
+    if (frameSlot >= kFrames) return;
+    VkDeviceSize bytes = static_cast<VkDeviceSize>(drawData.vertex_count * sizeof(ui::UIDrawVertex));
+    if (bytes == 0 || !drawData.vertices) {
+        vertex_count_[frameSlot] = 0;
+        return;
     }
-
-    int char_px = (int)std::ceil(ch_w * scale);
-    int max_fit = 0;
-    if (W > (x0 + xr) && char_px > 0) {
-        max_fit = (int)std::floor((W - x0 - xr) / (float)char_px);
-        if (max_fit < 0) max_fit = 0;
-    }
-    const float line_height = ch_h * scale + 4.0f; // small spacing between lines
-    for (size_t li = 0; li < lines.size(); ++li) {
-        const std::string& src = lines[li];
-        std::string line;
-        if ((int)src.size() <= max_fit) {
-            line = src;
-        } else {
-            int keep = std::max(0, max_fit - 3);
-            if (keep > 0) { line.assign(src.data(), keep); line += "..."; }
-            else { line.clear(); }
-        }
-        for (int ci = 0; ci < (int)line.size(); ++ci) {
-            unsigned char ch = (unsigned char)line[ci];
-            if (ch < 32 || ch > 127) ch = 32;
-            const uint8_t* rows = WF_FONT6x8[ch - 32];
-            for (int ry = 0; ry < ch_h; ++ry) {
-                uint8_t bits = rows[ry];
-                for (int rx = 0; rx < ch_w; ++rx) if (bits & (1u << rx)) {
-                    float px = x0 + (ci * ch_w + rx) * scale;
-                    float py = y0 + (float)li * line_height + ry * scale;
-                    quad(px, py, scale, scale, 1,1,1,1);
-                }
-            }
-        }
-    }
-    VkDeviceSize bytes = (VkDeviceSize)(verts.size() * sizeof(OV));
-    if (bytes == 0) { vertex_count_[frameSlot] = 0; return; }
     if (capacity_bytes_[frameSlot] < bytes) {
         if (vbuf_[frameSlot]) { vkDestroyBuffer(device_, vbuf_[frameSlot], nullptr); vbuf_[frameSlot] = VK_NULL_HANDLE; }
         if (vmem_[frameSlot]) { vkFreeMemory(device_, vmem_[frameSlot], nullptr); vmem_[frameSlot] = VK_NULL_HANDLE; }
         capacity_bytes_[frameSlot] = std::max<VkDeviceSize>(bytes, 64 * 1024);
         create_host_buffer(capacity_bytes_[frameSlot], VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vbuf_[frameSlot], vmem_[frameSlot], nullptr);
     }
-    void* p = nullptr; vkMapMemory(device_, vmem_[frameSlot], 0, capacity_bytes_[frameSlot], 0, &p); std::memcpy(p, verts.data(), (size_t)bytes); vkUnmapMemory(device_, vmem_[frameSlot]);
-    vertex_count_[frameSlot] = (uint32_t)(bytes / (sizeof(float) * 6));
+    void* mapped = nullptr;
+    vkMapMemory(device_, vmem_[frameSlot], 0, capacity_bytes_[frameSlot], 0, &mapped);
+    std::memcpy(mapped, drawData.vertices, static_cast<std::size_t>(bytes));
+    vkUnmapMemory(device_, vmem_[frameSlot]);
+    vertex_count_[frameSlot] = static_cast<uint32_t>(drawData.vertex_count);
 }
 
 void OverlayRenderer::record_draw(VkCommandBuffer cmd, size_t frameSlot) {

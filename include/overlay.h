@@ -4,16 +4,18 @@
 #include <cstdint>
 #include <vector>
 
+#include "ui/ui_types.h"
+
 namespace wf {
 
-// Minimal in-window text overlay renderer using a tiny CPU 6x8 bitmap font.
+// Minimal in-window overlay renderer consuming prebuilt UI vertex data.
 class OverlayRenderer {
 public:
     void init(VkPhysicalDevice phys, VkDevice dev, VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir);
     void recreate_swapchain(VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir);
     void cleanup(VkDevice dev);
 
-    void build_text(size_t frameSlot, const char* text, int screenW, int screenH);
+    void upload_draw_data(size_t frameSlot, const ui::UIDrawData& drawData);
     void record_draw(VkCommandBuffer cmd, size_t frameSlot);
 
 private:
@@ -37,4 +39,3 @@ private:
 };
 
 } // namespace wf
-
