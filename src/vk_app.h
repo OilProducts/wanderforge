@@ -209,6 +209,7 @@ private:
     bool device_local_enabled_ = true; // default to device-local pools with staging
     bool front_face_cw_ = true;        // default winding for chunk renderer
     bool debug_chunk_keys_ = false;
+    bool debug_auto_aim_done_ = false;
 
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
