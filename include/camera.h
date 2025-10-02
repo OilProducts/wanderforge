@@ -1,4 +1,4 @@
-// Minimal camera math helpers (parity-preserving row-major path)
+// Minimal camera math helpers (column-major, Vulkan-friendly)
 #pragma once
 
 #include "wf_math.h"

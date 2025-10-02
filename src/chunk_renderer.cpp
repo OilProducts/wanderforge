@@ -128,6 +128,7 @@ void ChunkRenderer::cleanup(VkDevice device) {
     if (idx_mem_) { vkFreeMemory(device, idx_mem_, nullptr); idx_mem_ = VK_NULL_HANDLE; idx_capacity_ = 0; idx_used_ = 0; }
     if (indirect_buf_) { vkDestroyBuffer(device, indirect_buf_, nullptr); indirect_buf_ = VK_NULL_HANDLE; }
     if (indirect_mem_) { vkFreeMemory(device, indirect_mem_, nullptr); indirect_mem_ = VK_NULL_HANDLE; indirect_capacity_cmds_ = 0; }
+    destroy_staging_buffers();
     if (transfer_fence_) { vkDestroyFence(device, transfer_fence_, nullptr); transfer_fence_ = VK_NULL_HANDLE; }
     if (transfer_pool_) { vkDestroyCommandPool(device, transfer_pool_, nullptr); transfer_pool_ = VK_NULL_HANDLE; }
 }
@@ -257,6 +258,27 @@ bool ChunkRenderer::alloc_from_pool(VkDeviceSize bytes, VkDeviceSize alignment, 
     return false;
 }
 
+bool ChunkRenderer::ensure_staging_capacity(VkDeviceSize bytes, bool isVertex) {
+    if (bytes == 0) return true;
+    VkBuffer& buf = isVertex ? staging_vtx_ : staging_idx_;
+    VkDeviceMemory& mem = isVertex ? staging_vtx_mem_ : staging_idx_mem_;
+    VkDeviceSize& cap = isVertex ? staging_vtx_capacity_ : staging_idx_capacity_;
+    if (cap >= bytes) return true;
+
+    if (buf) { vkDestroyBuffer(device_, buf, nullptr); buf = VK_NULL_HANDLE; }
+    if (mem) { vkFreeMemory(device_, mem, nullptr); mem = VK_NULL_HANDLE; }
+    cap = 0;
+
+    VkDeviceSize default_cap = isVertex ? (VkDeviceSize)(8ull * 1024ull * 1024ull)
+                                        : (VkDeviceSize)(4ull * 1024ull * 1024ull);
+    VkDeviceSize new_cap = std::max<VkDeviceSize>(bytes, default_cap);
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryPropertyFlags props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    wf::vk::create_buffer(phys_, device_, new_cap, usage, props, buf, mem);
+    cap = new_cap;
+    return true;
+}
+
 void ChunkRenderer::free_to_pool(VkDeviceSize offset, VkDeviceSize bytes, bool isVertex) {
     auto& freev = isVertex ? vtx_free_ : idx_free_;
     FreeBlock nb{ offset, bytes };
@@ -317,15 +339,14 @@ bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
         idx_used_ = std::max(idx_used_, ioff + ibytes);
     } else {
         ensure_transfer_objects();
-        VkBuffer sv=VK_NULL_HANDLE, si=VK_NULL_HANDLE; VkDeviceMemory smv=VK_NULL_HANDLE, smi=VK_NULL_HANDLE;
-        wf::vk::create_buffer(phys_, device_, vbytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              sv, smv);
-        wf::vk::upload_host_visible(device_, smv, vbytes, vertices, 0);
-        wf::vk::create_buffer(phys_, device_, ibytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              si, smi);
-        wf::vk::upload_host_visible(device_, smi, ibytes, indices, 0);
+        if (!ensure_staging_capacity(vbytes, true)) return false;
+        if (!ensure_staging_capacity(ibytes, false)) return false;
+        if (vbytes > 0) {
+            wf::vk::upload_host_visible(device_, staging_vtx_mem_, vbytes, vertices, 0);
+        }
+        if (ibytes > 0) {
+            wf::vk::upload_host_visible(device_, staging_idx_mem_, ibytes, indices, 0);
+        }
         VkCommandBufferAllocateInfo cai{};
         cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         cai.commandPool = transfer_pool_;
@@ -337,8 +358,14 @@ bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cmd, &bi);
-        VkBufferCopy c0{0, voff, vbytes}; vkCmdCopyBuffer(cmd, sv, vtx_pool_, 1, &c0);
-        VkBufferCopy c1{0, ioff, ibytes}; vkCmdCopyBuffer(cmd, si, idx_pool_, 1, &c1);
+        if (vbytes > 0) {
+            VkBufferCopy copy_v{0, voff, vbytes};
+            vkCmdCopyBuffer(cmd, staging_vtx_, vtx_pool_, 1, &copy_v);
+        }
+        if (ibytes > 0) {
+            VkBufferCopy copy_i{0, ioff, ibytes};
+            vkCmdCopyBuffer(cmd, staging_idx_, idx_pool_, 1, &copy_i);
+        }
         vkEndCommandBuffer(cmd);
         if (!transfer_fence_) {
             VkFenceCreateInfo fci{};
@@ -353,8 +380,6 @@ bool ChunkRenderer::upload_mesh(const struct Vertex* vertices, size_t vcount,
         vkQueueSubmit(transfer_queue_, 1, &siu, transfer_fence_);
         vkWaitForFences(device_, 1, &transfer_fence_, VK_TRUE, UINT64_MAX);
         vkFreeCommandBuffers(device_, transfer_pool_, 1, &cmd);
-        vkDestroyBuffer(device_, sv, nullptr); vkFreeMemory(device_, smv, nullptr);
-        vkDestroyBuffer(device_, si, nullptr); vkFreeMemory(device_, smi, nullptr);
         vtx_used_ = std::max(vtx_used_, voff + vbytes);
         idx_used_ = std::max(idx_used_, ioff + ibytes);
     }
@@ -378,6 +403,15 @@ void ChunkRenderer::ensure_transfer_objects() {
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         vkCreateFence(device_, &fci, nullptr, &transfer_fence_);
     }
+}
+
+void ChunkRenderer::destroy_staging_buffers() {
+    if (staging_vtx_) { vkDestroyBuffer(device_, staging_vtx_, nullptr); staging_vtx_ = VK_NULL_HANDLE; }
+    if (staging_vtx_mem_) { vkFreeMemory(device_, staging_vtx_mem_, nullptr); staging_vtx_mem_ = VK_NULL_HANDLE; }
+    staging_vtx_capacity_ = 0;
+    if (staging_idx_) { vkDestroyBuffer(device_, staging_idx_, nullptr); staging_idx_ = VK_NULL_HANDLE; }
+    if (staging_idx_mem_) { vkFreeMemory(device_, staging_idx_mem_, nullptr); staging_idx_mem_ = VK_NULL_HANDLE; }
+    staging_idx_capacity_ = 0;
 }
 
 } // namespace wf

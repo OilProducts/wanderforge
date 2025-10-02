@@ -42,10 +42,11 @@ namespace wf {
 } // namespace wf
 
 
-// Row-major 4x4 helpers (current Phase 3 conventions)
+// Column-major 4x4 helpers (Vulkan conventions)
 namespace wf {
     struct Mat4 {
         float m[16];
+        // Matrices are stored column-major to match GLSL/Vulkan expectations.
         float &at(int r, int c) { return m[c * 4 + r]; }
         float at(int r, int c) const { return m[c * 4 + r]; }
 

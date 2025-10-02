@@ -26,7 +26,7 @@ public:
     void recreate(VkRenderPass renderPass, VkExtent2D extent, const char* shaderDir);
     void cleanup(VkDevice device);
 
-    // Record draw commands for provided chunks; expects MVP as 16 floats (row-major, multiplied in shader as provided)
+    // Record draw commands for provided chunks; expects MVP as 16 floats in column-major order (GLSL default)
     void record(VkCommandBuffer cmd, const float mvp[16], const std::vector<ChunkDrawItem>& items);
 
     bool is_ready() const { return pipeline_ != VK_NULL_HANDLE; }
@@ -90,6 +90,14 @@ private:
     VkDeviceMemory indirect_mem_ = VK_NULL_HANDLE;
     VkDeviceSize indirect_capacity_cmds_ = 0; // number of commands capacity
 
+    // Reusable staging buffers for device-local uploads
+    VkBuffer staging_vtx_ = VK_NULL_HANDLE;
+    VkDeviceMemory staging_vtx_mem_ = VK_NULL_HANDLE;
+    VkDeviceSize staging_vtx_capacity_ = 0;
+    VkBuffer staging_idx_ = VK_NULL_HANDLE;
+    VkDeviceMemory staging_idx_mem_ = VK_NULL_HANDLE;
+    VkDeviceSize staging_idx_capacity_ = 0;
+
     // Transfer context (for staging copies when using device-local pools)
     uint32_t transfer_queue_family_ = 0;
     VkQueue transfer_queue_ = VK_NULL_HANDLE;
@@ -105,6 +113,8 @@ private:
     void free_to_pool(VkDeviceSize offset, VkDeviceSize bytes, bool isVertex);
     void ensure_indirect_capacity(size_t drawCount);
     void ensure_transfer_objects();
+    void destroy_staging_buffers();
+    bool ensure_staging_capacity(VkDeviceSize bytes, bool isVertex);
 };
 
 } // namespace wf

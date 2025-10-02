@@ -109,14 +109,13 @@ HUD shows loader and upload stats: queue depth, generation and meshing times (to
 
 ## Current Render Conventions (Phase 3)
 
-These conventions are locked for the remainder of Phase 3 to keep development stable. A focused migration to Vulkan‑native conventions is planned in Phase 3.5.
+The renderer is now aligned with Vulkan’s column-major + depth‑0..1 expectations. These notes capture the current state so we can finish Phase 3’s validation/documentation tasks.
 
-- Front faces: CCW; culling: BACK. Chunks render with CCW fronts; backfaces are culled.
-- Projection: GL‑style perspective (depth in [-1, 1]); FOV 60°, near 0.1, far 1000.
-- Matrices: computed row‑major on CPU; MVP is built as `V * P` and uploaded as 16 floats; shaders multiply `pc.mvp * vec4(inPos,1)`.
-- Coordinate frame: right‑handed world, +Y up. Camera basis from yaw (around +Y) and pitch.
-- Winding consistency: greedy mesher emits triangles to match CCW fronts; neighbor‑aware seams avoid outer walls and close inter‑chunk gaps.
-- Overlay: HUD uses Vulkan NDC mapping (Y up); text quads are generated in screen pixels then converted to NDC.
+- Matrices: CPU builds column-major `MVP = P * V` using `wf::perspective_vk` (Vulkan 0..1 clip depth). Shaders multiply `pc.mvp * vec4(inPos, 1)` directly.
+- Coordinate frame: right-handed world with +Y up. Free-fly and walk cameras derive yaw from the local +Y axis and pitch about the camera’s right axis.
+- Projection: default field of view comes from `wanderforge.cfg` (`fov_deg`, default 60°); near/far planes are `near_m`/`far_m` (defaults 0.1/1000.0).
+- Front faces & culling: the primary pipeline culls `VK_CULL_MODE_BACK_BIT` with `VK_FRONT_FACE_COUNTER_CLOCKWISE`. The chunk and overlay pipelines currently disable culling but their meshes still follow the same CCW orientation.
+- Overlay/HUD: quads are generated in screen pixels, converted to Vulkan NDC (Y up), and rendered with alpha blending.
 
 Notes
 - The above choices worked reliably across our targets. Mixing GL/Vulkan depth or matrix layouts caused the visual anomalies we debugged; Phase 3.5 will migrate to Vulkan‑native depth and column‑major matrices with validation helpers.
