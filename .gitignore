@@ -30,4 +30,5 @@ screenshots/
 
 # Generated region fixtures
 regions_flat/
+regions_tiny*/
 regions/
