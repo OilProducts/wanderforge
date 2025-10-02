@@ -31,6 +31,7 @@ struct AppConfig {
     bool log_stream = false;
     bool log_pool = false;
     bool save_chunks_enabled = false;
+    bool debug_chunk_keys = false;
 
     bool profile_csv_enabled = true;
     std::string profile_csv_path = "profile.csv";
@@ -49,9 +50,9 @@ struct AppConfig {
     PlanetConfig planet_cfg{};
 
     std::string config_path = "wanderforge.cfg";
+    std::string region_root = "regions";
 };
 
 AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_config_path);
 
 } // namespace wf
-

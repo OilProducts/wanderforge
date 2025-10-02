@@ -91,6 +91,7 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
     apply_env_bool("WF_LOG_STREAM", cfg.log_stream);
     apply_env_bool("WF_LOG_POOL", cfg.log_pool);
     apply_env_bool("WF_SAVE_CHUNKS", cfg.save_chunks_enabled);
+    apply_env_bool("WF_DEBUG_CHUNK_KEYS", cfg.debug_chunk_keys);
     apply_env("WF_SURFACE_PUSH_M", cfg.surface_push_m, [&](const char* s) { cfg.surface_push_m = std::stof(s); });
     apply_env_bool("WF_PROFILE_CSV", cfg.profile_csv_enabled);
     apply_env("WF_PROFILE_CSV_PATH", cfg.profile_csv_path, [&](const char* s) { cfg.profile_csv_path = s; });
@@ -103,6 +104,7 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
     apply_env("WF_K_UP", cfg.k_up, [&](const char* s) { cfg.k_up = std::max(0, std::stoi(s)); });
     apply_env("WF_K_PRUNE_MARGIN", cfg.k_prune_margin, [&](const char* s) { cfg.k_prune_margin = std::max(0, std::stoi(s)); });
     apply_env("WF_FACE_KEEP_SEC", cfg.face_keep_time_cfg_s, [&](const char* s) { cfg.face_keep_time_cfg_s = std::max(0.0f, std::stof(s)); });
+    apply_env("WF_REGION_ROOT", cfg.region_root, [&](const char* s) { cfg.region_root = s; });
 
     if (cfg.config_path.empty()) {
         std::cout << "[config] config file path disabled; skipping file load\n";
@@ -157,6 +159,7 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
             else if (key == "log_stream") { cfg.log_stream = parse_bool(val, cfg.log_stream); std::cout << "[config] log_stream=" << (cfg.log_stream ? "true" : "false") << " (file)\n"; }
             else if (key == "log_pool") { cfg.log_pool = parse_bool(val, cfg.log_pool); std::cout << "[config] log_pool=" << (cfg.log_pool ? "true" : "false") << " (file)\n"; }
             else if (key == "save_chunks") { cfg.save_chunks_enabled = parse_bool(val, cfg.save_chunks_enabled); std::cout << "[config] save_chunks=" << (cfg.save_chunks_enabled ? "true" : "false") << " (file)\n"; }
+            else if (key == "debug_chunk_keys") { cfg.debug_chunk_keys = parse_bool(val, cfg.debug_chunk_keys); std::cout << "[config] debug_chunk_keys=" << (cfg.debug_chunk_keys ? "true" : "false") << " (file)\n"; }
             else if (key == "profile_csv") { cfg.profile_csv_enabled = parse_bool(val, cfg.profile_csv_enabled); std::cout << "[config] profile_csv=" << (cfg.profile_csv_enabled ? "true" : "false") << " (file)\n"; }
             else if (key == "profile_csv_path") { cfg.profile_csv_path = val; std::cout << "[config] profile_csv_path=" << cfg.profile_csv_path << " (file)\n"; }
             else if (key == "device_local") { cfg.device_local_enabled = parse_bool(val, cfg.device_local_enabled); std::cout << "[config] device_local=" << (cfg.device_local_enabled ? "true" : "false") << " (file)\n"; }
@@ -168,6 +171,7 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
             else if (key == "k_up") { cfg.k_up = std::max(0, std::stoi(val)); std::cout << "[config] k_up=" << cfg.k_up << " (file)\n"; }
             else if (key == "k_prune_margin") { cfg.k_prune_margin = std::max(0, std::stoi(val)); std::cout << "[config] k_prune_margin=" << cfg.k_prune_margin << " (file)\n"; }
             else if (key == "face_keep_sec") { cfg.face_keep_time_cfg_s = std::max(0.0f, std::stof(val)); std::cout << "[config] face_keep_sec=" << cfg.face_keep_time_cfg_s << " (file)\n"; }
+            else if (key == "region_root") { cfg.region_root = val; std::cout << "[config] region_root=" << cfg.region_root << " (file)\n"; }
         } catch (...) {
             // Ignore malformed entries; keep previous values.
         }
@@ -177,4 +181,3 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
 }
 
 } // namespace wf
-
