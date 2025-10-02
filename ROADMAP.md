@@ -1,18 +1,18 @@
 ME:  I want to make a voxel game, but the voxels will be small...ballpark 2cm cubes (maybe smaller).  Please do a survey of potential ways I might approach this.
 
-AI:  Below is a fast, realistic survey of ways to build a *very‑fine* voxel game (\~2 cm voxels). I’ll give you options, when each shines, the core algorithms & data structures, and concrete implementation notes so you can pick a direction and prototype.
+AI:  Below is a fast, realistic survey of ways to build a *very‑fine* voxel game (\~2cm voxels). I’ll give you options, when each shines, the core algorithms & data structures, and concrete implementation notes so you can pick a direction and prototype.
 
 ---
 
-## First: sanity check (2 cm is tiny)
+## First: sanity check (2cm is tiny)
 
-At 2 cm/voxel, even small spaces explode in voxel count:
+At 2cm/voxel, even small spaces explode in voxel count:
 
 | Bounded volume | Voxels (each axis) |        Total voxels | 1 bit/voxel | 1 byte/voxel |
 | -------------- | -----------------: | ------------------: | ----------: | -----------: |
-| 10 m cube      |                500 |         125,000,000 |   \~14.9 MB |     \~119 MB |
-| 100 m cube     |              5,000 |     125,000,000,000 |   \~14.6 GB |     \~116 GB |
-| 1 km cube      |             50,000 | 125,000,000,000,000 |   \~14.2 TB |     \~114 TB |
+| 10m cube      |                500 |         125,000,000 |   \~14.9MB |     \~119MB |
+| 100m cube     |              5,000 |     125,000,000,000 |   \~14.6GB |     \~116GB |
+| 1km cube      |             50,000 | 125,000,000,000,000 |   \~14.2TB |     \~114TB |
 
 **Implication:** you’ll need sparsity, chunking/streaming, and aggressive meshing/LOD. Don’t plan for dense grids beyond a few meters without compression.
 
@@ -28,11 +28,11 @@ At 2 cm/voxel, even small spaces explode in voxel count:
 * **Face culling + Greedy meshing**: merge coplanar faces → huge triangle reduction. Excellent for micro‑blocks. Start here if you want the classic block look. ([0 FPS][1], [Gedge][2])
 * **Material handling**: palette per chunk + RLE/bitmask compression; triplanar texturing to avoid UV seams; texture splatting for blended ground materials. ([Wikipedia][3])
 
-**Chunk sizing reality at 2 cm**
+**Chunk sizing reality at 2cm**
 
-* 32³ = 0.64 m cube, \~32 KB/chunk (1 byte/voxel)
-* 64³ = 1.28 m, \~256 KB
-* 128³ = 2.56 m, \~2 MB
+* 32³ = 0.64m cube, \~32KB/chunk (1byte/voxel)
+* 64³ = 1.28m, \~256KB
+* 128³ = 2.56m, \~2MB
   Small physical spans mean *lots* of chunks; group them for batching and stream by distance.
 
 **Pros**
@@ -179,7 +179,7 @@ At 2 cm/voxel, even small spaces explode in voxel count:
 
 1. **Chunk size & batching**
 
-  * Start with **64³** chunks (1.28 m). Group into “region meshes” to keep draw calls low. Keep each mesh under 65 k vertices if you want 16‑bit indices.
+  * Start with **64³** chunks (1.28m). Group into “region meshes” to keep draw calls low. Keep each mesh under 65k vertices if you want 16‑bit indices.
 2. **Compression**
 
   * Palette + RLE per chunk; delta‑encode edits; keep a separate “air mask” (bitset) to accelerate greedy meshing.
@@ -223,8 +223,8 @@ At 2 cm/voxel, even small spaces explode in voxel count:
 
 ## Common pitfalls to avoid
 
-* **Dense grids everywhere.** At 2 cm, always assume sparsity.
-* **Too‑large chunks.** 256³ is \~5.12 m at 2 cm but \~16 MB raw/chunk (1 byte/voxel) before compression; editing/remeshing will stutter.
+* **Dense grids everywhere.** At 2cm, always assume sparsity.
+* **Too‑large chunks.** 256³ is \~5.12m at 2cm but \~16MB raw/chunk (1byte/voxel) before compression; editing/remeshing will stutter.
 * **LOD cracks.** Use Transvoxel or octree‑aware DC. ([Transvoxel][5], [WashU Computer Science][7])
 * **Draw‑call storms.** Batch chunks, consider **mesh shaders/meshlets** on modern GPUs. ([Microsoft GitHub][19], [GPUOpen][20])
 
@@ -274,13 +274,13 @@ ME:  This is for me, I want to target my own PC which is fairly high end.  9800x
 
 AI:  Short answer: **Minecraft feels “infinite” because it only *keeps* a tiny slice of the world in memory, and it *creates/saves* terrain in small pieces on demand.** It’s big—but not literally infinite.
 
-Below is how it works and what you can borrow for your 2 cm‑voxel project.
+Below is how it works and what you can borrow for your 2cm‑voxel project.
 
 ---
 
 ## The core idea: chunks + streaming
 
-* **Unit scale & grid.** Minecraft’s world is a grid of 1 m cubes (“blocks”). The world is partitioned into **chunks** that are **16×16 blocks** across and (in modern Java Edition Overworld) **384 blocks tall**. Each chunk is internally split into **16×16×16 “sections”** for culling/IO. ([Minecraft Wiki][1])
+* **Unit scale & grid.** Minecraft’s world is a grid of 1m cubes (“blocks”). The world is partitioned into **chunks** that are **16×16 blocks** across and (in modern Java Edition Overworld) **384 blocks tall**. Each chunk is internally split into **16×16×16 “sections”** for culling/IO. ([Minecraft Wiki][1])
 
 * **Only nearby chunks are loaded.** The client shows chunks out to your **render distance**; the server (or single‑player server thread) *ticks* game logic in a smaller square region called **simulation distance**. E.g., a sim distance of 6 means entities and most updates run in a **13×13 chunk** square around the player; one ring beyond that is “border” with limited updates, and then nothing. Java uses a **ticket system** to request/generate/unload chunk columns as needed. ([Minecraft Wiki][2])
 
@@ -291,7 +291,7 @@ Below is how it works and what you can borrow for your 2 cm‑voxel project.
 ## “Infinite” (but actually bounded)
 
 * The world is *procedurally generated* from a **seed**; with the same seed and version, any chunk will always generate the same way. New chunks are generated the first time you approach them and then saved to disk. ([Minecraft Wiki][4])
-* In Java Edition there’s a **world border at X/Z ±29,999,984**; chunks may exist past that, but players can’t cross ±30 million blocks without hacks. Older versions had the **“Far Lands”** bug around **±12,550,821** due to noise math overflow, long since removed. So: effectively enormous, not infinite. ([Minecraft Wiki][5], [Minecraft Archive][6])
+* In Java Edition there’s a **world border at X/Z ±29,999,984**; chunks may exist past that, but players can’t cross ±30million blocks without hacks. Older versions had the **“Far Lands”** bug around **±12,550,821** due to noise math overflow, long since removed. So: effectively enormous, not infinite. ([Minecraft Wiki][5], [Minecraft Archive][6])
 
 ---
 
@@ -323,10 +323,10 @@ That’s exactly how `.mca` tiling keeps disk usage sane and lets the game strea
 
 ---
 
-## What to lift for your 2 cm‑voxel game (on your 9800X3D + 4090)
+## What to lift for your 2cm‑voxel game (on your 9800X3D + 4090)
 
 1. **Keep Minecraft’s tiling discipline.**
-   16×16 *block* chunks at 1 m are \~16 m wide. At **2 cm voxels**, you’ll want physically larger chunks (e.g., **64³ or 128³ voxels**) so you’re not juggling millions of tiny chunks. Still store/save them **region‑style** (e.g., 16×16 chunks per region file).
+   16×16 *block* chunks at 1m are \~16m wide. At **2cm voxels**, you’ll want physically larger chunks (e.g., **64³ or 128³ voxels**) so you’re not juggling millions of tiny chunks. Still store/save them **region‑style** (e.g., 16×16 chunks per region file).
 
 2. **Separate visibility from simulation.**
    Adopt **render distance vs. simulation distance** knobs. Your CPU (9800X3D) can tick a smaller window aggressively while the 4090 draws a larger vista. ([Minecraft Wiki][2])
@@ -341,9 +341,9 @@ That’s exactly how `.mca` tiling keeps disk usage sane and lets the game strea
 
 ### TL;DR
 
-Minecraft’s “infinite” world is **chunked, streamed, and tiled on disk**. It **loads/ticks only what’s near you**, generates new chunks from a **seed** when needed, and enforces a **\~30 million‑block border** so arithmetic stays sane. The same playbook—chunks, render vs. sim distance, paletted sub‑chunks, and regional files—scales down perfectly to a fine‑grained voxel game; you’ll just pick chunk sizes that make sense at 2 cm resolution. ([Minecraft Wiki][4])
+Minecraft’s “infinite” world is **chunked, streamed, and tiled on disk**. It **loads/ticks only what’s near you**, generates new chunks from a **seed** when needed, and enforces a **\~30million‑block border** so arithmetic stays sane. The same playbook—chunks, render vs. sim distance, paletted sub‑chunks, and regional files—scales down perfectly to a fine‑grained voxel game; you’ll just pick chunk sizes that make sense at 2cm resolution. ([Minecraft Wiki][4])
 
-If you want, I can translate this into an initial file/format and runtime plan (chunk size, section layout, on‑disk region header, and a minimal mesher) tailored to 2 cm voxels.
+If you want, I can translate this into an initial file/format and runtime plan (chunk size, section layout, on‑disk region header, and a minimal mesher) tailored to 2cm voxels.
 
 [1]: https://minecraft.fandom.com/wiki/Block "Block – Minecraft Wiki"
 [2]: https://minecraft.fandom.com/wiki/Simulation_distance "Simulation distance – Minecraft Wiki"
@@ -356,7 +356,7 @@ If you want, I can translate this into an initial file/format and runtime plan (
 
 ME: A bit more detail about this potential game.  I want to also take inspiration from falling sand games in that physics will apply to the voxels.  They also will interact with their neighbors, for example, via friction (ambitious goal) or reactivity (lava sets wood on fire).  Given this, and that I am fine with it only running on desktop class hardware, do you recommend any changes to the voxel size, and/or do you have a specific recommendation for the implementation given the compute requirements?  as for your questions...Look? Blocky is probably easier right? maybe curved but I'm not sure how the "falling sand" bit would work there, on the other hand, it might work better with curved rendering.  Scale?  procedurally generated, planetary scale. (I actually want it to be circular, with gravity)  Editing? I'm not sure what you mean by this. Engine? I'd prefer to keep everything in code.  But that's it, I'm not an artist and I don't know how to make 3d models, but I'm a proficient programmer in more than a few languages.
 
-AI:  Great—targeting a 9800X3D + RTX 4090 gives you tons of headroom. With “falling‑sand‑style” **per‑voxel physics** (granular flow, heat, reactions) *and* a **planetary** world, the main challenge isn’t raw compute, it’s **domain size**. You can’t afford a dense 3D grid at 2 cm over anything but a small region. The key is to keep the world *sparse*, and simulate *only* “active” material in compact bubbles that move with the action.
+AI:  Great—targeting a 9800X3D + RTX4090 gives you tons of headroom. With “falling‑sand‑style” **per‑voxel physics** (granular flow, heat, reactions) *and* a **planetary** world, the main challenge isn’t raw compute, it’s **domain size**. You can’t afford a dense 3D grid at 2cm over anything but a small region. The key is to keep the world *sparse*, and simulate *only* “active” material in compact bubbles that move with the action.
 
 Below is a concrete plan, with specific sizes, data structures, and an update pipeline you can start coding.
 
@@ -366,8 +366,8 @@ Below is a concrete plan, with specific sizes, data structures, and an update pi
 
 * **Voxel size:**
 
-  * Use **5 cm** voxels as the **default** resolution.
-  * Allow **adaptive refinement to 2 cm** *inside small, active simulation islands* (lava spills, cave‑ins, explosions).
+  * Use **5cm** voxels as the **default** resolution.
+  * Allow **adaptive refinement to 2cm** *inside small, active simulation islands* (lava spills, cave‑ins, explosions).
   * This preserves fine detail where physics are happening without blowing up memory everywhere.
 
 * **Look:** Start **blocky**. Your CA (cellular automata) rules live on a cubic lattice; blocky meshes match that perfectly. If you want smoother visuals later, add a *view‑only* smooth mesher (dual contouring / marching cubes) **after** the CA is stable.
@@ -385,19 +385,19 @@ Below is a concrete plan, with specific sizes, data structures, and an update pi
 
 * **Chunking & streaming:**
 
-  * Author/mesh the world with **64³** voxel chunks at 5 cm (3.2 m across).
-  * Simulation islands are **dense volumes** (e.g., 10–20 m boxes) composed of those chunks, refined to 2 cm locally as needed.
+  * Author/mesh the world with **64³** voxel chunks at 5cm (3.2m across).
+  * Simulation islands are **dense volumes** (e.g., 10–20m boxes) composed of those chunks, refined to 2cm locally as needed.
   * Save/load chunks in **region files** (Minecraft‑style) plus a **sparse edit log**.
 
 ---
 
-## Why not 2 cm everywhere?
+## Why not 2cm everywhere?
 
-At 2 cm, you have **50 voxels/m**; even a modest **10 m cube is 125 M cells**. That’s far beyond what you want to update every frame—even on a 4090. The trick is:
+At 2cm, you have **50 voxels/m**; even a modest **10m cube is 125M cells**. That’s far beyond what you want to update every frame—even on a 4090. The trick is:
 
 * **Static = implicit.** The base planet is procedural; you don’t store it voxel‑by‑voxel.
 * **Dynamic = sparse.** Only voxels that are *non‑air* **and** near activity enter the simulation.
-* **Local = dense.** Where activity happens, temporarily maintain a **dense brick** (e.g., 10–20 m) so the CA can read neighbors cheaply.
+* **Local = dense.** Where activity happens, temporarily maintain a **dense brick** (e.g., 10–20m) so the CA can read neighbors cheaply.
 
 Think of it as *“sparse everywhere, dense where it matters.”*
 
@@ -420,7 +420,7 @@ Think of it as *“sparse everywhere, dense where it matters.”*
 
 * **Runtime chunks (for meshing & culling):**
 
-  * **64×64×64** at 5 cm (3.2 m cube).
+  * **64×64×64** at 5cm (3.2m cube).
   * Backed by: small **palette** + **bitmasks** (air/solid/fluid), optional **RLE** for long runs.
   * Mesh on demand (greedy meshing for blocky; optional smooth mesher later).
 
@@ -428,8 +428,8 @@ Think of it as *“sparse everywhere, dense where it matters.”*
 
 * Each island is a **dense 3D grid** that follows activity:
 
-  * Typical sizes: **10 m → 200³ cells (at 5 cm) = 8 M cells**, OK on a 4090 if you keep state lean.
-  * If the action is very tight (lava stream, sand collapse), refine a **nested 2 cm subgrid** in a smaller inner window (e.g., 4–8 m cube).
+  * Typical sizes: **10m → 200³ cells (at 5cm) = 8M cells**, OK on a 4090 if you keep state lean.
+  * If the action is very tight (lava stream, sand collapse), refine a **nested 2cm subgrid** in a smaller inner window (e.g., 4–8m cube).
 * **Migration:** If activity approaches the island edge, spawn/merge a neighbor island and retire calm regions back into the sparse delta store.
 * **Bake‑out:** When an island calms (no active voxels), compress its state back into chunk deltas, discard the dense buffer.
 
@@ -453,11 +453,11 @@ Use **8×8×8 tiles** (512 cells) to exploit shared memory and bit tricks:
   * `move_requests` (scatter buffer for proposed moves)
   * `rng_state` per tile (for stochastic rules, e.g., sand chooses L/R move randomly)
 
-**Memory budget example (island = 200³ @ 5 cm):**
+**Memory budget example (island = 200³ @ 5cm):**
 
-* Cells = **8.0 M**.
-* If you store \~4 bytes/cell (palette index + temp + flags) → \~32 MB.
-* Add a velocity byte and a few staging buffers → \~64–128 MB total. Very manageable on a 24 GB GPU.
+* Cells = **8.0M**.
+* If you store \~4 bytes/cell (palette index + temp + flags) → \~32MB.
+* Add a velocity byte and a few staging buffers → \~64–128MB total. Very manageable on a 24GB GPU.
 
 ### 4) Update pipeline (GPU)
 
@@ -481,7 +481,7 @@ Use **8×8×8 tiles** (512 cells) to exploit shared memory and bit tricks:
 
 3. **Refinement bubble (optional):**
 
-  * If a tile exceeds a “complexity” threshold (lots of conflicting moves or dense flows), **subdivide to 2 cm** locally: create a 2 cm sub‑tile that replaces the 5 cm tile logically; map materials and velocities; simulate at finer resolution; periodically re‑aggregate to 5 cm.
+  * If a tile exceeds a “complexity” threshold (lots of conflicting moves or dense flows), **subdivide to 2cm** locally: create a 2cm sub‑tile that replaces the 5cm tile logically; map materials and velocities; simulate at finer resolution; periodically re‑aggregate to 5cm.
 
 4. **Island management:**
 
@@ -509,7 +509,7 @@ Use **8×8×8 tiles** (512 cells) to exploit shared memory and bit tricks:
 
 * Keep **world coordinates Euclidean**; gravity is `g = -normalize(p - planet_center) * g0`.
 * Far‑field terrain (kilometers) is a **height‑mapped sphere** (cube‑sphere projection) you only *render*.
-* Near the player, **voxelize a shell** around the surface (e.g., ±8–12 m) by sampling your base SDF + deltas into chunks. This shell feeds both the mesh and any islands you spin up for physics.
+* Near the player, **voxelize a shell** around the surface (e.g., ±8–12m) by sampling your base SDF + deltas into chunks. This shell feeds both the mesh and any islands you spin up for physics.
 * Because everything is local, neighbor relations remain standard 3D grid—even on a curved planet.
 
 ---
@@ -530,7 +530,7 @@ struct Material {
 ```
 
 * **Angle‑of‑repose**: map `friction` to a slope threshold; sand flows when local slope > threshold.
-* **Temperature**: 1 byte is enough if you choose a scale (e.g., 0–255 → 0–2000 °C).
+* **Temperature**: 1 byte is enough if you choose a scale (e.g., 0–255 → 0–2000°C).
 * **Reactions**: a compact table: `(A,B, temp_min, temp_max, prob, product, heat_delta, state_change)`.
 
 ---
@@ -565,9 +565,9 @@ If you’re comfortable with C++: Vulkan + GLSL/HLSL compute is a good balance. 
 2. **Delta store**
 
   * Hashed voxel map; per‑chunk palettes; save/load to region files.
-3. **One simulation island (5 cm only)**
+3. **One simulation island (5cm only)**
 
-  * 10 m cube (200³ = 8 M cells) dense buffer + active lists.
+  * 10m cube (200³ = 8M cells) dense buffer + active lists.
   * GPU CA with sand + water + lava + wood + fire, thermal diffusion, ignition rules.
   * Two‑phase update (propose, commit), checkerboard scheduling.
 4. **Bake‑out + mesh refresh**
@@ -577,16 +577,16 @@ If you’re comfortable with C++: Vulkan + GLSL/HLSL compute is a good balance. 
 
   * Radial gravity; island follows the surface normal; player can walk around a small “mini‑planet.”
 
-**Stretch:** 2 cm refinement bubble inside the island; liquids mix; lava → stone on contact with water.
+**Stretch:** 2cm refinement bubble inside the island; liquids mix; lava → stone on contact with water.
 
 ---
 
 ## Sanity‑check numbers
 
-* **200³ island @ 5 cm**
+* **200³ island @ 5cm**
 
-  * 8 M cells × \~4–8 B/cell core state = 32–64 MB + staging → \~128 MB on GPU.
-  * With efficient culling, \~1–3 M *active* cells per tick is typical; 4090 can comfortably process that at 60 Hz if your kernel is memory‑coherent and tile‑local.
+  * 8M cells × \~4–8B/cell core state = 32–64MB + staging → \~128MB on GPU.
+  * With efficient culling, \~1–3M *active* cells per tick is typical; 4090 can comfortably process that at 60Hz if your kernel is memory‑coherent and tile‑local.
 * **Meshes**
 
   * A 64³ chunk often meshes to **<10k tris** with greedy meshing in natural terrain; **GPU mesh build** amortizes well across frames.
@@ -596,7 +596,7 @@ If you’re comfortable with C++: Vulkan + GLSL/HLSL compute is a good balance. 
 ## Answering your open questions directly
 
 * **Should I change voxel size?**
-  Yes: make **5 cm** your baseline; drop to **2 cm** *only* where the physics need it (small refinement bubbles). Pure 2 cm everywhere isn’t tenable at planetary scope.
+  Yes: make **5cm** your baseline; drop to **2cm** *only* where the physics need it (small refinement bubbles). Pure 2cm everywhere isn’t tenable at planetary scope.
 
 * **Blocky vs curved?**
   **Start blocky.** It aligns with the CA grid and is easier to debug. You can add a smooth, view‑only mesher later without changing the simulation.
@@ -617,7 +617,7 @@ ME:  I love it.  Seeing the numbers laid out like that though, it does give me p
 As far as "minimal data structures" and a toy kernel for the 3d sand/water/lava rules, yes please, but do that *after* writing up the detailed roadmap.
 
 
-AI:  That plan sounds solid. Moving the **baseline to 10 cm** voxels for all common materials and reserving **5 cm / 2.5 cm** “micro‑tiers” for rare/fine simulations keeps your compute and memory under control—while leaving a clear expansion path.
+AI:  That plan sounds solid. Moving the **baseline to 10cm** voxels for all common materials and reserving **5cm / 2.5cm** “micro‑tiers” for rare/fine simulations keeps your compute and memory under control—while leaving a clear expansion path.
 
 Below is a detailed **project roadmap** for a C++/Vulkan implementation, sized to your “20‑minute circumnavigation” planet, followed by **minimal data structures** and a **toy compute kernel** (GLSL) for sand/water/lava.
 
@@ -627,22 +627,22 @@ Below is a detailed **project roadmap** for a C++/Vulkan implementation, sized t
 
 Let `t = 20 min = 1,200 s`. Circumference `C = v * t`, radius `R = C / (2π)`. Equator voxels = `C / 0.1 m`.
 
-| Run speed (m/s) | Circumference (m) | Radius (m) | Equator voxels (10 cm) | Equator chunks @ 64³ (6.4 m) |
+| Run speed (m/s) | Circumference (m) | Radius (m) | Equator voxels (10cm) | Equator chunks @ 64³ (6.4m) |
 | --------------: | ----------------: | ---------: | ---------------------: | ---------------------------: |
 |               5 |             6,000 |      \~955 |                 60,000 |                        \~938 |
 |               6 |             7,200 |    \~1,146 |                 72,000 |                      \~1,125 |
 |               8 |             9,600 |    \~1,527 |                 96,000 |                      \~1,500 |
 
-> Recommendation: assume **6 m/s** → **C ≈ 7.2 km**, **R ≈ 1.15 km**. You will **not** store the planet densely; you’ll stream/voxelize a **local shell** near the player and simulate **dense islands** only around activity.
+> Recommendation: assume **6m/s** → **C ≈ 7.2km**, **R ≈ 1.15km**. You will **not** store the planet densely; you’ll stream/voxelize a **local shell** near the player and simulate **dense islands** only around activity.
 
 ---
 
-## High‑level architecture (recap at 10 cm)
+## High‑level architecture (recap at 10cm)
 
 * **Base world:** procedural SDF/heightfield on a **cube‑sphere** with biomes/material IDs. Read‑only.
 * **Delta store:** sparse edits (hash map keyed by chunk + local index). Authoritative for changes.
-* **Chunks (visual/cache):** **64³ voxels** at 10 cm (**6.4 m** physical). Paletted + bitmasks. Meshed on demand.
-* **Simulation islands:** dense 3D grids **12–16 m** per side (i.e., **120–160** cells at 10 cm → **1.7–4.1 M** cells), spawned where activity happens; optional nested **5 cm / 2.5 cm** refinement bubbles inside.
+* **Chunks (visual/cache):** **64³ voxels** at 10cm (**6.4m** physical). Paletted + bitmasks. Meshed on demand.
+* **Simulation islands:** dense 3D grids **12–16m** per side (i.e., **120–160** cells at 10cm → **1.7–4.1M** cells), spawned where activity happens; optional nested **5cm / 2.5cm** refinement bubbles inside.
 
 ---
 
@@ -650,7 +650,7 @@ Let `t = 20 min = 1,200 s`. Circumference `C = v * t`, radius `R = C / (2π)`. E
 
 Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but the order minimizes rework.
 
-### Phase 1 — Project skeleton & Vulkan plumbing (1–2 weeks)
+### Phase 1 — Project skeleton & Vulkan plumbing (1–2weeks)
 
 **Deliverables**
 
@@ -666,7 +666,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 2 — Math, planet frame & procedural base world (2 weeks)
+### Phase 2 — Math, planet frame & procedural base world (2weeks)
 
 **Deliverables**
 
@@ -688,7 +688,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 3 — Chunk store, palette & greedy meshing (2–3 weeks)
+### Phase 3 — Chunk store, palette & greedy meshing (2–3weeks)
 
 **Deliverables**
 
@@ -702,15 +702,15 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 **Budget targets**
 
 * Typical chunk after greedy meshing: **≤ 15k tris**.
-* Mesh build: **< 1 ms** per dirty chunk on CPU (later move to compute).
+* Mesh build: **< 1ms** per dirty chunk on CPU (later move to compute).
 
 **Success criteria**
 
-* Walk around a static planet; streaming loads/unloads chunks around player smoothly at 60 fps.
+* Walk around a static planet; streaming loads/unloads chunks around player smoothly at 60fps.
 
 ---
 
-### Phase 4 — Delta store & re‑meshing (1–2 weeks)
+### Phase 4 — Delta store & re‑meshing (1–2weeks)
 
 **Deliverables**
 
@@ -729,14 +729,14 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 5 — Simulation islands v1 (10 cm only) (2–3 weeks)
+### Phase 5 — Simulation islands v1 (10cm only) (2–3weeks)
 
 **Deliverables**
 
 * **Island manager**: creates a dense box (e.g., **128³** or **160³**) centered on activity.
 * **State layout per island** (GPU buffers):
 
-  * Occupancy bitset (1 b/cell), material index (1 B), temperature (1 B), velocity/flags (1 B).
+  * Occupancy bitset (1b/cell), material index (1B), temperature (1B), velocity/flags (1B).
   * **Active list** buffers (ping‑pong), **move request** buffer.
 * **Island<->world I/O**:
 
@@ -745,8 +745,8 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 **Budget targets**
 
-* Island memory (160³ \~ 4.1 M cells): **\~32–64 MB** plus staging.
-* Transfer/bake each direction **< 2 ms** amortized (async DMA).
+* Island memory (160³ \~ 4.1M cells): **\~32–64MB** plus staging.
+* Transfer/bake each direction **< 2ms** amortized (async DMA).
 
 **Success criteria**
 
@@ -754,7 +754,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 6 — CA kernel v1: sand + water (2–3 weeks)
+### Phase 6 — CA kernel v1: sand + water (2–3weeks)
 
 **Deliverables**
 
@@ -770,7 +770,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 **Budget targets**
 
-* 1–2 M active cells/tick at 60 fps on your 4090 is realistic if memory‑coherent.
+* 1–2M active cells/tick at 60fps on your 4090 is realistic if memory‑coherent.
 
 **Success criteria**
 
@@ -778,7 +778,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 7 — Thermal + lava + fire (2 weeks)
+### Phase 7 — Thermal + lava + fire (2weeks)
 
 **Deliverables**
 
@@ -792,13 +792,13 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 8 — Refinement bubbles (5 cm / 2.5 cm) (2–3 weeks)
+### Phase 8 — Refinement bubbles (5cm / 2.5cm) (2–3weeks)
 
 **Deliverables**
 
 * Per‑island **sub‑grid** refinement when local complexity high:
 
-  * Allocate **2×** or **4×** finer sub‑box (e.g., 5 cm or 2.5 cm) for a small volume.
+  * Allocate **2×** or **4×** finer sub‑box (e.g., 5cm or 2.5cm) for a small volume.
   * Map coarse cells into fine; simulate; periodically re‑aggregate down.
 * Deterministic **mapping up/down** (majority material, volume‑weighted temp).
 
@@ -808,7 +808,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 9 — Visual LOD & far‑field planet (1–2 weeks)
+### Phase 9 — Visual LOD & far‑field planet (1–2weeks)
 
 **Deliverables**
 
@@ -818,11 +818,11 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 **Success criteria**
 
-* Stable 60 fps with a \~2–4 km view distance; minimal popping.
+* Stable 60fps with a \~2–4km view distance; minimal popping.
 
 ---
 
-### Phase 10 — Save/Load, journaling, and robustness (1 week)
+### Phase 10 — Save/Load, journaling, and robustness (1week)
 
 **Deliverables**
 
@@ -832,7 +832,7 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ---
 
-### Phase 11 — Tools & profiling (1 week initial, then ongoing)
+### Phase 11 — Tools & profiling (1week initial, then ongoing)
 
 **Deliverables**
 
@@ -844,16 +844,16 @@ Each “phase” is \~1–3 weeks of focused work. Parallelize if you like, but 
 
 ### Ongoing performance budgets (per frame)
 
-* **CA compute**: 6–9 ms (depends on active cells).
-* **Meshing (dirty chunks)**: 1–3 ms amortized (move to GPU compute later).
-* **Rendering**: 4–6 ms (4090 with greedy meshes + triplanar is easy).
+* **CA compute**: 6–9ms (depends on active cells).
+* **Meshing (dirty chunks)**: 1–3ms amortized (move to GPU compute later).
+* **Rendering**: 4–6ms (4090 with greedy meshes + triplanar is easy).
 * **Streaming/IO**: async; keep under PCIe saturation; prefetch based on velocity.
 
 ---
 
 ## Key technical choices (why)
 
-* **64³ chunks @ 10 cm** (6.4 m) give good batching. Internally, process **8³ tiles** in shared memory.
+* **64³ chunks @ 10cm** (6.4m) give good batching. Internally, process **8³ tiles** in shared memory.
 * **Simulation islands** decouple CA from world storage; only dense where needed.
 * **Two‑phase CA** avoids write hazards; **checkerboard parity** reduces oscillations.
 * **Palette + bitmasks** shrink memory and speed meshing.
@@ -1230,7 +1230,7 @@ Entries: [ ChunkKey, count, {localIdx, mat, temp, flags} * count ]
 2. **Phase 4** to persist edits.
 3. **Phases 5–6** to bring up the first simulation island with sand+water.
 4. **Phase 7** for lava/fire and reactions.
-5. **Phase 8** for refinement bubbles (5 cm/2.5 cm).
+5. **Phase 8** for refinement bubbles (5cm/2.5cm).
 6. **Phase 9** for far‑field visuals.
 
 I can turn any of these phases into a **week-by-week task list** with specific classes, API calls, and unit tests. If you want, I’ll also sketch the **Vulkan descriptor set layouts** and a **tiny C++ driver** that records the two compute passes for the CA and presents timing queries so you can profile immediately.
