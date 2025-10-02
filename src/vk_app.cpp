@@ -158,11 +158,18 @@ void VulkanApp::run() {
     }
 }
 
-void VulkanApp::init_window() {
-    if (!glfwInit()) { std::abort(); }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window_ = glfwCreateWindow(width_, height_, "Wanderforge", nullptr, nullptr);
-}
+    void VulkanApp::init_window() {
+        if (!glfwInit()) {
+            std::cerr << "Failed to initialize GLFW\n";
+            std::abort();
+        }
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        window_ = glfwCreateWindow(width_, height_, "Wanderforge", nullptr, nullptr);
+        if (!window_) {
+            std::cerr << "Failed to create GLFW window\n";
+            std::abort();
+        }
+    }
 
 void VulkanApp::set_mouse_capture(bool capture) {
     if (!window_) return;
