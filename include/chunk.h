@@ -47,7 +47,8 @@ struct Chunk64 {
     uint16_t get_material(int x, int y, int z) const {
         const uint32_t i = lindex(x, y, z);
         const uint32_t pi = indices.get(i);
-        return palette.empty() ? MAT_AIR : palette[std::min<uint32_t>(pi, (uint32_t)palette.size() - 1)];
+        return palette.empty() ? static_cast<uint16_t>(MAT_AIR)
+                               : palette[std::min<uint32_t>(pi, (uint32_t)palette.size() - 1)];
     }
 
     bool is_solid(int x, int y, int z) const {

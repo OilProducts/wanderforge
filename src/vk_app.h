@@ -162,8 +162,6 @@ private:
     bool key_prev_toggle_walk_ = false;
     float eye_height_m_ = 1.7f; // camera height above terrain when walking
     float walk_speed_ = 6.0f;   // m/s on ground
-    float walk_heading_ = 0.0f; // radians, rotation around local up when in walk mode
-    float walk_pitch_ = 0.0f;   // radians, local pitch relative to horizon (positive up)
     float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
     float walk_surface_bias_m_ = 1.0f; // extra offset above computed surface to avoid clipping
     float surface_push_m_ = 0.0f;      // optional outward push for near-horizontal faces (mesh visual alignment)
@@ -248,6 +246,7 @@ private:
         float center[3] = {0,0,0};
         float radius = 0.0f;
         FaceChunkKey key{0,0,0,0};
+        uint64_t job_gen = 0;
     };
     std::thread loader_thread_;
     std::mutex loader_mutex_;
@@ -279,6 +278,9 @@ private:
 
     // Streaming state: current face and ring center
     int stream_face_ = 0;
+    bool stream_face_ready_ = false;
+    uint64_t pending_request_gen_ = 0;
+    float face_switch_hysteresis_ = 0.05f;
     std::int64_t ring_center_i_ = 0;
     std::int64_t ring_center_j_ = 0;
     std::int64_t ring_center_k_ = 0;

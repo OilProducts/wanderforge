@@ -32,6 +32,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* /*pUserData*/) {
+    (void)messageSeverity;
+    (void)messageType;
     std::cerr << "[VK] " << pCallbackData->pMessage << "\n";
     return VK_FALSE;
 }
@@ -310,7 +312,8 @@ void VulkanApp::create_instance() {
     app.pEngineName = "wf"; app.engineVersion = VK_MAKE_VERSION(0,0,1);
     app.apiVersion = VK_API_VERSION_1_0;
 
-    VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    VkInstanceCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &app;
     ci.enabledExtensionCount = (uint32_t)enabled_instance_exts_.size();
     ci.ppEnabledExtensionNames = enabled_instance_exts_.data();
@@ -325,7 +328,8 @@ void VulkanApp::create_instance() {
 void VulkanApp::setup_debug_messenger() {
     if (!enable_validation_) return;
     if (!has_instance_extension("VK_EXT_debug_utils")) return;
-    VkDebugUtilsMessengerCreateInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    VkDebugUtilsMessengerCreateInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
@@ -374,8 +378,12 @@ void VulkanApp::create_logical_device() {
     std::set<uint32_t> uniqueQ = {queue_family_graphics_, queue_family_present_};
     float prio = 1.0f; std::vector<VkDeviceQueueCreateInfo> qcis; qcis.reserve(uniqueQ.size());
     for (uint32_t qf : uniqueQ) {
-        VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-        qci.queueFamilyIndex = qf; qci.queueCount = 1; qci.pQueuePriorities = &prio; qcis.push_back(qci);
+        VkDeviceQueueCreateInfo qci{};
+        qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        qci.queueFamilyIndex = qf;
+        qci.queueCount = 1;
+        qci.pQueuePriorities = &prio;
+        qcis.push_back(qci);
     }
     enabled_device_exts_.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 #ifdef __APPLE__
@@ -383,8 +391,10 @@ void VulkanApp::create_logical_device() {
         enabled_device_exts_.push_back("VK_KHR_portability_subset");
 #endif
 
-    VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    dci.queueCreateInfoCount = (uint32_t)qcis.size(); dci.pQueueCreateInfos = qcis.data();
+    VkDeviceCreateInfo dci{};
+    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.queueCreateInfoCount = (uint32_t)qcis.size();
+    dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = (uint32_t)enabled_device_exts_.size();
     dci.ppEnabledExtensionNames = enabled_device_exts_.data();
     throw_if_failed(vkCreateDevice(physical_device_, &dci, nullptr, &device_), "vkCreateDevice failed");
@@ -409,7 +419,8 @@ void VulkanApp::create_swapchain() {
     if (extent.width == 0xFFFFFFFF) { extent = { (uint32_t)width_, (uint32_t)height_ }; }
     uint32_t imageCount = caps.minImageCount + 1; if (caps.maxImageCount && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
 
-    VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    VkSwapchainCreateInfoKHR sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     sci.surface = surface_;
     sci.minImageCount = imageCount;
     sci.imageFormat = chosenFmt.format; sci.imageColorSpace = chosenFmt.colorSpace;
@@ -434,7 +445,8 @@ void VulkanApp::create_swapchain() {
 void VulkanApp::create_image_views() {
     swapchain_image_views_.resize(swapchain_images_.size());
     for (size_t i=0;i<swapchain_images_.size();++i) {
-        VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        VkImageViewCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         ci.image = swapchain_images_[i];
         ci.viewType = VK_IMAGE_VIEW_TYPE_2D; ci.format = swapchain_format_;
         ci.components = {VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_IDENTITY};
@@ -481,10 +493,14 @@ void VulkanApp::create_render_pass() {
     dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
     VkAttachmentDescription atts[2] = { color, depth };
-    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-    rpci.attachmentCount = 2; rpci.pAttachments = atts;
-    rpci.subpassCount = 1; rpci.pSubpasses = &sub;
-    rpci.dependencyCount = 1; rpci.pDependencies = &dep;
+    VkRenderPassCreateInfo rpci{};
+    rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpci.attachmentCount = 2;
+    rpci.pAttachments = atts;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 1;
+    rpci.pDependencies = &dep;
     throw_if_failed(vkCreateRenderPass(device_, &rpci, nullptr, &render_pass_), "vkCreateRenderPass failed");
 }
 
@@ -492,10 +508,14 @@ void VulkanApp::create_framebuffers() {
     framebuffers_.resize(swapchain_image_views_.size());
     for (size_t i=0;i<swapchain_image_views_.size();++i) {
         VkImageView attachments[] = { swapchain_image_views_[i], depth_view_ };
-        VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        VkFramebufferCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fci.renderPass = render_pass_;
-        fci.attachmentCount = 2; fci.pAttachments = attachments;
-        fci.width = swapchain_extent_.width; fci.height = swapchain_extent_.height; fci.layers = 1;
+        fci.attachmentCount = 2;
+        fci.pAttachments = attachments;
+        fci.width = swapchain_extent_.width;
+        fci.height = swapchain_extent_.height;
+        fci.layers = 1;
         throw_if_failed(vkCreateFramebuffer(device_, &fci, nullptr, &framebuffers_[i]), "vkCreateFramebuffer failed");
     }
 }
@@ -516,7 +536,8 @@ void VulkanApp::create_depth_resources() {
         vkDestroyImage(device_, depth_image_, nullptr); depth_image_ = VK_NULL_HANDLE;
         vkFreeMemory(device_, depth_mem_, nullptr); depth_mem_ = VK_NULL_HANDLE;
     }
-    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.extent = { swapchain_extent_.width, swapchain_extent_.height, 1 };
     ici.mipLevels = 1; ici.arrayLayers = 1;
@@ -529,28 +550,38 @@ void VulkanApp::create_depth_resources() {
     throw_if_failed(vkCreateImage(device_, &ici, nullptr, &depth_image_), "vkCreateImage(depth) failed");
     VkMemoryRequirements req{}; vkGetImageMemoryRequirements(device_, depth_image_, &req);
     uint32_t mt = wf::vk::find_memory_type(physical_device_, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VkMemoryAllocateInfo mai{};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = mt;
     throw_if_failed(vkAllocateMemory(device_, &mai, nullptr, &depth_mem_), "vkAllocateMemory(depth) failed");
     throw_if_failed(vkBindImageMemory(device_, depth_image_, depth_mem_, 0), "vkBindImageMemory(depth) failed");
-    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = depth_image_;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = depth_format_;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = depth_format_;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    vci.subresourceRange.baseMipLevel = 0; vci.subresourceRange.levelCount = 1;
-    vci.subresourceRange.baseArrayLayer = 0; vci.subresourceRange.layerCount = 1;
+    vci.subresourceRange.baseMipLevel = 0;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.baseArrayLayer = 0;
+    vci.subresourceRange.layerCount = 1;
     throw_if_failed(vkCreateImageView(device_, &vci, nullptr, &depth_view_), "vkCreateImageView(depth) failed");
 }
 
 void VulkanApp::create_command_pool_and_buffers() {
-    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    VkCommandPoolCreateInfo pci{};
+    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pci.queueFamilyIndex = queue_family_graphics_;
     throw_if_failed(vkCreateCommandPool(device_, &pci, nullptr, &command_pool_), "vkCreateCommandPool failed");
 
     command_buffers_.resize(framebuffers_.size());
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = command_pool_; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = (uint32_t)command_buffers_.size();
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = command_pool_;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = (uint32_t)command_buffers_.size();
     throw_if_failed(vkAllocateCommandBuffers(device_, &ai, command_buffers_.data()), "vkAllocateCommandBuffers failed");
 }
 
@@ -558,8 +589,11 @@ void VulkanApp::create_sync_objects() {
     sem_image_available_.resize(kFramesInFlight);
     sem_render_finished_.resize(kFramesInFlight);
     fences_in_flight_.resize(kFramesInFlight);
-    VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VkSemaphoreCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     for (int i=0;i<kFramesInFlight;i++) {
         throw_if_failed(vkCreateSemaphore(device_, &sci, nullptr, &sem_image_available_[i]), "vkCreateSemaphore failed");
         throw_if_failed(vkCreateSemaphore(device_, &sci, nullptr, &sem_render_finished_[i]), "vkCreateSemaphore failed");
@@ -568,7 +602,8 @@ void VulkanApp::create_sync_objects() {
 }
 
 void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) {
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     throw_if_failed(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer failed");
 
     // No-op compute dispatch before rendering
@@ -578,7 +613,8 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     }
 
     VkClearValue clear{ { {0.02f, 0.02f, 0.06f, 1.0f} } };
-    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    VkRenderPassBeginInfo rbi{};
+    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rbi.renderPass = render_pass_;
     rbi.framebuffer = framebuffers_[imageIndex];
     rbi.renderArea.offset = {0,0}; rbi.renderArea.extent = swapchain_extent_;
@@ -598,10 +634,11 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         Float3 up_vec{};
         Float3 right_vec{};
 
+        float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+
         if (!walk_mode_) {
             V = wf::view_from_yaw_pitch(cam_yaw_, cam_pitch_, eye_arr);
-            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
             forward = Float3{cp * cyaw, sp, cp * syaw};
             Float3 world_up{0.0f, 1.0f, 0.0f};
             right_vec = wf::normalize(Float3{
@@ -616,45 +653,26 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
             };
         } else {
             Float3 updir = wf::normalize(eye);
-            Float3 world_up{0.0f, 1.0f, 0.0f};
-            Float3 r0 = wf::normalize(Float3{
-                updir.y * world_up.z - updir.z * world_up.y,
-                updir.z * world_up.x - updir.x * world_up.z,
-                updir.x * world_up.y - updir.y * world_up.x
-            });
-            if (wf::length(r0) < 1e-5f) r0 = Float3{1, 0, 0};
-            Float3 f0 = wf::normalize(Float3{
-                r0.y * updir.z - r0.z * updir.y,
-                r0.z * updir.x - r0.x * updir.z,
-                r0.x * updir.y - r0.y * updir.x
-            });
-            float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-            Float3 fwd_h{f0.x * ch + r0.x * sh, f0.y * ch + r0.y * sh, f0.z * ch + r0.z * sh};
-            float cp = std::cos(walk_pitch_), sp = std::sin(walk_pitch_);
-            forward = Float3{
-                fwd_h.x * cp + updir.x * sp,
-                fwd_h.y * cp + updir.y * sp,
-                fwd_h.z * cp + updir.z * sp
-            };
-            Float3 up_rot{
-                updir.x * cp - fwd_h.x * sp,
-                updir.y * cp - fwd_h.y * sp,
-                updir.z * cp - fwd_h.z * sp
-            };
+            Float3 view_dir{cp * cyaw, sp, cp * syaw};
+            float dot_vu = view_dir.x * updir.x + view_dir.y * updir.y + view_dir.z * updir.z;
+            Float3 tangent_forward = Float3{view_dir.x - updir.x * dot_vu,
+                                            view_dir.y - updir.y * dot_vu,
+                                            view_dir.z - updir.z * dot_vu};
+            if (wf::length(tangent_forward) < 1e-5f) {
+                tangent_forward = Float3{updir.y, -updir.x, 0.0f};
+                if (wf::length(tangent_forward) < 1e-5f) tangent_forward = Float3{1.0f, 0.0f, 0.0f};
+            }
+            forward = wf::normalize(tangent_forward);
             right_vec = wf::normalize(Float3{
-                forward.y * up_rot.z - forward.z * up_rot.y,
-                forward.z * up_rot.x - forward.x * up_rot.z,
-                forward.x * up_rot.y - forward.y * up_rot.x
+                forward.y * updir.z - forward.z * updir.y,
+                forward.z * updir.x - forward.x * updir.z,
+                forward.x * updir.y - forward.y * updir.x
             });
             up_vec = wf::normalize(Float3{
                 right_vec.y * forward.z - right_vec.z * forward.y,
                 right_vec.z * forward.x - right_vec.x * forward.z,
                 right_vec.x * forward.y - right_vec.y * forward.x
             });
-            if (up_vec.y < 0.0f && std::fabs(updir.y) > 0.2f) {
-                right_vec = Float3{-right_vec.x, -right_vec.y, -right_vec.z};
-                up_vec = Float3{-up_vec.x, -up_vec.y, -up_vec.z};
-            }
             wf::Vec3 eye_v{eye.x, eye.y, eye.z};
             wf::Vec3 center{eye_v.x + forward.x, eye_v.y + forward.y, eye_v.z + forward.z};
             wf::Vec3 up_v{up_vec.x, up_vec.y, up_vec.z};
@@ -787,20 +805,12 @@ void VulkanApp::update_input(float dt) {
         last_cursor_x_ = cx; last_cursor_y_ = cy;
         float sx = invert_mouse_x_ ? -1.0f : 1.0f;
         float sy = invert_mouse_y_ ?  1.0f : -1.0f;
-        if (!walk_mode_) {
-            cam_yaw_   += sx * (float)(dx * cam_sensitivity_);
-            cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
-            const float maxp = 1.55334306f; // ~89 deg
-            if (cam_pitch_ > maxp) cam_pitch_ = maxp; if (cam_pitch_ < -maxp) cam_pitch_ = -maxp;
-        } else {
-            // Walk mode: heading around local up, and local pitch around horizon
-            walk_heading_ += sx * (float)(dx * cam_sensitivity_);
-            if (walk_heading_ > 3.14159265f) walk_heading_ -= 6.28318531f;
-            if (walk_heading_ < -3.14159265f) walk_heading_ += 6.28318531f;
-            float maxp = walk_pitch_max_deg_ * 0.01745329252f;
-            walk_pitch_ += sy * (float)(dy * cam_sensitivity_);
-            if (walk_pitch_ > maxp) walk_pitch_ = maxp; if (walk_pitch_ < -maxp) walk_pitch_ = -maxp;
-        }
+        cam_yaw_ += sx * (float)(dx * cam_sensitivity_);
+        if (cam_yaw_ > 3.14159265f) cam_yaw_ -= 6.28318531f;
+        if (cam_yaw_ < -3.14159265f) cam_yaw_ += 6.28318531f;
+        cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
+        float maxp = walk_mode_ ? (walk_pitch_max_deg_ * 0.01745329252f) : 1.55334306f;
+        cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
     } else {
         if (rmb_down_) {
             rmb_down_ = false;
@@ -825,28 +835,10 @@ void VulkanApp::update_input(float dt) {
         walk_mode_ = !walk_mode_;
         hud_force_refresh_ = true;
         if (walk_mode_) {
-            // Initialize walk heading from current forward projected into tangent
-            Float3 pos{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+            Float3 pos{static_cast<float>(cam_pos_[0]),
+                       static_cast<float>(cam_pos_[1]),
+                       static_cast<float>(cam_pos_[2])};
             Float3 updir = wf::normalize(pos);
-            Float3 world_up{0,1,0};
-            Float3 r0 = wf::normalize(Float3{ world_up.y*updir.z - world_up.z*updir.y,
-                                              world_up.z*updir.x - world_up.x*updir.z,
-                                              world_up.x*updir.y - world_up.y*updir.x });
-            if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-            Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
-                                              r0.z*updir.x - r0.x*updir.z,
-                                              r0.x*updir.y - r0.y*updir.x });
-            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-            Float3 fwdv{ cp*cyaw, sp, cp*syaw };
-            float dotfu = fwdv.x*updir.x + fwdv.y*updir.y + fwdv.z*updir.z;
-            Float3 fwd_t{ fwdv.x - updir.x*dotfu, fwdv.y - updir.y*dotfu, fwdv.z - updir.z*dotfu };
-            fwd_t = wf::normalize(fwd_t);
-            float x = fwd_t.x*f0.x + fwd_t.y*f0.y + fwd_t.z*f0.z;
-            float y = fwd_t.x*r0.x + fwd_t.y*r0.y + fwd_t.z*r0.z;
-            walk_heading_ = std::atan2(y, x);
-            walk_pitch_ = 0.0f;
-            // Snap to surface radius immediately on entering walk mode
             const PlanetConfig& cfg = planet_cfg_;
             double h = terrain_height_m(cfg, updir);
             double surface_r = cfg.radius_m + h;
@@ -858,6 +850,8 @@ void VulkanApp::update_input(float dt) {
             cam_pos_[0] = (double)updir.x * target_r;
             cam_pos_[1] = (double)updir.y * target_r;
             cam_pos_[2] = (double)updir.z * target_r;
+            float maxp = walk_pitch_max_deg_ * 0.01745329252f;
+            cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
         }
     }
     key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
@@ -871,43 +865,58 @@ void VulkanApp::update_input(float dt) {
         if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
         if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
     } else {
-        // Walk mode: move along tangent plane using heading; keep camera at surface + eye_height
+        // Walk mode: move along surface using projected camera orientation
         const PlanetConfig& cfg = planet_cfg_;
         Float3 pos{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
         Float3 updir = normalize(pos);
-        Float3 world_up{0,1,0};
-        Float3 r0 = wf::normalize(Float3{ updir.y*world_up.z - updir.z*world_up.y,
-                                          updir.z*world_up.x - updir.x*world_up.z,
-                                          updir.x*world_up.y - updir.y*world_up.x });
-        if (wf::length(r0) < 1e-5f) r0 = Float3{1,0,0};
-        Float3 f0 = wf::normalize(Float3{ r0.y*updir.z - r0.z*updir.y,
-                                          r0.z*updir.x - r0.x*updir.z,
-                                          r0.x*updir.y - r0.y*updir.x });
-        float ch = std::cos(walk_heading_), sh = std::sin(walk_heading_);
-        Float3 fwd_t{ f0.x*ch + r0.x*sh, f0.y*ch + r0.y*sh, f0.z*ch + r0.z*sh };
-        // Use right = forward x updir (RH), so +D moves to the screen-right
-        Float3 right_t{ fwd_t.y*updir.z - fwd_t.z*updir.y, fwd_t.z*updir.x - fwd_t.x*updir.z, fwd_t.x*updir.y - fwd_t.y*updir.x };
-        right_t = wf::normalize(right_t);
+        auto cross3 = [](Float3 a, Float3 b) {
+            return Float3{ a.y * b.z - a.z * b.y,
+                           a.z * b.x - a.x * b.z,
+                           a.x * b.y - a.y * b.x };
+        };
+        auto normalize_or = [](Float3 v, Float3 fallback) {
+            float len = wf::length(v);
+            return (len > 1e-5f) ? (v / len) : fallback;
+        };
+        auto dot3 = [](Float3 a, Float3 b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        };
+
+        Float3 view_dir{cp * cyaw, sp, cp * syaw};
+        view_dir = normalize_or(view_dir, Float3{1.0f, 0.0f, 0.0f});
+        Float3 fwd_t = view_dir - updir * dot3(view_dir, updir);
+        fwd_t = normalize_or(fwd_t, normalize_or(cross3(updir, Float3{0.0f, 0.0f, 1.0f}), Float3{1.0f, 0.0f, 0.0f}));
+        Float3 right_t = normalize_or(cross3(fwd_t, updir), Float3{0.0f, 1.0f, 0.0f});
+
         float speed = walk_speed_ * dt * (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
-        // Build tangent step vector (meters) in the local tangent basis
         Float3 step{0,0,0};
         if (glfwGetKey(window_, GLFW_KEY_W) == GLFW_PRESS) { step = step + fwd_t   * speed; }
         if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) { step = step - fwd_t   * speed; }
         if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) { step = step - right_t * speed; }
         if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS) { step = step + right_t * speed; }
-        // Exact great-circle update: rotate updir toward the step direction by angle phi = |step| / radius
+
         Float3 ndir = updir;
         float step_len = wf::length(step);
         if (step_len > 0.0f) {
-            Float3 tdir = step / step_len; // unit tangent direction
+            Float3 tdir = step / step_len;
             double cam_rd = std::sqrt(cam_pos_[0]*cam_pos_[0] + cam_pos_[1]*cam_pos_[1] + cam_pos_[2]*cam_pos_[2]);
             float phi = (float)(step_len / std::max(cam_rd, 1e-9));
-            float c = std::cos(phi), s = std::sin(phi);
-            // Since tdir is tangent to updir, Rodrigues reduces to ndir = updir*c + tdir*s
+            float c = std::cos(phi);
+            float s = std::sin(phi);
             ndir = wf::normalize(Float3{ updir.x * c + tdir.x * s,
-                                          updir.y * c + tdir.y * s,
-                                          updir.z * c + tdir.z * s });
+                                         updir.y * c + tdir.y * s,
+                                         updir.z * c + tdir.z * s });
+            updir = ndir;
         }
+
+        Float3 forward_projected = view_dir - updir * dot3(view_dir, updir);
+        forward_projected = normalize_or(forward_projected, fwd_t);
+        Float3 view_dir_adjusted = wf::normalize(Float3{ forward_projected.x * std::cos(cam_pitch_) + updir.x * std::sin(cam_pitch_),
+                                                         forward_projected.y * std::cos(cam_pitch_) + updir.y * std::sin(cam_pitch_),
+                                                         forward_projected.z * std::cos(cam_pitch_) + updir.z * std::sin(cam_pitch_) });
+        cam_yaw_ = std::atan2(view_dir_adjusted.z, view_dir_adjusted.x);
+        cam_pitch_ = std::asin(std::clamp(view_dir_adjusted.y, -1.0f, 1.0f));
+
         double h = terrain_height_m(cfg, ndir);
         double surface_r = cfg.radius_m + h;
         if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m; // keep above water surface
@@ -1150,15 +1159,24 @@ void VulkanApp::draw_frame() {
     record_command_buffer(command_buffers_[imageIndex], imageIndex);
 
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.waitSemaphoreCount = 1; si.pWaitSemaphores = &sem_image_available_[current_frame_]; si.pWaitDstStageMask = waitStages;
-    si.commandBufferCount = 1; si.pCommandBuffers = &command_buffers_[imageIndex];
-    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &sem_render_finished_[current_frame_];
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &sem_image_available_[current_frame_];
+    si.pWaitDstStageMask = waitStages;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &command_buffers_[imageIndex];
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &sem_render_finished_[current_frame_];
     throw_if_failed(vkQueueSubmit(queue_graphics_, 1, &si, fences_in_flight_[current_frame_]), "vkQueueSubmit failed");
 
-    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &sem_render_finished_[current_frame_];
-    pi.swapchainCount = 1; pi.pSwapchains = &swapchain_; pi.pImageIndices = &imageIndex;
+    VkPresentInfoKHR pi{};
+    pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &sem_render_finished_[current_frame_];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &swapchain_;
+    pi.pImageIndices = &imageIndex;
     VkResult pres = vkQueuePresentKHR(queue_present_, &pi);
     if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) { recreate_swapchain(); }
     else if (pres != VK_SUCCESS) throw_if_failed(pres, "vkQueuePresentKHR failed");
@@ -1232,42 +1250,49 @@ void VulkanApp::create_graphics_pipeline() {
     stages[1].module = fs;
     stages[1].pName = "main";
 
-    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkViewport vp{}; vp.x = 0; vp.y = (float)swapchain_extent_.height; vp.width = (float)swapchain_extent_.width; vp.height = -(float)swapchain_extent_.height; vp.minDepth = 0; vp.maxDepth = 1;
     VkRect2D sc{}; sc.offset = {0,0}; sc.extent = swapchain_extent_;
-    VkPipelineViewportStateCreateInfo vpstate{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    vpstate.viewportCount = 1; vpstate.pViewports = &vp; vpstate.scissorCount = 1; vpstate.pScissors = &sc;
+    VkPipelineViewportStateCreateInfo vpstate{};
+    vpstate.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpstate.viewportCount = 1;
+    vpstate.pViewports = &vp;
+    vpstate.scissorCount = 1;
+    vpstate.pScissors = &sc;
 
-    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_BACK_BIT;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
-    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cba.blendEnable = VK_FALSE;
-    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1; cb.pAttachments = &cba;
-    // Depth state for chunk rendering
-    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_TRUE;
-    ds.depthWriteEnable = VK_TRUE;
-    ds.depthCompareOp = VK_COMPARE_OP_LESS;
-
-    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+    VkPipelineLayoutCreateInfo plci{};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_) != VK_SUCCESS) {
         vkDestroyShaderModule(device_, vs, nullptr);
         vkDestroyShaderModule(device_, fs, nullptr);
         return;
     }
 
-    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    gpi.stageCount = 2; gpi.pStages = stages;
+    VkGraphicsPipelineCreateInfo gpi{};
+    gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gpi.stageCount = 2;
+    gpi.pStages = stages;
     gpi.pVertexInputState = &vi;
     gpi.pInputAssemblyState = &ia;
     gpi.pViewportState = &vpstate;
@@ -1301,18 +1326,21 @@ void VulkanApp::create_compute_pipeline() {
         std::cout << "[info] Compute shader not found (" << csPath << "). Compute disabled." << std::endl;
         return;
     }
-    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = cs;
     stage.pName = "main";
 
-    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo plci{};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipeline_layout_compute_) != VK_SUCCESS) {
         vkDestroyShaderModule(device_, cs, nullptr);
         return;
     }
 
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkComputePipelineCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     ci.stage = stage;
     ci.layout = pipeline_layout_compute_;
     if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline_compute_) != VK_SUCCESS) {
@@ -1387,6 +1415,8 @@ void VulkanApp::start_loader_thread() {
 
 void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t) {
     uint64_t gen = ++request_gen_;
+    stream_face_ready_ = false;
+    pending_request_gen_ = gen;
     {
         std::lock_guard<std::mutex> lk(loader_mutex_);
         // Collapse to the latest request
@@ -1414,6 +1444,8 @@ void VulkanApp::start_initial_ring_async() {
     ring_center_j_ = (std::int64_t)std::floor(t / chunk_m);
     ring_center_k_ = (std::int64_t)std::floor((double)length(eye) / chunk_m);
     stream_face_ = face;
+    prev_face_ = -1;
+    stream_face_ready_ = false;
     // Project camera forward to face s/t for prioritization
     float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
     float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
@@ -1652,6 +1684,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
+            res.job_gen = job_gen;
             {
                 std::lock_guard<std::mutex> lk(loader_mutex_);
                 results_queue_.push_back(std::move(res));
@@ -1708,6 +1741,9 @@ void VulkanApp::drain_mesh_results() {
         rc.vbuf = VK_NULL_HANDLE; rc.vmem = VK_NULL_HANDLE; rc.ibuf = VK_NULL_HANDLE; rc.imem = VK_NULL_HANDLE;
         rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
         rc.key = res.key;
+        if (!stream_face_ready_ && res.key.face == stream_face_ && res.job_gen >= pending_request_gen_) {
+            stream_face_ready_ = true;
+        }
         if (debug_chunk_keys_) {
             if (!res.vertices.empty()) {
                 const auto &v0 = res.vertices.front();
@@ -1826,9 +1862,25 @@ void VulkanApp::update_streaming() {
     const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
-    Float3 eye{cam_pos_[0], cam_pos_[1], cam_pos_[2]};
+    Float3 eye{static_cast<float>(cam_pos_[0]),
+               static_cast<float>(cam_pos_[1]),
+               static_cast<float>(cam_pos_[2])};
     Float3 dir = normalize(eye);
-    int cur_face = face_from_direction(dir);
+    int raw_face = face_from_direction(dir);
+    int cur_face = raw_face;
+    if (stream_face_ >= 0) {
+        Float3 cur_right, cur_up, cur_forward;
+        face_basis(stream_face_, cur_right, cur_up, cur_forward);
+        float cur_align = std::fabs(dot(dir, cur_forward));
+        if (raw_face != stream_face_) {
+            Float3 cand_right, cand_up, cand_forward;
+            face_basis(raw_face, cand_right, cand_up, cand_forward);
+            float cand_align = std::fabs(dot(dir, cand_forward));
+            if (cand_align < cur_align + face_switch_hysteresis_) {
+                cur_face = stream_face_;
+            }
+        }
+    }
     Float3 right, up, forward; face_basis(cur_face, right, up, forward);
     double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
     double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
@@ -1885,10 +1937,26 @@ void VulkanApp::update_streaming() {
     }
 
     // Build prune allow-list: keep current face ring with hysteresis in s/t and k; optionally keep previous face while timer active
+    if (!stream_face_ready_) {
+        std::lock_guard<std::mutex> lk(loader_mutex_);
+        if (!loader_busy_ && request_queue_.empty()) {
+            stream_face_ready_ = true;
+        }
+    }
+
     std::vector<AllowRegion> allows;
-    allows.push_back(AllowRegion{stream_face_, ring_center_i_, ring_center_j_, ring_center_k_, ring_radius_ + prune_margin_, k_down_ + k_prune_margin_, k_up_ + k_prune_margin_});
-    if (face_keep_timer_s_ > 0.0f && prev_face_ >= 0) {
-        allows.push_back(AllowRegion{prev_face_, prev_center_i_, prev_center_j_, prev_center_k_, ring_radius_ + prune_margin_, k_down_ + k_prune_margin_, k_up_ + k_prune_margin_});
+    int base_span = ring_radius_ + prune_margin_;
+    int base_k_down = k_down_ + k_prune_margin_;
+    int base_k_up = k_up_ + k_prune_margin_;
+    if (!stream_face_ready_) {
+        base_span += 1;
+        base_k_down += 1;
+        base_k_up += 1;
+    }
+    allows.push_back(AllowRegion{stream_face_, ring_center_i_, ring_center_j_, ring_center_k_, base_span, base_k_down, base_k_up});
+    bool keep_prev = (prev_face_ >= 0) && (face_keep_timer_s_ > 0.0f || !stream_face_ready_);
+    if (keep_prev) {
+        allows.push_back(AllowRegion{prev_face_, prev_center_i_, prev_center_j_, prev_center_k_, base_span, base_k_down, base_k_up});
     }
     prune_chunks_multi(allows);
 }

@@ -28,7 +28,8 @@ VkShaderModule load_shader_module(VkDevice device,
         }
         if (!ok) return VK_NULL_HANDLE;
     }
-    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    VkShaderModuleCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = buf.size();
     ci.pCode = reinterpret_cast<const uint32_t*>(buf.data());
     VkShaderModule mod = VK_NULL_HANDLE;
@@ -54,13 +55,18 @@ void create_buffer(VkPhysicalDevice phys,
                    VkMemoryPropertyFlags properties,
                    VkBuffer& outBuffer,
                    VkDeviceMemory& outMemory) {
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = size; bci.usage = usage; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = usage;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     vkCreateBuffer(device, &bci, nullptr, &outBuffer);
     VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device, outBuffer, &req);
     uint32_t mt = find_memory_type(phys, req.memoryTypeBits, properties);
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VkMemoryAllocateInfo mai{};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = mt;
     vkAllocateMemory(device, &mai, nullptr, &outMemory);
     vkBindBufferMemory(device, outBuffer, outMemory, 0);
 }
@@ -78,11 +84,15 @@ void upload_host_visible(VkDevice device,
 }
 
 VkCommandBuffer begin_one_time_commands(VkDevice device, VkCommandPool pool) {
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = pool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     vkAllocateCommandBuffers(device, &ai, &cmd);
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &bi);
     return cmd;
@@ -90,8 +100,10 @@ VkCommandBuffer begin_one_time_commands(VkDevice device, VkCommandPool pool) {
 
 void end_one_time_commands(VkDevice device, VkQueue queue, VkCommandPool pool, VkCommandBuffer cmd) {
     vkEndCommandBuffer(cmd);
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
     vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(queue);
     vkFreeCommandBuffers(device, pool, 1, &cmd);
