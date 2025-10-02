@@ -733,29 +733,48 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         last_draw_indices_ = 0;
 
         if (cull_enabled_) {
-            float fwd[3] = {forward.x, forward.y, forward.z};
-            float upv[3] = {up_vec.x, up_vec.y, up_vec.z};
-            float rightv[3] = {right_vec.x, right_vec.y, right_vec.z};
-            float rl = std::sqrt(rightv[0]*rightv[0] + rightv[1]*rightv[1] + rightv[2]*rightv[2]);
-            if (rl > 0) { rightv[0] /= rl; rightv[1] /= rl; rightv[2] /= rl; }
-            // FOVs
-            float fovy = 60.0f * 0.01745329252f;
-            float tan_y = std::tan(fovy * 0.5f);
+            const float deg_to_rad = 0.01745329252f;
+            Float3 fwd_n = wf::normalize(forward);
+            Float3 up_n = wf::normalize(up_vec);
+            Float3 right_n = wf::normalize(right_vec);
+
+            float tan_y = std::tan(0.5f * fov_deg_ * deg_to_rad);
             float tan_x = tan_y * aspect;
+
+            Float3 plane_right = Float3{fwd_n.x * tan_x - right_n.x,
+                                        fwd_n.y * tan_x - right_n.y,
+                                        fwd_n.z * tan_x - right_n.z};
+            Float3 plane_left  = Float3{fwd_n.x * tan_x + right_n.x,
+                                        fwd_n.y * tan_x + right_n.y,
+                                        fwd_n.z * tan_x + right_n.z};
+            Float3 plane_top   = Float3{fwd_n.x * tan_y - up_n.x,
+                                        fwd_n.y * tan_y - up_n.y,
+                                        fwd_n.z * tan_y - up_n.z};
+            Float3 plane_bottom= Float3{fwd_n.x * tan_y + up_n.x,
+                                        fwd_n.y * tan_y + up_n.y,
+                                        fwd_n.z * tan_y + up_n.z};
+
+            float plane_side_norm = wf::length(plane_right);
+            float plane_vert_norm = wf::length(plane_top);
 
             for (const auto& rc : render_chunks_) {
                 float dx = rc.center[0] - eye.x;
                 float dy = rc.center[1] - eye.y;
                 float dz = rc.center[2] - eye.z;
-                float dist_f = dx*fwd[0] + dy*fwd[1] + dz*fwd[2];
-                float dist_r = dx*rightv[0] + dy*rightv[1] + dz*rightv[2];
-                float dist_u = dx*upv[0] + dy*upv[1] + dz*upv[2];
+                Float3 delta{dx, dy, dz};
+                float dist_f = dx*fwd_n.x + dy*fwd_n.y + dz*fwd_n.z;
                 // near/far
                 if (dist_f + rc.radius < near_m_) continue;
                 if (dist_f - rc.radius > far_m_) continue;
-                // side planes
-                if (std::fabs(dist_r) > dist_f * tan_x + rc.radius) continue;
-                if (std::fabs(dist_u) > dist_f * tan_y + rc.radius) continue;
+
+                float dist_right = delta.x * plane_right.x + delta.y * plane_right.y + delta.z * plane_right.z;
+                if (dist_right < -rc.radius * plane_side_norm) continue;
+                float dist_left = delta.x * plane_left.x + delta.y * plane_left.y + delta.z * plane_left.z;
+                if (dist_left < -rc.radius * plane_side_norm) continue;
+                float dist_top = delta.x * plane_top.x + delta.y * plane_top.y + delta.z * plane_top.z;
+                if (dist_top < -rc.radius * plane_vert_norm) continue;
+                float dist_bottom = delta.x * plane_bottom.x + delta.y * plane_bottom.y + delta.z * plane_bottom.z;
+                if (dist_bottom < -rc.radius * plane_vert_norm) continue;
                 ChunkDrawItem item{};
                 item.vbuf = rc.vbuf; item.ibuf = rc.ibuf; item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
