@@ -654,25 +654,33 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         } else {
             Float3 updir = wf::normalize(eye);
             Float3 view_dir{cp * cyaw, sp, cp * syaw};
-            float dot_vu = view_dir.x * updir.x + view_dir.y * updir.y + view_dir.z * updir.z;
-            Float3 tangent_forward = Float3{view_dir.x - updir.x * dot_vu,
-                                            view_dir.y - updir.y * dot_vu,
-                                            view_dir.z - updir.z * dot_vu};
-            if (wf::length(tangent_forward) < 1e-5f) {
-                tangent_forward = Float3{updir.y, -updir.x, 0.0f};
-                if (wf::length(tangent_forward) < 1e-5f) tangent_forward = Float3{1.0f, 0.0f, 0.0f};
+            auto cross3 = [](const Float3& a, const Float3& b) {
+                return Float3{
+                    a.y * b.z - a.z * b.y,
+                    a.z * b.x - a.x * b.z,
+                    a.x * b.y - a.y * b.x
+                };
+            };
+            auto dot3 = [](const Float3& a, const Float3& b) {
+                return a.x * b.x + a.y * b.y + a.z * b.z;
+            };
+            Float3 forward_dir = wf::normalize(view_dir);
+            Float3 right_candidate = cross3(updir, forward_dir);
+            if (wf::length(right_candidate) < 1e-5f) {
+                Float3 fallback = std::fabs(updir.y) < 0.9f ? Float3{0.0f, 1.0f, 0.0f} : Float3{1.0f, 0.0f, 0.0f};
+                right_candidate = cross3(fallback, updir);
+                if (wf::length(right_candidate) < 1e-5f) {
+                    fallback = Float3{0.0f, 0.0f, 1.0f};
+                    right_candidate = cross3(fallback, updir);
+                }
             }
-            forward = wf::normalize(tangent_forward);
-            right_vec = wf::normalize(Float3{
-                forward.y * updir.z - forward.z * updir.y,
-                forward.z * updir.x - forward.x * updir.z,
-                forward.x * updir.y - forward.y * updir.x
-            });
-            up_vec = wf::normalize(Float3{
-                right_vec.y * forward.z - right_vec.z * forward.y,
-                right_vec.z * forward.x - right_vec.x * forward.z,
-                right_vec.x * forward.y - right_vec.y * forward.x
-            });
+            right_vec = wf::normalize(right_candidate);
+            up_vec = wf::normalize(cross3(forward_dir, right_vec));
+            if (dot3(up_vec, updir) < 0.0f) {
+                right_vec = Float3{-right_vec.x, -right_vec.y, -right_vec.z};
+                up_vec = Float3{-up_vec.x, -up_vec.y, -up_vec.z};
+            }
+            forward = forward_dir;
             wf::Vec3 eye_v{eye.x, eye.y, eye.z};
             wf::Vec3 center{eye_v.x + forward.x, eye_v.y + forward.y, eye_v.z + forward.z};
             wf::Vec3 up_v{up_vec.x, up_vec.y, up_vec.z};
@@ -805,12 +813,77 @@ void VulkanApp::update_input(float dt) {
         last_cursor_x_ = cx; last_cursor_y_ = cy;
         float sx = invert_mouse_x_ ? -1.0f : 1.0f;
         float sy = invert_mouse_y_ ?  1.0f : -1.0f;
-        cam_yaw_ += sx * (float)(dx * cam_sensitivity_);
-        if (cam_yaw_ > 3.14159265f) cam_yaw_ -= 6.28318531f;
-        if (cam_yaw_ < -3.14159265f) cam_yaw_ += 6.28318531f;
-        cam_pitch_ += sy * (float)(dy * cam_sensitivity_);
-        float maxp = walk_mode_ ? (walk_pitch_max_deg_ * 0.01745329252f) : 1.55334306f;
-        cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
+        float yaw_delta = sx * (float)(dx * cam_sensitivity_);
+        float pitch_delta = sy * (float)(dy * cam_sensitivity_);
+        if (!walk_mode_) {
+            cam_yaw_ += yaw_delta;
+            if (cam_yaw_ > 3.14159265f) cam_yaw_ -= 6.28318531f;
+            if (cam_yaw_ < -3.14159265f) cam_yaw_ += 6.28318531f;
+            cam_pitch_ += pitch_delta;
+            float maxp = 1.55334306f; // ~89 deg
+            cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
+        } else {
+            Float3 pos{static_cast<float>(cam_pos_[0]),
+                       static_cast<float>(cam_pos_[1]),
+                       static_cast<float>(cam_pos_[2])};
+            Float3 updir = wf::normalize(pos);
+            auto normalize_or = [](Float3 v, Float3 fallback) {
+                float len = wf::length(v);
+                return (len > 1e-5f) ? (v / len) : fallback;
+            };
+            auto cross3 = [](const Float3& a, const Float3& b) {
+                return Float3{
+                    a.y * b.z - a.z * b.y,
+                    a.z * b.x - a.x * b.z,
+                    a.x * b.y - a.y * b.x
+                };
+            };
+            auto dot3 = [](const Float3& a, const Float3& b) {
+                return a.x * b.x + a.y * b.y + a.z * b.z;
+            };
+            auto rotate_axis = [&](const Float3& v, const Float3& axis, float angle) {
+                Float3 n = normalize_or(axis, Float3{0.0f, 1.0f, 0.0f});
+                float c = std::cos(angle);
+                float s = std::sin(angle);
+                float dot = dot3(n, v);
+                Float3 cross_nv = cross3(n, v);
+                return Float3{
+                    v.x * c + cross_nv.x * s + n.x * dot * (1.0f - c),
+                    v.y * c + cross_nv.y * s + n.y * dot * (1.0f - c),
+                    v.z * c + cross_nv.z * s + n.z * dot * (1.0f - c)
+                };
+            };
+
+            Float3 forward = normalize_or(Float3{
+                std::cos(cam_pitch_) * std::cos(cam_yaw_),
+                std::sin(cam_pitch_),
+                std::cos(cam_pitch_) * std::sin(cam_yaw_)
+            }, Float3{1.0f, 0.0f, 0.0f});
+
+            if (yaw_delta != 0.0f) {
+                forward = rotate_axis(forward, updir, yaw_delta);
+                forward = wf::normalize(forward);
+            }
+
+            if (pitch_delta != 0.0f) {
+                Float3 right_axis = normalize_or(cross3(updir, forward), Float3{0.0f, 1.0f, 0.0f});
+                Float3 candidate = rotate_axis(forward, right_axis, pitch_delta);
+                candidate = wf::normalize(candidate);
+                float sin_pitch = std::clamp(dot3(candidate, updir), -1.0f, 1.0f);
+                float max_pitch = walk_pitch_max_deg_ * 0.01745329252f;
+                float max_s = std::sin(max_pitch);
+                if (sin_pitch > max_s || sin_pitch < -max_s) {
+                    float clamped = std::clamp(sin_pitch, -max_s, max_s);
+                    Float3 tangent = normalize_or(candidate - updir * sin_pitch, forward);
+                    float tangent_scale = std::sqrt(std::max(0.0f, 1.0f - clamped * clamped));
+                    candidate = wf::normalize(tangent * tangent_scale + updir * clamped);
+                }
+                forward = candidate;
+            }
+
+            cam_yaw_ = std::atan2(forward.z, forward.x);
+            cam_pitch_ = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
+        }
     } else {
         if (rmb_down_) {
             rmb_down_ = false;
@@ -908,14 +981,6 @@ void VulkanApp::update_input(float dt) {
                                          updir.z * c + tdir.z * s });
             updir = ndir;
         }
-
-        Float3 forward_projected = view_dir - updir * dot3(view_dir, updir);
-        forward_projected = normalize_or(forward_projected, fwd_t);
-        Float3 view_dir_adjusted = wf::normalize(Float3{ forward_projected.x * std::cos(cam_pitch_) + updir.x * std::sin(cam_pitch_),
-                                                         forward_projected.y * std::cos(cam_pitch_) + updir.y * std::sin(cam_pitch_),
-                                                         forward_projected.z * std::cos(cam_pitch_) + updir.z * std::sin(cam_pitch_) });
-        cam_yaw_ = std::atan2(view_dir_adjusted.z, view_dir_adjusted.x);
-        cam_pitch_ = std::asin(std::clamp(view_dir_adjusted.y, -1.0f, 1.0f));
 
         double h = terrain_height_m(cfg, ndir);
         double surface_r = cfg.radius_m + h;
