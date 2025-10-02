@@ -25,6 +25,8 @@
 #include "camera.h"
 #include "planet.h"
 #include "ui/ui_text.h"
+#include "ui/ui_primitives.h"
+#include "ui/ui_id.h"
 
 namespace wf {
 
@@ -237,7 +239,6 @@ void VulkanApp::init_vulkan() {
     chunk_renderer_.set_logging(log_pool_);
     std::cout << "ChunkRenderer ready: " << (chunk_renderer_.is_ready() ? "yes" : "no")
               << ", use_chunk_renderer=" << (use_chunk_renderer_ ? 1 : 0) << "\n";
-    overlay_text_valid_.fill(false);
     hud_force_refresh_ = true;
     create_framebuffers();
     create_command_pool_and_buffers();
@@ -817,20 +818,23 @@ void VulkanApp::update_input(float dt) {
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
     }
 
+    double cursor_x = 0.0;
+    double cursor_y = 0.0;
+    glfwGetCursorPos(window_, &cursor_x, &cursor_y);
+
     // Mouse look when RMB is held
     int rmb = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT);
-    double cx, cy; glfwGetCursorPos(window_, &cx, &cy);
     if (rmb == GLFW_PRESS) {
         if (!rmb_down_) {
             rmb_down_ = true;
             // Enable cursor-disabled/raw mode for consistent relative deltas
             set_mouse_capture(true);
             // Reset deltas to avoid an initial jump
-            last_cursor_x_ = cx; last_cursor_y_ = cy;
+            last_cursor_x_ = cursor_x; last_cursor_y_ = cursor_y;
         }
-        double dx = cx - last_cursor_x_;
-        double dy = cy - last_cursor_y_;
-        last_cursor_x_ = cx; last_cursor_y_ = cy;
+        double dx = cursor_x - last_cursor_x_;
+        double dy = cursor_y - last_cursor_y_;
+        last_cursor_x_ = cursor_x; last_cursor_y_ = cursor_y;
         float sx = invert_mouse_x_ ? -1.0f : 1.0f;
         float sy = invert_mouse_y_ ?  1.0f : -1.0f;
         float yaw_delta = sx * (float)(dx * cam_sensitivity_);
@@ -1020,6 +1024,17 @@ void VulkanApp::update_input(float dt) {
     int ky = glfwGetKey(window_, GLFW_KEY_Y);
     if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; }
     key_prev_toggle_y_ = (ky == GLFW_PRESS);
+
+    // Feed UI backend
+    ui::UIBackend::InputState ui_input{};
+    glfwGetCursorPos(window_, &cursor_x, &cursor_y);
+    ui_input.mouse_x = cursor_x;
+    ui_input.mouse_y = cursor_y;
+    ui_input.mouse_down[0] = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    ui_input.mouse_down[1] = (rmb == GLFW_PRESS);
+    ui_input.mouse_down[2] = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+    ui_input.has_mouse = (glfwGetWindowAttrib(window_, GLFW_FOCUSED) == GLFW_TRUE) && !mouse_captured_;
+    hud_ui_backend_.begin_frame(ui_input, hud_ui_frame_index_++);
 }
 
 void VulkanApp::update_hud(float dt) {
@@ -1096,8 +1111,6 @@ void VulkanApp::update_hud(float dt) {
     // Only update overlay text if it actually changed
     if (hud_text_ != hud) {
         hud_text_.assign(hud);
-        // Mark all per-frame overlays as needing rebuild
-        overlay_text_valid_.fill(false);
     }
 }
 
@@ -1213,7 +1226,6 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 
     hud_force_refresh_ = true;
-    overlay_text_valid_.fill(false);
 }
 
 void VulkanApp::draw_frame() {
@@ -1238,32 +1250,39 @@ void VulkanApp::draw_frame() {
 
     uint32_t imageIndex = 0;
     VkResult acq = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, sem_image_available_[current_frame_], VK_NULL_HANDLE, &imageIndex);
-    if (acq == VK_ERROR_OUT_OF_DATE_KHR) { recreate_swapchain(); return; }
+    if (acq == VK_ERROR_OUT_OF_DATE_KHR) { hud_ui_backend_.end_frame(); recreate_swapchain(); return; }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) throw_if_failed(acq, "vkAcquireNextImageKHR failed");
 
-    // Prepare overlay text only if needed for this frame slot (content changed or slot invalid)
     overlay_draw_slot_ = current_frame_;
-    if (!hud_text_.empty() && (!overlay_text_valid_[overlay_draw_slot_] || overlay_last_text_ != hud_text_)) {
-        ui::ContextParams ui_params;
-        ui_params.screen_width = static_cast<int>(swapchain_extent_.width);
-        ui_params.screen_height = static_cast<int>(swapchain_extent_.height);
-        ui_params.style.enable_shadow = hud_shadow_enabled_;
-        ui_params.style.shadow_offset_px = hud_shadow_offset_px_;
-        ui_params.style.shadow_color = ui::Color{0.0f, 0.0f, 0.0f, 0.6f};
-        hud_ui_context_.begin(ui_params);
+    ui::ContextParams ui_params;
+    ui_params.screen_width = static_cast<int>(swapchain_extent_.width);
+    ui_params.screen_height = static_cast<int>(swapchain_extent_.height);
+    ui_params.style.scale = hud_scale_;
+    ui_params.style.enable_shadow = hud_shadow_enabled_;
+    ui_params.style.shadow_offset_px = hud_shadow_offset_px_;
+    ui_params.style.shadow_color = ui::Color{0.0f, 0.0f, 0.0f, 0.6f};
+    hud_ui_context_.begin(ui_params);
 
-        ui::TextDrawParams text_params;
-        text_params.scale = hud_scale_;
-        text_params.color = ui::Color{1.0f, 1.0f, 1.0f, 1.0f};
-        ui::add_text_block(hud_ui_context_, hud_text_.c_str(), ui_params.screen_width, text_params);
-
-        ui::UIDrawData draw_data = hud_ui_context_.end();
-        overlay_.upload_draw_data(overlay_draw_slot_, draw_data);
-        overlay_text_valid_[overlay_draw_slot_] = true;
-        overlay_last_text_ = hud_text_;
+    ui::TextDrawParams text_params;
+    text_params.scale = 1.0f;
+    text_params.color = ui::Color{1.0f, 1.0f, 1.0f, 1.0f};
+    text_params.line_spacing_px = 4.0f;
+    float text_height = 0.0f;
+    if (!hud_text_.empty()) {
+        text_height = ui::add_text_block(hud_ui_context_, hud_text_.c_str(), ui_params.screen_width, text_params);
     }
 
-    // Overlay text is prepared once per frame above
+    ui::ButtonStyle button_style;
+    button_style.text_scale = 1.0f;
+    ui::Rect button_rect{6.0f, text_params.origin_px.y + text_height + 8.0f, 136.0f, 18.0f};
+    std::string button_label = std::string("Cull: ") + (cull_enabled_ ? "ON" : "OFF");
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.cull"), button_rect, button_label, button_style)) {
+        cull_enabled_ = !cull_enabled_;
+        hud_force_refresh_ = true;
+    }
+
+    ui::UIDrawData draw_data = hud_ui_context_.end();
+    overlay_.upload_draw_data(overlay_draw_slot_, draw_data);
 
     vkResetCommandBuffer(command_buffers_[imageIndex], 0);
     record_command_buffer(command_buffers_[imageIndex], imageIndex);
@@ -1290,6 +1309,8 @@ void VulkanApp::draw_frame() {
     VkResult pres = vkQueuePresentKHR(queue_present_, &pi);
     if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) { recreate_swapchain(); }
     else if (pres != VK_SUCCESS) throw_if_failed(pres, "vkQueuePresentKHR failed");
+
+    hud_ui_backend_.end_frame();
 
     current_frame_ = (current_frame_ + 1) % kFramesInFlight;
 }
@@ -1320,7 +1341,6 @@ void VulkanApp::recreate_swapchain() {
 #include "wf_config.h"
     overlay_.recreate_swapchain(render_pass_, swapchain_extent_, WF_SHADER_DIR);
     chunk_renderer_.recreate(render_pass_, swapchain_extent_, WF_SHADER_DIR);
-    overlay_text_valid_.fill(false);
     hud_force_refresh_ = true;
     create_framebuffers();
 }

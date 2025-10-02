@@ -60,6 +60,7 @@ add_executable(wanderforge
   src/vk_utils.cpp
   src/ui/ui_context.cpp
   src/ui/ui_backend.cpp
+  src/ui/ui_primitives.cpp
   src/ui/ui_text.cpp
 )
 

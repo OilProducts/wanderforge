@@ -4,12 +4,14 @@
 #include <vector>
 #include <string>
 #include <array>
+#include <cstdint>
 #include "overlay.h"
 #include "chunk_renderer.h"
 #include "mesh.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
+#include "ui/ui_backend.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -186,6 +188,8 @@ private:
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
     ui::UIContext hud_ui_context_;
+    ui::UIBackend hud_ui_backend_;
+    std::uint64_t hud_ui_frame_index_ = 0;
     ChunkRenderer chunk_renderer_;
     // Reused per-frame container to avoid allocations when building draw items
     std::vector<ChunkDrawItem> chunk_items_tmp_;
@@ -195,9 +199,7 @@ private:
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
     std::string hud_text_;
-    std::string overlay_last_text_;
     bool hud_force_refresh_ = true;
-    std::array<bool, kFramesInFlight> overlay_text_valid_{{false, false}};
 
     // Rendering controls
     int ring_radius_ = 14;        // loads (2*ring_radius_+1)^2 chunks

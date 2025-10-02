@@ -15,7 +15,9 @@ struct TextDrawParams {
     bool ellipsis = true;
 };
 
-void add_text_block(UIContext& ctx, const char* text, int screen_width, const TextDrawParams& params);
+float add_text_block(UIContext& ctx, const char* text, int screen_width, const TextDrawParams& params);
+
+inline constexpr int kFont6x8Width = 6;
+inline constexpr int kFont6x8Height = 8;
 
 } // namespace wf::ui
-

@@ -7,8 +7,6 @@
 
 namespace wf::ui {
 namespace {
-static constexpr int kGlyphWidth = 6;
-static constexpr int kGlyphHeight = 8;
 
 static const unsigned char kFont6x8[96][8] = {
     {0,0,0,0,0,0,0,0}, {0x04,0x04,0x04,0x04,0x04,0x00,0x04,0x00}, {0x0a,0x0a,0x0a,0x00,0x00,0x00,0x00,0x00},
@@ -67,8 +65,8 @@ static std::vector<std::string> split_lines(const char* text) {
 
 } // namespace
 
-void add_text_block(UIContext& ctx, const char* text, int screen_width, const TextDrawParams& params) {
-    if (!text) return;
+float add_text_block(UIContext& ctx, const char* text, int screen_width, const TextDrawParams& params) {
+    if (!text) return 0.0f;
     std::vector<std::string> lines = split_lines(text);
     const float scale = params.scale;
     const float origin_x = params.origin_px.x;
@@ -76,7 +74,7 @@ void add_text_block(UIContext& ctx, const char* text, int screen_width, const Te
     const float margin_right = params.margin_right_px;
     const float line_spacing = params.line_spacing_px;
 
-    int char_px = static_cast<int>(std::ceil(kGlyphWidth * scale));
+    int char_px = static_cast<int>(std::ceil(kFont6x8Width * scale));
     int max_fit = 0;
     if (char_px > 0) {
         float available = static_cast<float>(screen_width) - (origin_x + margin_right);
@@ -86,7 +84,7 @@ void add_text_block(UIContext& ctx, const char* text, int screen_width, const Te
         }
     }
 
-    const float line_height = kGlyphHeight * scale + line_spacing;
+    const float line_height = kFont6x8Height * scale + line_spacing;
     Color color = params.color;
 
     for (std::size_t li = 0; li < lines.size(); ++li) {
@@ -109,11 +107,11 @@ void add_text_block(UIContext& ctx, const char* text, int screen_width, const Te
             unsigned char ch = static_cast<unsigned char>(line[ci]);
             if (ch < 32 || ch > 127) ch = 32;
             const unsigned char* rows = kFont6x8[ch - 32];
-            for (int ry = 0; ry < kGlyphHeight; ++ry) {
+            for (int ry = 0; ry < kFont6x8Height; ++ry) {
                 unsigned char bits = rows[ry];
-                for (int rx = 0; rx < kGlyphWidth; ++rx) {
+                for (int rx = 0; rx < kFont6x8Width; ++rx) {
                     if (bits & (1u << rx)) {
-                        float px = origin_x + (static_cast<float>(ci * kGlyphWidth + rx) * scale);
+                        float px = origin_x + (static_cast<float>(ci * kFont6x8Width + rx) * scale);
                         float py = origin_y + static_cast<float>(li) * line_height + static_cast<float>(ry) * scale;
                         Rect rect{px, py, scale, scale};
                         ctx.add_shadowed_quad_pixels(rect, color);
@@ -122,6 +120,17 @@ void add_text_block(UIContext& ctx, const char* text, int screen_width, const Te
             }
         }
     }
+
+    float total_height = 0.0f;
+    if (!lines.empty()) {
+        total_height = kFont6x8Height * scale * static_cast<float>(lines.size());
+        if (lines.size() > 1) {
+            total_height += line_spacing * static_cast<float>(lines.size() - 1);
+        }
+    }
+
+    total_height *= ctx.params().style.scale;
+    return total_height;
 }
 
 } // namespace wf::ui

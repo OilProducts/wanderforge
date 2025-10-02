@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <unordered_map>
 
-namespace wf::ui {
+#include "ui/ui_types.h"
 
-using UIID = std::uint64_t;
+namespace wf::ui {
 
 struct WidgetState {
     bool hovered = false;

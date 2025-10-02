@@ -82,7 +82,8 @@ Controls (chunk view):
 - Right mouse drag: look around (yaw/pitch)
 - Shift: hold to move faster
  - Default: horizontal mouse is inverted (A.K.A. swap left/right). Press `X` to toggle.
- - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in‑window overlay mirrors the same info.
+ - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in-window overlay mirrors the same info.
+  - When the mouse cursor is free (no RMB look), click the `Cull` HUD toggle to enable/disable CPU frustum culling.
 
 Config options:
 - File `wanderforge.cfg` (same directory) or env vars:
