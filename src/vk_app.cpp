@@ -1891,6 +1891,14 @@ void VulkanApp::draw_frame() {
         hud_force_refresh_ = true;
     }
 
+    ui::Vec2 crosshair_center{ui_params.screen_width * 0.5f, ui_params.screen_height * 0.5f};
+    ui::CrosshairStyle crosshair_style;
+    crosshair_style.color = ui::Color{1.0f, 1.0f, 1.0f, 0.9f};
+    crosshair_style.arm_length_px = 9.0f;
+    crosshair_style.center_gap_px = 6.0f;
+    crosshair_style.arm_thickness_px = 2.0f;
+    ui::crosshair(hud_ui_context_, crosshair_center, crosshair_style);
+
     ui::UIDrawData draw_data = hud_ui_context_.end();
     overlay_.upload_draw_data(overlay_draw_slot_, draw_data);
 

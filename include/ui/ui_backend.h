@@ -12,6 +12,7 @@ struct WidgetState {
     bool active = false;
     bool pressed = false;
     float value = 0.0f;
+    int hot_index = -1;
 };
 
 class UIBackend {
