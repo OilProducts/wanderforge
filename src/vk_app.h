@@ -301,6 +301,12 @@ private:
         FaceChunkKey key{0,0,0,0};
         uint64_t job_gen = 0;
     };
+    bool build_chunk_mesh_result(const FaceChunkKey& key,
+                                         const Chunk64& chunk,
+                                         const Chunk64* nx, const Chunk64* px,
+                                         const Chunk64* ny, const Chunk64* py,
+                                         const Chunk64* nz, const Chunk64* pz,
+                                         MeshResult& out) const;
     std::thread loader_thread_;
     std::mutex loader_mutex_;
     std::condition_variable loader_cv_;

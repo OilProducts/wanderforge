@@ -1392,6 +1392,111 @@ void VulkanApp::generate_base_chunk(const FaceChunkKey& key,
     }
 }
 
+bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
+                                        const Chunk64& chunk,
+                                        const Chunk64* nx, const Chunk64* px,
+                                        const Chunk64* ny, const Chunk64* py,
+                                        const Chunk64* nz, const Chunk64* pz,
+                                        MeshResult& out) const {
+    const PlanetConfig& cfg = planet_cfg_;
+    const int N = Chunk64::N;
+    const float voxel_m = static_cast<float>(cfg.voxel_size_m);
+    const float chunk_m = voxel_m * static_cast<float>(N);
+    const float halfm = chunk_m * 0.5f;
+
+    Float3 right, up, forward;
+    face_basis(key.face, right, up, forward);
+
+    float S0 = static_cast<float>(key.i * chunk_m);
+    float T0 = static_cast<float>(key.j * chunk_m);
+    float R0 = static_cast<float>(key.k * chunk_m);
+    float Sc = S0 + halfm;
+    float Tc = T0 + halfm;
+    float Rc = R0 + halfm;
+    if (Rc <= 0.0f) Rc = halfm; // avoid divide-by-zero; degenerate only at origin
+
+    float cr = Sc / Rc;
+    float cu = Tc / Rc;
+    float cf = std::sqrt(std::max(0.0f, 1.0f - (cr*cr + cu*cu)));
+    Float3 dirc = wf::normalize(Float3{ right.x*cr + up.x*cu + forward.x*cf,
+                                        right.y*cr + up.y*cu + forward.y*cf,
+                                        right.z*cr + up.z*cu + forward.z*cf });
+
+    Mesh mesh;
+    mesh_chunk_greedy_neighbors(chunk, nx, px, ny, py, nz, pz, mesh, voxel_m);
+    if (mesh.indices.empty()) return false;
+
+    for (auto& vert : mesh.vertices) {
+        Float3 lp{vert.x, vert.y, vert.z};
+        float S = S0 + lp.x;
+        float T = T0 + lp.y;
+        float R = R0 + lp.z;
+        float uc = (R != 0.0f) ? (S / R) : 0.0f;
+        float vc = (R != 0.0f) ? (T / R) : 0.0f;
+        float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
+        float wc = std::sqrt(w2);
+        Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
+                                               right.y*uc + up.y*vc + forward.y*wc,
+                                               right.z*uc + up.z*vc + forward.z*wc });
+        Float3 wp = dir_sph * R;
+        vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
+    }
+
+    auto cross = [](Float3 a, Float3 b) -> Float3 {
+        return Float3{ a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+    };
+    auto sub = [](Float3 a, Float3 b) -> Float3 { return Float3{a.x-b.x, a.y-b.y, a.z-b.z}; };
+
+    if (surface_push_m_ > 0.0f) {
+        const float push = surface_push_m_;
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            uint32_t i0 = mesh.indices[i];
+            uint32_t i1 = mesh.indices[i + 1];
+            uint32_t i2 = mesh.indices[i + 2];
+            Float3 p0{mesh.vertices[i0].x, mesh.vertices[i0].y, mesh.vertices[i0].z};
+            Float3 p1{mesh.vertices[i1].x, mesh.vertices[i1].y, mesh.vertices[i1].z};
+            Float3 p2{mesh.vertices[i2].x, mesh.vertices[i2].y, mesh.vertices[i2].z};
+            Float3 e1 = sub(p1, p0);
+            Float3 e2 = sub(p2, p0);
+            Float3 n = wf::normalize(cross(e1, e2));
+            Float3 r0 = wf::normalize(p0);
+            float radial = std::fabs(n.x*r0.x + n.y*r0.y + n.z*r0.z);
+            if (radial > 0.8f) {
+                Float3 push_vec{ r0.x * push, r0.y * push, r0.z * push };
+                mesh.vertices[i0].x = p0.x + push_vec.x; mesh.vertices[i0].y = p0.y + push_vec.y; mesh.vertices[i0].z = p0.z + push_vec.z;
+                mesh.vertices[i1].x = p1.x + push_vec.x; mesh.vertices[i1].y = p1.y + push_vec.y; mesh.vertices[i1].z = p1.z + push_vec.z;
+                mesh.vertices[i2].x = p2.x + push_vec.x; mesh.vertices[i2].y = p2.y + push_vec.y; mesh.vertices[i2].z = p2.z + push_vec.z;
+            }
+        }
+    }
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        uint32_t i0 = mesh.indices[i];
+        uint32_t i1 = mesh.indices[i + 1];
+        uint32_t i2 = mesh.indices[i + 2];
+        const Vertex& v0 = mesh.vertices[i0];
+        const Vertex& v1 = mesh.vertices[i1];
+        const Vertex& v2 = mesh.vertices[i2];
+        Float3 p0{v0.x, v0.y, v0.z};
+        Float3 p1{v1.x, v1.y, v1.z};
+        Float3 p2{v2.x, v2.y, v2.z};
+        Float3 e1 = sub(p1, p0);
+        Float3 e2 = sub(p2, p0);
+        Float3 n = wf::normalize(cross(e1, e2));
+        mesh.vertices[i0].nx = n.x; mesh.vertices[i0].ny = n.y; mesh.vertices[i0].nz = n.z;
+        mesh.vertices[i1].nx = n.x; mesh.vertices[i1].ny = n.y; mesh.vertices[i1].nz = n.z;
+        mesh.vertices[i2].nx = n.x; mesh.vertices[i2].ny = n.y; mesh.vertices[i2].nz = n.z;
+    }
+
+    out.key = key;
+    out.vertices = std::move(mesh.vertices);
+    out.indices = std::move(mesh.indices);
+    out.center[0] = dirc.x * Rc;
+    out.center[1] = dirc.y * Rc;
+    out.center[2] = dirc.z * Rc;
+    out.radius = halfm * 1.73205080757f; // sqrt(3)
+    return true;
+}
+
 void VulkanApp::normalize_chunk_delta_representation(ChunkDelta& delta) {
     if (delta.empty()) {
         if (delta.mode != ChunkDelta::Mode::kSparse) delta.clear(ChunkDelta::Mode::kSparse);
@@ -2289,78 +2394,21 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1, dk)] : nullptr;
             const Chunk64* nz = (dk > -k_down)    ? &chunks[idx_of(di, dj, dk - 1)] : nullptr;
             const Chunk64* pz = (dk <  k_up)      ? &chunks[idx_of(di, dj, dk + 1)] : nullptr;
-            Mesh m;
-            mesh_chunk_greedy_neighbors(c, nx, px, ny, py, nz, pz, m, s);
-            if (m.indices.empty()) continue;
-            local_meshed++;
-            // S0/T0/R0 already computed above
-            for (auto& vert : m.vertices) {
-                Float3 lp{vert.x, vert.y, vert.z};
-                float S = S0 + lp.x;
-                float T = T0 + lp.y;
-                float R = R0 + lp.z;
-                float uc = (R != 0.0f) ? (S / R) : 0.0f;
-                float vc = (R != 0.0f) ? (T / R) : 0.0f;
-                float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
-                float wc = std::sqrt(w2);
-                Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
-                                                       right.y*uc + up.y*vc + forward.y*wc,
-                                                       right.z*uc + up.z*vc + forward.z*wc });
-                Float3 wp = dir_sph * R;
-                vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
-                // Temporarily keep existing normal; we will recompute face normals below
-            }
-            // Recompute flat face normals from world-space triangle geometry for clearer shading
-            auto cross = [](Float3 a, Float3 b) -> Float3 {
-                return Float3{ a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
-            };
-            auto sub = [](Float3 a, Float3 b) -> Float3 { return Float3{a.x-b.x, a.y-b.y, a.z-b.z}; };
-            for (size_t ii = 0; ii + 2 < m.indices.size(); ii += 3) {
-                uint32_t i0 = m.indices[ii+0];
-                uint32_t i1 = m.indices[ii+1];
-                uint32_t i2 = m.indices[ii+2];
-                const Vertex &v0 = m.vertices[i0];
-                const Vertex &v1 = m.vertices[i1];
-                const Vertex &v2 = m.vertices[i2];
-                Float3 p0{v0.x, v0.y, v0.z};
-                Float3 p1{v1.x, v1.y, v1.z};
-                Float3 p2{v2.x, v2.y, v2.z};
-                Float3 e1 = sub(p1, p0);
-                Float3 e2 = sub(p2, p0);
-                Float3 n = wf::normalize(cross(e1, e2));
-                // Optional outward push for near-horizontal (radial) faces to better align with continuous surface
-                if (surface_push_m_ > 0.0f) {
-                    Float3 r0 = wf::normalize(p0);
-                    float radial = std::fabs(n.x*r0.x + n.y*r0.y + n.z*r0.z);
-                    if (radial > 0.8f) {
-                        Float3 push = Float3{ r0.x * surface_push_m_, r0.y * surface_push_m_, r0.z * surface_push_m_ };
-                        m.vertices[i0].x = p0.x + push.x; m.vertices[i0].y = p0.y + push.y; m.vertices[i0].z = p0.z + push.z;
-                        m.vertices[i1].x = p1.x + push.x; m.vertices[i1].y = p1.y + push.y; m.vertices[i1].z = p1.z + push.z;
-                        m.vertices[i2].x = p2.x + push.x; m.vertices[i2].y = p2.y + push.y; m.vertices[i2].z = p2.z + push.z;
-                        p0 = Float3{m.vertices[i0].x, m.vertices[i0].y, m.vertices[i0].z};
-                        p1 = Float3{m.vertices[i1].x, m.vertices[i1].y, m.vertices[i1].z};
-                        p2 = Float3{m.vertices[i2].x, m.vertices[i2].y, m.vertices[i2].z};
-                        e1 = sub(p1, p0); e2 = sub(p2, p0);
-                        n = wf::normalize(cross(e1, e2));
-                    }
-                }
-                m.vertices[i0].nx = n.x; m.vertices[i0].ny = n.y; m.vertices[i0].nz = n.z;
-                m.vertices[i1].nx = n.x; m.vertices[i1].ny = n.y; m.vertices[i1].nz = n.z;
-                m.vertices[i2].nx = n.x; m.vertices[i2].ny = n.y; m.vertices[i2].nz = n.z;
-            }
             MeshResult res;
-            res.vertices = std::move(m.vertices);
-            res.indices = std::move(m.indices);
+            if (!build_chunk_mesh_result(FaceChunkKey{face, center_i + di, center_j + dj, kk},
+                                         c, nx, px, ny, py, nz, pz, res)) {
+                continue;
+            }
             const float diag_half = halfm * 1.73205080757f; // sqrt(3)
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
-            res.key = FaceChunkKey{face, center_i + di, center_j + dj, kk};
             res.job_gen = job_gen;
             {
                 std::lock_guard<std::mutex> lk(loader_mutex_);
                 results_queue_.push_back(std::move(res));
             }
             loader_cv_.notify_one();
+            local_meshed++;
         }
         if (local_meshed) meshed_accum.fetch_add(local_meshed, std::memory_order_relaxed);
     };
