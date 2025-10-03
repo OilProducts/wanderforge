@@ -4,6 +4,7 @@ namespace wf::ui {
 
 void UIBackend::begin_frame(const InputState& input, std::uint64_t frame_index) {
     InputState resolved = input;
+    prev_input_state_ = input_state_;
     if (!has_prev_input_) {
         for (int i = 0; i < 3; ++i) {
             resolved.mouse_pressed[i] = input.mouse_down[i];
@@ -19,7 +20,6 @@ void UIBackend::begin_frame(const InputState& input, std::uint64_t frame_index) 
             resolved.mouse_released[i] = (was_down && !is_down);
         }
     }
-    prev_input_state_ = input_state_;
     input_state_ = resolved;
     frame_index_ = frame_index;
 }
@@ -38,4 +38,3 @@ const WidgetState* UIBackend::find_state(UIID id) const {
 }
 
 } // namespace wf::ui
-
