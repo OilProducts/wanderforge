@@ -46,26 +46,37 @@ else()
   endif()
 endif()
 
-add_executable(wanderforge
-  src/main.cpp
-  src/vk_app.cpp
-  src/planet.cpp
-  src/mesh_naive.cpp
-  src/mesh_greedy.cpp
-  src/region_io.cpp
-  src/overlay.cpp
-  src/chunk_renderer.cpp
+
+add_library(wf_core STATIC
   src/chunk_delta.cpp
-  src/camera.cpp
   src/config_loader.cpp
-  src/vk_utils.cpp
-  src/ui/ui_context.cpp
+  src/mesh_greedy.cpp
+  src/mesh_naive.cpp
+  src/planet.cpp
+  src/region_io.cpp
   src/ui/ui_backend.cpp
+  src/ui/ui_context.cpp
   src/ui/ui_primitives.cpp
   src/ui/ui_text.cpp
 )
 
-target_link_libraries(wanderforge PRIVATE Vulkan::Vulkan)
+target_include_directories(wf_core
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+
+add_executable(wanderforge
+  src/main.cpp
+  src/vk_app.cpp
+  src/chunk_streaming_manager.cpp
+  src/overlay.cpp
+  src/chunk_renderer.cpp
+  src/camera.cpp
+  src/vk_utils.cpp
+)
+
+target_link_libraries(wanderforge PRIVATE wf_core Vulkan::Vulkan)
 if (WF_HAVE_GLFW)
   if (TARGET glfw)
     target_link_libraries(wanderforge PRIVATE glfw)
@@ -160,24 +171,22 @@ endif()
 # CPU tools (no Vulkan/GLFW required)
 add_executable(wf_ringmap
   tools/ringmap.cpp
-  src/planet.cpp
 )
+target_link_libraries(wf_ringmap PRIVATE wf_core)
 target_include_directories(wf_ringmap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Mesh demo tool (CPU-only)
 add_executable(wf_chunk_demo
   tools/chunk_demo.cpp
-  src/mesh_naive.cpp
-  src/mesh_greedy.cpp
 )
+target_link_libraries(wf_chunk_demo PRIVATE wf_core)
 target_include_directories(wf_chunk_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Region IO demo (CPU-only)
 add_executable(wf_region_demo
   tools/region_demo.cpp
-  src/region_io.cpp
-  src/mesh_greedy.cpp
 )
+target_link_libraries(wf_region_demo PRIVATE wf_core)
 target_include_directories(wf_region_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Generate configuration header with paths and options

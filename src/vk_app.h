@@ -12,6 +12,7 @@
 #include "mesh.h"
 #include "chunk_delta.h"
 #include "chunk.h"
+#include "chunk_streaming_manager.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
@@ -66,17 +67,8 @@ private:
     int current_brush_dim() const;
     void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
     void generate_base_chunk(const FaceChunkKey& key, const Float3& right, const Float3& up, const Float3& forward, Chunk64& chunk);
-    void normalize_chunk_delta_representation(ChunkDelta& delta);
     void flush_dirty_chunk_deltas();
-    struct VoxelHit {
-        FaceChunkKey key{};
-        int x = 0;
-        int y = 0;
-        int z = 0;
-        Int3 voxel{0,0,0};
-        double world_pos[3] = {0.0, 0.0, 0.0};
-        uint16_t material = MAT_AIR;
-    };
+    using VoxelHit = wf::VoxelHit;
     bool world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const;
     bool pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before);
     bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim = 1);
@@ -267,13 +259,7 @@ private:
     VkPipelineLayout debug_axes_layout_ = VK_NULL_HANDLE;
     VkPipeline debug_axes_pipeline_ = VK_NULL_HANDLE;
 
-    std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash> chunk_deltas_;
-    std::mutex chunk_delta_mutex_;
-    std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash> chunk_cache_;
-    mutable std::mutex chunk_cache_mutex_;
-    std::deque<FaceChunkKey> remesh_queue_;
-    std::mutex remesh_mutex_;
-    const size_t remesh_per_frame_cap_ = 4;
+    ChunkStreamingManager streaming_manager_;
     bool edit_lmb_prev_down_ = false;
     bool edit_place_prev_down_ = false;
     uint16_t edit_place_material_ = MAT_DIRT;

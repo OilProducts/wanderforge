@@ -100,6 +100,11 @@ static bool has_device_extension(VkPhysicalDevice dev, const char* name) {
 
 VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
+    streaming_manager_.set_planet_config(planet_cfg_);
+    streaming_manager_.set_region_root(region_root_);
+    streaming_manager_.set_save_chunks_enabled(save_chunks_enabled_);
+    streaming_manager_.set_log_stream(log_stream_);
+    streaming_manager_.set_remesh_per_frame_cap(4);
 }
 
 void VulkanApp::set_config_path(std::string path) {
@@ -1328,6 +1333,12 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     config_path_used_ = cfg.config_path;
     region_root_ = cfg.region_root;
 
+    streaming_manager_.set_planet_config(planet_cfg_);
+    streaming_manager_.set_save_chunks_enabled(save_chunks_enabled_);
+    streaming_manager_.set_region_root(region_root_);
+    streaming_manager_.set_log_stream(log_stream_);
+    streaming_manager_.set_remesh_per_frame_cap(4);
+
     std::cout << "[config] region_root=" << region_root_ << " (active)\n";
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 
@@ -1581,12 +1592,12 @@ bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
 
 VulkanApp::CachedNeighborChunks VulkanApp::gather_cached_neighbors(const FaceChunkKey& key) const {
     CachedNeighborChunks neighbors;
+    std::scoped_lock lock(streaming_manager_.chunk_cache_mutex());
+    auto& cache = streaming_manager_.chunk_cache();
     auto fetch = [&](std::optional<Chunk64>& slot, const FaceChunkKey& neighbor_key) {
-        auto it = chunk_cache_.find(neighbor_key);
-        if (it != chunk_cache_.end()) slot = it->second;
+        auto it = cache.find(neighbor_key);
+        if (it != cache.end()) slot = it->second;
     };
-
-    std::scoped_lock lock(chunk_cache_mutex_);
     fetch(neighbors.neg_x, FaceChunkKey{key.face, key.i - 1, key.j, key.k});
     fetch(neighbors.pos_x, FaceChunkKey{key.face, key.i + 1, key.j, key.k});
     fetch(neighbors.neg_y, FaceChunkKey{key.face, key.i, key.j - 1, key.k});
@@ -1605,24 +1616,6 @@ bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
                                    neighbors.ny_ptr(), neighbors.py_ptr(),
                                    neighbors.nz_ptr(), neighbors.pz_ptr(),
                                    out);
-}
-
-void VulkanApp::normalize_chunk_delta_representation(ChunkDelta& delta) {
-    if (delta.empty()) {
-        if (delta.mode != ChunkDelta::Mode::kSparse) delta.clear(ChunkDelta::Mode::kSparse);
-        return;
-    }
-
-    float density = delta.edit_density();
-    if (delta.mode == ChunkDelta::Mode::kSparse) {
-        if (density >= kDeltaPromoteDensity) {
-            delta.ensure_dense();
-        }
-    } else {
-        if (density <= kDeltaDemoteDensity) {
-            delta.ensure_sparse();
-        }
-    }
 }
 
 bool VulkanApp::world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const {
@@ -1685,9 +1678,10 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
 
         uint16_t mat = MAT_AIR;
         {
-            std::scoped_lock lock(chunk_cache_mutex_);
-            auto it = chunk_cache_.find(key);
-            if (it == chunk_cache_.end()) continue;
+            std::scoped_lock lock(streaming_manager_.chunk_cache_mutex());
+            auto& cache = streaming_manager_.chunk_cache();
+            auto it = cache.find(key);
+            if (it == cache.end()) continue;
             mat = it->second.get_material(lx, ly, lz);
         }
 
@@ -1726,18 +1720,20 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
 }
 
 void VulkanApp::queue_chunk_remesh(const FaceChunkKey& key) {
-    std::scoped_lock lock(remesh_mutex_);
-    remesh_queue_.push_back(key);
+    std::scoped_lock lock(streaming_manager_.remesh_mutex());
+    streaming_manager_.remesh_queue().push_back(key);
 }
 
 void VulkanApp::process_pending_remeshes() {
     std::deque<FaceChunkKey> todo;
     {
-        std::scoped_lock lock(remesh_mutex_);
+        std::scoped_lock lock(streaming_manager_.remesh_mutex());
+        auto& queue = streaming_manager_.remesh_queue();
+        size_t cap = streaming_manager_.remesh_per_frame_cap();
         size_t count = 0;
-        while (!remesh_queue_.empty() && count < remesh_per_frame_cap_) {
-            todo.push_back(remesh_queue_.front());
-            remesh_queue_.pop_front();
+        while (!queue.empty() && count < cap) {
+            todo.push_back(queue.front());
+            queue.pop_front();
             ++count;
         }
     }
@@ -1746,25 +1742,27 @@ void VulkanApp::process_pending_remeshes() {
     for (const FaceChunkKey& key : todo) {
         Chunk64 chunk;
         {
-            std::scoped_lock cache_lock(chunk_cache_mutex_);
-            auto it = chunk_cache_.find(key);
-            if (it == chunk_cache_.end()) continue;
+            std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+            auto& cache = streaming_manager_.chunk_cache();
+            auto it = cache.find(key);
+            if (it == cache.end()) continue;
             chunk = it->second;
         }
 
         ChunkDelta delta;
         {
-            std::scoped_lock delta_lock(chunk_delta_mutex_);
-            auto it = chunk_deltas_.find(key);
-            if (it != chunk_deltas_.end()) delta = it->second;
+            std::scoped_lock delta_lock(streaming_manager_.chunk_delta_mutex());
+            auto& deltas = streaming_manager_.chunk_deltas();
+            auto it = deltas.find(key);
+            if (it != deltas.end()) delta = it->second;
         }
-        normalize_chunk_delta_representation(delta);
+        streaming_manager_.normalize_chunk_delta_representation(delta);
         apply_chunk_delta(delta, chunk);
 
         MeshResult res;
         if (!build_chunk_mesh_result(key, chunk, res)) {
-            std::scoped_lock cache_lock(chunk_cache_mutex_);
-            chunk_cache_[key] = chunk;
+            std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+            streaming_manager_.chunk_cache()[key] = chunk;
             continue;
         }
 
@@ -1806,8 +1804,8 @@ void VulkanApp::process_pending_remeshes() {
             render_chunks_.push_back(rc);
         }
 
-        std::scoped_lock cache_lock(chunk_cache_mutex_);
-        chunk_cache_[key] = chunk;
+        std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+        streaming_manager_.chunk_cache()[key] = chunk;
     }
 }
 
@@ -1854,26 +1852,28 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
     }
 
     {
-        std::unique_lock delta_lock(chunk_delta_mutex_);
-        ChunkDelta& delta = chunk_deltas_.try_emplace(key, ChunkDelta{}).first->second;
+        std::unique_lock delta_lock(streaming_manager_.chunk_delta_mutex());
+        auto& deltas = streaming_manager_.chunk_deltas();
+        ChunkDelta& delta = deltas.try_emplace(key, ChunkDelta{}).first->second;
         for (const PendingEdit& edit : edits) {
             uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
             delta.apply_edit(lidx, edit.base_material, new_material);
         }
-        normalize_chunk_delta_representation(delta);
+        streaming_manager_.normalize_chunk_delta_representation(delta);
     }
 
     std::vector<FaceChunkKey> neighbors_to_remesh;
     {
-        std::scoped_lock cache_lock(chunk_cache_mutex_);
-        auto it = chunk_cache_.find(key);
-        if (it != chunk_cache_.end()) {
+        std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+        auto& cache = streaming_manager_.chunk_cache();
+        auto it = cache.find(key);
+        if (it != cache.end()) {
             for (const PendingEdit& edit : edits) {
                 it->second.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
             }
         }
         auto consider = [&](const FaceChunkKey& k) {
-            if (chunk_cache_.find(k) != chunk_cache_.end()) neighbors_to_remesh.push_back(k);
+            if (cache.find(k) != cache.end()) neighbors_to_remesh.push_back(k);
         };
         consider(FaceChunkKey{key.face, key.i - 1, key.j, key.k});
         consider(FaceChunkKey{key.face, key.i + 1, key.j, key.k});
@@ -1889,55 +1889,11 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
 }
 
 void VulkanApp::flush_dirty_chunk_deltas() {
-    if (!save_chunks_enabled_) return;
-
-    std::vector<std::pair<FaceChunkKey, ChunkDelta>> pending;
-    {
-        std::scoped_lock lock(chunk_delta_mutex_);
-        for (auto& kv : chunk_deltas_) {
-            ChunkDelta& delta = kv.second;
-            if (!delta.dirty) continue;
-            pending.emplace_back(kv.first, delta);
-            delta.dirty = false;
-            if (!delta.dirty_mask.empty()) {
-                std::fill(delta.dirty_mask.begin(), delta.dirty_mask.end(), 0ull);
-            }
-        }
-    }
-
-    for (auto& pair : pending) {
-        FaceChunkKey key = pair.first;
-        ChunkDelta& delta = pair.second;
-        normalize_chunk_delta_representation(delta);
-        RegionIO::save_chunk_delta(key, delta, 32, region_root_);
-    }
+    streaming_manager_.flush_dirty_chunk_deltas();
 }
 
 void VulkanApp::overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk) {
-    {
-        std::scoped_lock lock(chunk_delta_mutex_);
-        auto it = chunk_deltas_.find(key);
-        if (it != chunk_deltas_.end()) {
-            normalize_chunk_delta_representation(it->second);
-            if (!it->second.empty()) apply_chunk_delta(it->second, chunk);
-            return;
-        }
-    }
-
-    ChunkDelta delta;
-    if (!RegionIO::load_chunk_delta(key, delta, 32, region_root_)) {
-        std::scoped_lock lock(chunk_delta_mutex_);
-        chunk_deltas_.emplace(key, ChunkDelta{});
-        return;
-    }
-
-    if (!delta.empty()) {
-        normalize_chunk_delta_representation(delta);
-        apply_chunk_delta(delta, chunk);
-    }
-
-    std::scoped_lock lock(chunk_delta_mutex_);
-    chunk_deltas_.insert_or_assign(key, std::move(delta));
+    streaming_manager_.overlay_chunk_delta(key, chunk);
 }
 
 void VulkanApp::draw_frame() {
@@ -2654,8 +2610,8 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                 generate_base_chunk(key, right, up, forward, c);
                 overlay_chunk_delta(key, c);
                 {
-                    std::scoped_lock cache_lock(chunk_cache_mutex_);
-                    chunk_cache_[key] = c;
+                    std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+                    streaming_manager_.chunk_cache()[key] = c;
                 }
             }
         });
@@ -2862,8 +2818,8 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
                           << " vtx_count=" << render_chunks_[i].vertex_count << "\n";
             }
             {
-                std::scoped_lock cache_lock(chunk_cache_mutex_);
-                chunk_cache_.erase(rk);
+                std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+                streaming_manager_.chunk_cache().erase(rk);
             }
             // Defer deletion/free; chunk might still be referenced by commands submitted last frame
             schedule_delete_chunk(render_chunks_[i]);
@@ -2898,8 +2854,8 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
                           << " vtx_count=" << rc.vertex_count << "\n";
             }
             {
-                std::scoped_lock cache_lock(chunk_cache_mutex_);
-                chunk_cache_.erase(rc.key);
+                std::scoped_lock cache_lock(streaming_manager_.chunk_cache_mutex());
+                streaming_manager_.chunk_cache().erase(rc.key);
             }
             schedule_delete_chunk(rc);
             render_chunks_.erase(render_chunks_.begin() + i);

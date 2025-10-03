@@ -210,6 +210,19 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
   - Dig/place tools run against regenerated base chunks; edits persist across runs and remesh only touched chunks.
   - Worlds without edits no longer consume multi-GB of on-disk chunk data; loader regenerates base content on demand with deltas applied.
 
+### Phase 4.5 — Core Library & Streaming Isolation (3–4 days)
+- Goals:
+  - Reduce `VulkanApp` surface area by teasing out reusable subsystems and enabling unit-style testing for CPU-only components. *(wf_core in place)*
+  - Prepare the codebase for larger simulation phases by clarifying ownership of streaming/meshing state and persistence. *(streaming manager introduced; loader still pending)*
+- Deliverables:
+  - Introduce a `wf_core` static library aggregating domain modules (`chunk`, `chunk_delta`, `planet`, `mesh_*`, `region_io`, `config_loader`, `ui` primitives as needed). The main executable and CPU tools link this target instead of listing sources individually. Build files updated accordingly. *(Done — 2025-10-03)*
+  - Extract a `ChunkStreamingManager` (or similar) owning loader threads, request queues, neighbor gathering, and result draining. `VulkanApp` becomes a client that issues camera-driven requests, consumes ready meshes, and pushes edits without touching worker internals. *(In progress — manager now holds cache/delta/remesh state; loader thread still attached to `VulkanApp`)*
+  - Document subsystem seams in `PLAN.md`/`README`: which headers belong to the core library, how the streaming manager communicates (callbacks, ring buffers, or message structs). *(Pending)*
+- Acceptance:
+  - `cmake --build` succeeds for `wanderforge`, `wf_ringmap`, `wf_chunk_demo`, and `wf_region_demo` without duplicate source lists. *(Done — verified 2025-10-03)*
+  - Streaming continues to function with the new manager structure (parity with previous behavior during a manual playtest around the planet’s equator). *(Pending manual test after loader migration)*
+  - `VulkanApp` no longer creates/joins the loader thread directly; instead it calls into the manager interface and receives mesh uploads through clearly defined hooks. *(Pending)
+
 ### Phase 5 — Simulation Islands v1 (10 cm) (2–3 weeks)
 - Deliverables:
   - Island manager; dense buffers (occ, material, temp, vel/flags); active queues; move requests.
