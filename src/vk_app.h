@@ -11,6 +11,7 @@
 #include "chunk_renderer.h"
 #include "mesh.h"
 #include "chunk_delta.h"
+#include "chunk.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
@@ -76,6 +77,8 @@ private:
     bool world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const;
     bool pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before);
     bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material);
+    void queue_chunk_remesh(const FaceChunkKey& key);
+    void process_pending_remeshes();
 
     void cleanup_swapchain();
     void recreate_swapchain();
@@ -254,7 +257,10 @@ private:
     std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash> chunk_deltas_;
     std::mutex chunk_delta_mutex_;
     std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash> chunk_cache_;
-    std::mutex chunk_cache_mutex_;
+    mutable std::mutex chunk_cache_mutex_;
+    std::deque<FaceChunkKey> remesh_queue_;
+    std::mutex remesh_mutex_;
+    const size_t remesh_per_frame_cap_ = 4;
     bool edit_lmb_prev_down_ = false;
     bool edit_place_prev_down_ = false;
     uint16_t edit_place_material_ = MAT_DIRT;
@@ -300,7 +306,27 @@ private:
         float radius = 0.0f;
         FaceChunkKey key{0,0,0,0};
         uint64_t job_gen = 0;
+        uint32_t first_index = 0;
+        int32_t base_vertex = 0;
     };
+    struct CachedNeighborChunks {
+        std::optional<Chunk64> neg_x;
+        std::optional<Chunk64> pos_x;
+        std::optional<Chunk64> neg_y;
+        std::optional<Chunk64> pos_y;
+        std::optional<Chunk64> neg_z;
+        std::optional<Chunk64> pos_z;
+        const Chunk64* nx_ptr() const { return neg_x ? &*neg_x : nullptr; }
+        const Chunk64* px_ptr() const { return pos_x ? &*pos_x : nullptr; }
+        const Chunk64* ny_ptr() const { return neg_y ? &*neg_y : nullptr; }
+        const Chunk64* py_ptr() const { return pos_y ? &*pos_y : nullptr; }
+        const Chunk64* nz_ptr() const { return neg_z ? &*neg_z : nullptr; }
+        const Chunk64* pz_ptr() const { return pos_z ? &*pos_z : nullptr; }
+    };
+    CachedNeighborChunks gather_cached_neighbors(const FaceChunkKey& key) const;
+    bool build_chunk_mesh_result(const FaceChunkKey& key,
+                                 const Chunk64& chunk,
+                                 MeshResult& out) const;
     bool build_chunk_mesh_result(const FaceChunkKey& key,
                                          const Chunk64& chunk,
                                          const Chunk64* nx, const Chunk64* px,

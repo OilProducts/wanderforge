@@ -1497,6 +1497,34 @@ bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
     return true;
 }
 
+VulkanApp::CachedNeighborChunks VulkanApp::gather_cached_neighbors(const FaceChunkKey& key) const {
+    CachedNeighborChunks neighbors;
+    auto fetch = [&](std::optional<Chunk64>& slot, const FaceChunkKey& neighbor_key) {
+        auto it = chunk_cache_.find(neighbor_key);
+        if (it != chunk_cache_.end()) slot = it->second;
+    };
+
+    std::scoped_lock lock(chunk_cache_mutex_);
+    fetch(neighbors.neg_x, FaceChunkKey{key.face, key.i - 1, key.j, key.k});
+    fetch(neighbors.pos_x, FaceChunkKey{key.face, key.i + 1, key.j, key.k});
+    fetch(neighbors.neg_y, FaceChunkKey{key.face, key.i, key.j - 1, key.k});
+    fetch(neighbors.pos_y, FaceChunkKey{key.face, key.i, key.j + 1, key.k});
+    fetch(neighbors.neg_z, FaceChunkKey{key.face, key.i, key.j, key.k - 1});
+    fetch(neighbors.pos_z, FaceChunkKey{key.face, key.i, key.j, key.k + 1});
+    return neighbors;
+}
+
+bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
+                                        const Chunk64& chunk,
+                                        MeshResult& out) const {
+    CachedNeighborChunks neighbors = gather_cached_neighbors(key);
+    return build_chunk_mesh_result(key, chunk,
+                                   neighbors.nx_ptr(), neighbors.px_ptr(),
+                                   neighbors.ny_ptr(), neighbors.py_ptr(),
+                                   neighbors.nz_ptr(), neighbors.pz_ptr(),
+                                   out);
+}
+
 void VulkanApp::normalize_chunk_delta_representation(ChunkDelta& delta) {
     if (delta.empty()) {
         if (delta.mode != ChunkDelta::Mode::kSparse) delta.clear(ChunkDelta::Mode::kSparse);
@@ -1615,6 +1643,92 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
     return false;
 }
 
+void VulkanApp::queue_chunk_remesh(const FaceChunkKey& key) {
+    std::scoped_lock lock(remesh_mutex_);
+    remesh_queue_.push_back(key);
+}
+
+void VulkanApp::process_pending_remeshes() {
+    std::deque<FaceChunkKey> todo;
+    {
+        std::scoped_lock lock(remesh_mutex_);
+        size_t count = 0;
+        while (!remesh_queue_.empty() && count < remesh_per_frame_cap_) {
+            todo.push_back(remesh_queue_.front());
+            remesh_queue_.pop_front();
+            ++count;
+        }
+    }
+    if (todo.empty()) return;
+
+    for (const FaceChunkKey& key : todo) {
+        Chunk64 chunk;
+        {
+            std::scoped_lock cache_lock(chunk_cache_mutex_);
+            auto it = chunk_cache_.find(key);
+            if (it == chunk_cache_.end()) continue;
+            chunk = it->second;
+        }
+
+        ChunkDelta delta;
+        {
+            std::scoped_lock delta_lock(chunk_delta_mutex_);
+            auto it = chunk_deltas_.find(key);
+            if (it != chunk_deltas_.end()) delta = it->second;
+        }
+        normalize_chunk_delta_representation(delta);
+        apply_chunk_delta(delta, chunk);
+
+        MeshResult res;
+        if (!build_chunk_mesh_result(key, chunk, res)) {
+            std::scoped_lock cache_lock(chunk_cache_mutex_);
+            chunk_cache_[key] = chunk;
+            continue;
+        }
+
+        if (!chunk_renderer_.upload_mesh(res.vertices.data(), res.vertices.size(),
+                                         res.indices.data(), res.indices.size(),
+                                         res.first_index, res.base_vertex)) {
+            continue;
+        }
+
+        bool replaced = false;
+        for (auto& existing : render_chunks_) {
+            if (existing.key == key) {
+                chunk_renderer_.free_mesh(existing.first_index, existing.index_count,
+                                          existing.base_vertex, existing.vertex_count);
+                existing.index_count = static_cast<uint32_t>(res.indices.size());
+                existing.first_index = res.first_index;
+                existing.base_vertex = res.base_vertex;
+                existing.vertex_count = static_cast<uint32_t>(res.vertices.size());
+                existing.key = key;
+                existing.center[0] = res.center[0];
+                existing.center[1] = res.center[1];
+                existing.center[2] = res.center[2];
+                existing.radius = res.radius;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            RenderChunk rc;
+            rc.index_count = static_cast<uint32_t>(res.indices.size());
+            rc.first_index = res.first_index;
+            rc.base_vertex = res.base_vertex;
+            rc.vertex_count = static_cast<uint32_t>(res.vertices.size());
+            rc.key = key;
+            rc.center[0] = res.center[0];
+            rc.center[1] = res.center[1];
+            rc.center[2] = res.center[2];
+            rc.radius = res.radius;
+            render_chunks_.push_back(rc);
+        }
+
+        std::scoped_lock cache_lock(chunk_cache_mutex_);
+        chunk_cache_[key] = chunk;
+    }
+}
+
 bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material) {
     FaceChunkKey key = target.key;
     uint32_t lidx = Chunk64::lindex(target.x, target.y, target.z);
@@ -1626,15 +1740,26 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material) 
     normalize_chunk_delta_representation(delta);
     delta_lock.unlock();
 
+    std::vector<FaceChunkKey> neighbors_to_remesh;
     {
         std::scoped_lock cache_lock(chunk_cache_mutex_);
         auto it = chunk_cache_.find(key);
         if (it != chunk_cache_.end()) {
             it->second.set_voxel(target.x, target.y, target.z, new_material);
         }
+        auto consider = [&](const FaceChunkKey& k) {
+            if (chunk_cache_.find(k) != chunk_cache_.end()) neighbors_to_remesh.push_back(k);
+        };
+        consider(FaceChunkKey{key.face, key.i - 1, key.j, key.k});
+        consider(FaceChunkKey{key.face, key.i + 1, key.j, key.k});
+        consider(FaceChunkKey{key.face, key.i, key.j - 1, key.k});
+        consider(FaceChunkKey{key.face, key.i, key.j + 1, key.k});
+        consider(FaceChunkKey{key.face, key.i, key.j, key.k - 1});
+        consider(FaceChunkKey{key.face, key.i, key.j, key.k + 1});
     }
 
-    enqueue_ring_request(key.face, 0, key.i, key.j, key.k, k_down_, k_up_, 0.0f, 0.0f);
+    queue_chunk_remesh(key);
+    for (const FaceChunkKey& nkey : neighbors_to_remesh) queue_chunk_remesh(nkey);
     return true;
 }
 
@@ -1708,6 +1833,7 @@ void VulkanApp::draw_frame() {
     trash_[current_frame_].clear();
     // Streaming update (may schedule new loads and prune old chunks) and drain uploads
     update_streaming();
+    process_pending_remeshes();
     drain_mesh_results();
 
     uint32_t imageIndex = 0;
