@@ -195,7 +195,7 @@ To keep the HUD lightweight yet extensible (and ultimately reusable outside Wand
   - Provide a small adapter struct (`UIDrawData`) so other projects can plug in their own GPU backend.
   - Document the input event format and expected call order (backend `begin_frame`, build widgets, renderer `submit`).
 
-Completion of Phase A satisfies the current Phase 3 HUD requirements; subsequent phases can iterate alongside gameplay features without entangling the render core.
+Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent phases can iterate alongside gameplay features without entangling the render core.
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:
