@@ -108,9 +108,10 @@ This document is a self-contained plan to build an experimental, planetary-scale
  - 2025-08-09: Implemented CPU greedy meshing; demo tool shows large triangle reduction on a test scene.
   - 2025-08-09: Added Region IO scaffolding (header + TOC + raw blobs) with 32×32 face‑local tiles per region file (per‑k shell). New `wf_region_demo` saves/loads a sample chunk. Compression hooks reserved for zstd/lz4 later.
   - 2025-08-10: Extracted `ChunkRenderer` (pipeline, layout, push constants) and switched to indirect multi‑draw for chunk batches. Added pooled vertex/index buffer allocator.
-  - 2025-08-10: Added persistent loader thread + request coalescing, prioritized tile ordering (near‑first, ahead‑of‑camera within ring), and prune hysteresis (load R, prune R+margin) for smooth streaming.
-  - 2025-08-10: Fixed device‑lost during streaming by deferring GPU resource destruction by frame; added robust pooled allocator with strict alignment; fixed stride mismatch (pipeline now uses `sizeof(Vertex)`).
-  - 2025-08-10: HUD improvements: multi‑line stats; added optional pool usage and loader status; added stream/pool logging toggles for targeted diagnostics.
+  - 2025-08-10: Added persistent loader thread + request coalescing, prioritized tile ordering (near-first, ahead-of-camera within ring), and prune hysteresis (load R, prune R+margin) for smooth streaming.
+  - 2025-08-10: Fixed device-lost during streaming by deferring GPU resource destruction by frame; added robust pooled allocator with strict alignment; fixed stride mismatch (pipeline now uses `sizeof(Vertex)`).
+  - 2025-08-10: HUD improvements: multi-line stats; added optional pool usage and loader status; added stream/pool logging toggles for targeted diagnostics.
+  - 2025-10-03: HUD now exposes debug toggles (cull/axes/triangle) with a world-axis gizmo and screen-space test triangle to validate clip-space orientation during migration.
 
  - Next tasks (Phase 3 scope):
    - Extract `ChunkRenderer` module (pipeline, vertex layout, push constants, draw paths) — [Done].
@@ -153,11 +154,11 @@ This document is a self-contained plan to build an experimental, planetary-scale
 - Step‑by‑step plan:
   1) Add math helpers: `perspective_vulkan(fov,aspect,zn,zf)`, `look_at(eye,fwd,up)`, `mul(a,b)` producing column‑major float[16].
   2) Add a common header enabling GLM flags (if GLM used): `GLM_FORCE_DEPTH_ZERO_TO_ONE`, `GLM_FORCE_RIGHT_HANDED`; otherwise document our own math.
-  3) Add debug primitives and checks:
-     - Axis gizmo at origin (RGB XYZ), and a screen‑space test triangle to validate Y/handedness.
+  3) Add debug primitives and checks: *(Completed 2025-10-03)*
+     - Axis gizmo at origin (RGB XYZ), and a screen-space test triangle to validate Y/handedness.
      - A runtime toggle to flip `frontFace` and to disable culling (for quick A/B during migration).
   4) Switch camera path to use column‑major `P * V`; push constants/upload unchanged elsewhere.
-  5) Verify culling from default pose; adjust chunk pipeline `frontFace` only if mismatch (expect CCW BACK).
+  5) Verify culling from default pose; adjust chunk pipeline `frontFace` only if mismatch (expect CCW BACK). *(Chunk pipeline now defaults to CCW + BACK as of 2025-10-03; verification ongoing.)*
   6) Verify overlay orientation and HUD (NDC Y up). Fix only if discrepancy is observed.
   7) Remove legacy row‑major helpers and any ad‑hoc transposes; centralize all math through the helpers.
   8) Optional: implement reversed‑Z (set `depthCompareOp = GREATER`, swap zn/zf mapping); validate sky/ground cases and precision improvement.
@@ -199,9 +200,12 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
 
 ### Phase 4 — Delta Store & Local Remeshing (1–2 weeks)
 - Deliverables:
-  - Sparse delta map keyed by `(chunk, localIndex)`; read-path overlays base; write-path persists edits and marks dirty neighbors.
+  - Sparse delta map keyed by `(chunk, localIndex)`; runtime loads regenerate procedural base chunks and overlay deltas before meshing.
+  - Region IO persists only the sparse edits (base chunks remain implicit), with hooks to mark chunks/neighbor shells dirty when deltas change.
+  - Fast apply path so edits remesh locally without full world rebuild; instrumentation to monitor delta footprint.
 - Acceptance:
-  - Dig/place tools; changed chunks remesh locally; edits persist across runs.
+  - Dig/place tools run against regenerated base chunks; edits persist across runs and remesh only touched chunks.
+  - Worlds without edits no longer consume multi-GB of on-disk chunk data; loader regenerates base content on demand with deltas applied.
 
 ### Phase 5 — Simulation Islands v1 (10 cm) (2–3 weeks)
 - Deliverables:

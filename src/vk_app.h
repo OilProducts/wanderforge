@@ -61,6 +61,10 @@ private:
     void cleanup_swapchain();
     void recreate_swapchain();
     VkShaderModule load_shader_module(const std::string& path);
+    void create_debug_axes_buffer();
+    void destroy_debug_axes_buffer();
+    void create_debug_axes_pipeline();
+    void destroy_debug_axes_pipeline();
 
 private:
     // Window
@@ -158,7 +162,7 @@ private:
     bool mouse_captured_ = false; // true when cursor is disabled for mouse-look
 
     bool invert_mouse_x_ = true; // default: inverted horizontal look (swap left/right)
-    bool invert_mouse_y_ = false;
+    bool invert_mouse_y_ = true;
     bool key_prev_toggle_x_ = false;
     bool key_prev_toggle_y_ = false;
     bool walk_mode_ = false;
@@ -212,9 +216,21 @@ private:
     uint64_t last_draw_indices_ = 0;
 
     bool device_local_enabled_ = true; // default to device-local pools with staging
-    bool front_face_cw_ = true;        // default winding for chunk renderer
     bool debug_chunk_keys_ = false;
     bool debug_auto_aim_done_ = false;
+
+    bool debug_show_axes_ = false;
+    bool debug_show_test_triangle_ = false;
+
+    struct DebugAxisVertex {
+        float pos[3];
+        float color[3];
+    };
+    VkBuffer debug_axes_vbo_ = VK_NULL_HANDLE;
+    VkDeviceMemory debug_axes_vbo_mem_ = VK_NULL_HANDLE;
+    uint32_t debug_axes_vertex_count_ = 0;
+    VkPipelineLayout debug_axes_layout_ = VK_NULL_HANDLE;
+    VkPipeline debug_axes_pipeline_ = VK_NULL_HANDLE;
 
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;

@@ -118,6 +118,8 @@ VulkanApp::~VulkanApp() {
     overlay_.cleanup(device_);
     // Chunk renderer
     chunk_renderer_.cleanup(device_);
+    destroy_debug_axes_pipeline();
+    destroy_debug_axes_buffer();
 
     if (pipeline_compute_) { vkDestroyPipeline(device_, pipeline_compute_, nullptr); pipeline_compute_ = VK_NULL_HANDLE; }
     if (pipeline_layout_compute_) { vkDestroyPipelineLayout(device_, pipeline_layout_compute_, nullptr); pipeline_layout_compute_ = VK_NULL_HANDLE; }
@@ -237,6 +239,7 @@ void VulkanApp::init_vulkan() {
     chunk_renderer_.set_pool_caps_bytes((VkDeviceSize)pool_vtx_mb_ * 1024ull * 1024ull,
                                         (VkDeviceSize)pool_idx_mb_ * 1024ull * 1024ull);
     chunk_renderer_.set_logging(log_pool_);
+    create_debug_axes_buffer();
     std::cout << "ChunkRenderer ready: " << (chunk_renderer_.is_ready() ? "yes" : "no")
               << ", use_chunk_renderer=" << (use_chunk_renderer_ ? 1 : 0) << "\n";
     hud_force_refresh_ = true;
@@ -625,76 +628,83 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
     clears[1].depthStencil = {1.0f, 0};
     rbi.clearValueCount = 2; rbi.pClearValues = clears;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    if ((!render_chunks_.empty()) && chunk_renderer_.is_ready()) {
-        float aspect = (float)swapchain_extent_.width / (float)swapchain_extent_.height;
-        auto P = wf::perspective_from_deg(fov_deg_, aspect, near_m_, far_m_);
-        float eye_arr[3] = { (float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2] };
-        Float3 eye{eye_arr[0], eye_arr[1], eye_arr[2]};
 
-        wf::Mat4 V;
-        Float3 forward{};
-        Float3 up_vec{};
-        Float3 right_vec{};
+    float aspect = (swapchain_extent_.height > 0)
+        ? static_cast<float>(swapchain_extent_.width) / static_cast<float>(swapchain_extent_.height)
+        : 1.0f;
+    auto P = wf::perspective_from_deg(fov_deg_, aspect, near_m_, far_m_);
+    float eye_arr[3] = { (float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2] };
+    Float3 eye{eye_arr[0], eye_arr[1], eye_arr[2]};
 
-        float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
+    float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
+    float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
 
-        if (!walk_mode_) {
-            V = wf::view_from_yaw_pitch(cam_yaw_, cam_pitch_, eye_arr);
-            forward = Float3{cp * cyaw, sp, cp * syaw};
-            Float3 world_up{0.0f, 1.0f, 0.0f};
-            right_vec = wf::normalize(Float3{
-                forward.y * world_up.z - forward.z * world_up.y,
-                forward.z * world_up.x - forward.x * world_up.z,
-                forward.x * world_up.y - forward.y * world_up.x
-            });
-            up_vec = Float3{
-                right_vec.y * forward.z - right_vec.z * forward.y,
-                right_vec.z * forward.x - right_vec.x * forward.z,
-                right_vec.x * forward.y - right_vec.y * forward.x
+    Float3 forward{};
+    Float3 up_vec{};
+    Float3 right_vec{};
+    wf::Mat4 V{};
+
+    if (!walk_mode_) {
+        V = wf::view_from_yaw_pitch(cam_yaw_, cam_pitch_, eye_arr);
+        forward = Float3{cp * cyaw, sp, cp * syaw};
+        Float3 world_up{0.0f, 1.0f, 0.0f};
+        right_vec = Float3{
+            forward.y * world_up.z - forward.z * world_up.y,
+            forward.z * world_up.x - forward.x * world_up.z,
+            forward.x * world_up.y - forward.y * world_up.x
+        };
+        up_vec = Float3{
+            right_vec.y * forward.z - right_vec.z * forward.y,
+            right_vec.z * forward.x - right_vec.x * forward.z,
+            right_vec.x * forward.y - right_vec.y * forward.x
+        };
+    } else {
+        Float3 updir = wf::normalize(eye);
+        Float3 view_dir{cp * cyaw, sp, cp * syaw};
+        auto cross3 = [](const Float3& a, const Float3& b) {
+            return Float3{
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x
             };
-        } else {
-            Float3 updir = wf::normalize(eye);
-            Float3 view_dir{cp * cyaw, sp, cp * syaw};
-            auto cross3 = [](const Float3& a, const Float3& b) {
-                return Float3{
-                    a.y * b.z - a.z * b.y,
-                    a.z * b.x - a.x * b.z,
-                    a.x * b.y - a.y * b.x
-                };
-            };
-            auto dot3 = [](const Float3& a, const Float3& b) {
-                return a.x * b.x + a.y * b.y + a.z * b.z;
-            };
-            Float3 forward_dir = wf::normalize(view_dir);
-            Float3 right_candidate = cross3(updir, forward_dir);
+        };
+        auto dot3 = [](const Float3& a, const Float3& b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        };
+        Float3 forward_dir = wf::normalize(view_dir);
+        Float3 right_candidate = cross3(updir, forward_dir);
+        if (wf::length(right_candidate) < 1e-5f) {
+            Float3 fallback = std::fabs(updir.y) < 0.9f ? Float3{0.0f, 1.0f, 0.0f} : Float3{1.0f, 0.0f, 0.0f};
+            right_candidate = cross3(fallback, updir);
             if (wf::length(right_candidate) < 1e-5f) {
-                Float3 fallback = std::fabs(updir.y) < 0.9f ? Float3{0.0f, 1.0f, 0.0f} : Float3{1.0f, 0.0f, 0.0f};
+                fallback = Float3{0.0f, 0.0f, 1.0f};
                 right_candidate = cross3(fallback, updir);
-                if (wf::length(right_candidate) < 1e-5f) {
-                    fallback = Float3{0.0f, 0.0f, 1.0f};
-                    right_candidate = cross3(fallback, updir);
-                }
             }
-            right_vec = wf::normalize(right_candidate);
-            up_vec = wf::normalize(cross3(forward_dir, right_vec));
-            if (dot3(up_vec, updir) < 0.0f) {
-                right_vec = Float3{-right_vec.x, -right_vec.y, -right_vec.z};
-                up_vec = Float3{-up_vec.x, -up_vec.y, -up_vec.z};
-            }
-            forward = forward_dir;
-            wf::Vec3 eye_v{eye.x, eye.y, eye.z};
-            wf::Vec3 center{eye_v.x + forward.x, eye_v.y + forward.y, eye_v.z + forward.z};
-            wf::Vec3 up_v{up_vec.x, up_vec.y, up_vec.z};
-            V = wf::look_at_rh(eye_v, center, up_v);
         }
+        right_vec = cross3(updir, forward_dir);
+        right_vec = wf::normalize((wf::length(right_vec) > 1e-5f) ? right_vec : right_candidate);
+        up_vec = wf::normalize(cross3(forward_dir, right_vec));
+        if (dot3(up_vec, updir) < 0.0f) {
+            right_vec = Float3{-right_vec.x, -right_vec.y, -right_vec.z};
+            up_vec = Float3{-up_vec.x, -up_vec.y, -up_vec.z};
+        }
+        forward = forward_dir;
+        wf::Vec3 eye_v{eye.x, eye.y, eye.z};
+        wf::Vec3 center{eye_v.x + forward.x, eye_v.y + forward.y, eye_v.z + forward.z};
+        wf::Vec3 up_v{up_vec.x, up_vec.y, up_vec.z};
+        V = wf::look_at_rh(eye_v, center, up_v);
+    }
 
-        forward = wf::normalize(forward);
-        right_vec = wf::normalize(right_vec);
-        up_vec = wf::normalize(up_vec);
+    forward = wf::normalize(forward);
+    right_vec = wf::normalize(right_vec);
+    up_vec = wf::normalize(up_vec);
 
-        auto MVP = wf::mul(P, V);
+    auto MVP = wf::mul(P, V);
 
+    bool debugTrianglePending = debug_show_test_triangle_ && pipeline_triangle_;
+    bool chunk_ready = chunk_renderer_.is_ready() && !render_chunks_.empty();
+
+    if (chunk_ready) {
         if (debug_chunk_keys_) {
             static bool logged_clip = false;
             if (!logged_clip) {
@@ -736,9 +746,9 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
 
         if (cull_enabled_) {
             const float deg_to_rad = 0.01745329252f;
-            Float3 fwd_n = wf::normalize(forward);
-            Float3 up_n = wf::normalize(up_vec);
-            Float3 right_n = wf::normalize(right_vec);
+            Float3 fwd_n = forward;
+            Float3 up_n = up_vec;
+            Float3 right_n = right_vec;
 
             float tan_y = std::tan(0.5f * fov_deg_ * deg_to_rad);
             float tan_x = tan_y * aspect;
@@ -802,6 +812,20 @@ void VulkanApp::record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex) 
         }
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        debugTrianglePending = false;
+    }
+
+    if (debug_show_axes_ && debug_axes_pipeline_ && debug_axes_vertex_count_ > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debug_axes_pipeline_);
+        vkCmdPushConstants(cmd, debug_axes_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, MVP.data());
+        VkDeviceSize offs = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &debug_axes_vbo_, &offs);
+        vkCmdDraw(cmd, debug_axes_vertex_count_, 1, 0, 0);
+    }
+
+    if (debugTrianglePending) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
@@ -1108,6 +1132,12 @@ void VulkanApp::update_hud(float dt) {
                       invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
     }
 
+    size_t hud_len = std::strlen(hud);
+    std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
+                  "\nDebug: Axes:%s  Tri:%s",
+                  debug_show_axes_ ? "on" : "off",
+                  debug_show_test_triangle_ ? "on" : "off");
+
     // Only update overlay text if it actually changed
     if (hud_text_ != hud) {
         hud_text_.assign(hud);
@@ -1274,10 +1304,32 @@ void VulkanApp::draw_frame() {
 
     ui::ButtonStyle button_style;
     button_style.text_scale = 1.0f;
-    ui::Rect button_rect{6.0f, text_params.origin_px.y + text_height + 8.0f, 136.0f, 18.0f};
+    float button_y = text_params.origin_px.y + text_height + 8.0f;
+    const float button_height = 18.0f;
+    const float button_width = 136.0f;
+    const float button_spacing = 4.0f;
+
+    auto button_rect_at = [&](float y) {
+        return ui::Rect{6.0f, y, button_width, button_height};
+    };
+
     std::string button_label = std::string("Cull: ") + (cull_enabled_ ? "ON" : "OFF");
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.cull"), button_rect, button_label, button_style)) {
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.cull"), button_rect_at(button_y), button_label, button_style)) {
         cull_enabled_ = !cull_enabled_;
+        hud_force_refresh_ = true;
+    }
+    button_y += button_height + button_spacing;
+
+    std::string axes_label = std::string("Axes: ") + (debug_show_axes_ ? "ON" : "OFF");
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.axes"), button_rect_at(button_y), axes_label, button_style)) {
+        debug_show_axes_ = !debug_show_axes_;
+        hud_force_refresh_ = true;
+    }
+    button_y += button_height + button_spacing;
+
+    std::string tri_label = std::string("Tri: ") + (debug_show_test_triangle_ ? "ON" : "OFF");
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.triangle"), button_rect_at(button_y), tri_label, button_style)) {
+        debug_show_test_triangle_ = !debug_show_test_triangle_;
         hud_force_refresh_ = true;
     }
 
@@ -1318,6 +1370,7 @@ void VulkanApp::draw_frame() {
 void VulkanApp::cleanup_swapchain() {
     if (pipeline_triangle_) { vkDestroyPipeline(device_, pipeline_triangle_, nullptr); pipeline_triangle_ = VK_NULL_HANDLE; }
     if (pipeline_layout_) { vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr); pipeline_layout_ = VK_NULL_HANDLE; }
+    destroy_debug_axes_pipeline();
     // Overlay pipelines are handled by overlay_ during recreate
     for (auto fb : framebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
     framebuffers_.clear();
@@ -1439,6 +1492,8 @@ void VulkanApp::create_graphics_pipeline() {
     }
     vkDestroyShaderModule(device_, vs, nullptr);
     vkDestroyShaderModule(device_, fs, nullptr);
+
+    create_debug_axes_pipeline();
 }
 
 // legacy chunk pipeline removed (ChunkRenderer owns chunk graphics pipeline)
@@ -1446,6 +1501,183 @@ void VulkanApp::create_graphics_pipeline() {
 
 
 // removed overlay buffer update (handled by OverlayRenderer)
+
+void VulkanApp::create_debug_axes_buffer() {
+    if (debug_axes_vbo_) return;
+    const float axis_len = 1500.0f;
+    const DebugAxisVertex verts[] = {
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+        {{axis_len, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+        {{0.0f, axis_len, 0.0f}, {0.0f, 1.0f, 0.0f}},
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+        {{0.0f, 0.0f, axis_len}, {0.0f, 0.0f, 1.0f}},
+    };
+    VkDeviceSize bytes = sizeof(verts);
+    wf::vk::create_buffer(physical_device_, device_, bytes,
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          debug_axes_vbo_, debug_axes_vbo_mem_);
+    wf::vk::upload_host_visible(device_, debug_axes_vbo_mem_, bytes, verts, 0);
+    debug_axes_vertex_count_ = static_cast<uint32_t>(sizeof(verts) / sizeof(verts[0]));
+}
+
+void VulkanApp::destroy_debug_axes_buffer() {
+    if (debug_axes_vbo_) {
+        vkDestroyBuffer(device_, debug_axes_vbo_, nullptr);
+        debug_axes_vbo_ = VK_NULL_HANDLE;
+    }
+    if (debug_axes_vbo_mem_) {
+        vkFreeMemory(device_, debug_axes_vbo_mem_, nullptr);
+        debug_axes_vbo_mem_ = VK_NULL_HANDLE;
+    }
+    debug_axes_vertex_count_ = 0;
+}
+
+void VulkanApp::create_debug_axes_pipeline() {
+    destroy_debug_axes_pipeline();
+    if (!render_pass_) return;
+    create_debug_axes_buffer();
+
+#include "wf_config.h"
+    const std::string base = std::string(WF_SHADER_DIR);
+    const std::string vsPath = base + "/debug_axes.vert.spv";
+    const std::string fsPath = base + "/debug_axes.frag.spv";
+    VkShaderModule vs = load_shader_module(vsPath);
+    VkShaderModule fs = load_shader_module(fsPath);
+    if (!vs || !fs) {
+        if (vs) vkDestroyShaderModule(device_, vs, nullptr);
+        if (fs) vkDestroyShaderModule(device_, fs, nullptr);
+        std::cout << "[info] Debug axis shaders not found; axis gizmo disabled." << std::endl;
+        return;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(DebugAxisVertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].binding = 0;
+    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset = offsetof(DebugAxisVertex, pos);
+    attrs[1].location = 1;
+    attrs[1].binding = 0;
+    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[1].offset = offsetof(DebugAxisVertex, color);
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 2;
+    vi.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+    VkViewport vp{};
+    vp.x = 0.0f;
+    vp.y = static_cast<float>(swapchain_extent_.height);
+    vp.width = static_cast<float>(swapchain_extent_.width);
+    vp.height = -static_cast<float>(swapchain_extent_.height);
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    VkRect2D sc{};
+    sc.offset = {0, 0};
+    sc.extent = swapchain_extent_;
+    VkPipelineViewportStateCreateInfo vpstate{};
+    vpstate.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vpstate.viewportCount = 1;
+    vpstate.pViewports = &vp;
+    vpstate.scissorCount = 1;
+    vpstate.pScissors = &sc;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_LINE;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 2.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    cba.blendEnable = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkPushConstantRange pcr{};
+    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcr.offset = 0;
+    pcr.size = sizeof(float) * 16;
+    VkPipelineLayoutCreateInfo plci{};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(device_, &plci, nullptr, &debug_axes_layout_) != VK_SUCCESS) {
+        vkDestroyShaderModule(device_, vs, nullptr);
+        vkDestroyShaderModule(device_, fs, nullptr);
+        debug_axes_layout_ = VK_NULL_HANDLE;
+        return;
+    }
+
+    VkGraphicsPipelineCreateInfo gpi{};
+    gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gpi.stageCount = 2;
+    gpi.pStages = stages;
+    gpi.pVertexInputState = &vi;
+    gpi.pInputAssemblyState = &ia;
+    gpi.pViewportState = &vpstate;
+    gpi.pRasterizationState = &rs;
+    gpi.pMultisampleState = &ms;
+    gpi.pDepthStencilState = &ds;
+    gpi.pColorBlendState = &cb;
+    gpi.layout = debug_axes_layout_;
+    gpi.renderPass = render_pass_;
+    gpi.subpass = 0;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpi, nullptr, &debug_axes_pipeline_) != VK_SUCCESS) {
+        vkDestroyPipelineLayout(device_, debug_axes_layout_, nullptr);
+        debug_axes_layout_ = VK_NULL_HANDLE;
+        debug_axes_pipeline_ = VK_NULL_HANDLE;
+        std::cerr << "Failed to create debug axes pipeline.\n";
+    }
+
+    vkDestroyShaderModule(device_, vs, nullptr);
+    vkDestroyShaderModule(device_, fs, nullptr);
+}
+
+void VulkanApp::destroy_debug_axes_pipeline() {
+    if (debug_axes_pipeline_) {
+        vkDestroyPipeline(device_, debug_axes_pipeline_, nullptr);
+        debug_axes_pipeline_ = VK_NULL_HANDLE;
+    }
+    if (debug_axes_layout_) {
+        vkDestroyPipelineLayout(device_, debug_axes_layout_, nullptr);
+        debug_axes_layout_ = VK_NULL_HANDLE;
+    }
+}
 
 void VulkanApp::create_compute_pipeline() {
     // Load no-op compute shader

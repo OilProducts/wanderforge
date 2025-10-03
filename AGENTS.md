@@ -58,6 +58,7 @@
 - Prefer mailbox present mode when available; fall back to FIFO.
 - Depth state: triangle path has no depth; chunk path enables depth testing/writes.
 - Validation layers: enable in Debug; ensure the app still runs if layers aren’t installed.
+- Render conventions (Phase 3.5): build matrices column-major (`MVP = P * V`) using Vulkan’s 0..1 clip depth, treat +Y as up, and assume CCW front faces with `VK_CULL_MODE_BACK_BIT`. Overlay/HUD keeps culling disabled but uses the same winding. Use the HUD `Axes`/`Tri` toggles to validate orientation after math changes.
 
 ## Security & Configuration Tips
 - Prefer Debug builds while developing (validation layers on). If validation is missing, install the Vulkan SDK.

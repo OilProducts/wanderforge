@@ -83,7 +83,10 @@ Controls (chunk view):
 - Shift: hold to move faster
  - Default: horizontal mouse is inverted (A.K.A. swap left/right). Press `X` to toggle.
  - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in-window overlay mirrors the same info.
-  - When the mouse cursor is free (no RMB look), click the `Cull` HUD toggle to enable/disable CPU frustum culling.
+  - When the mouse cursor is free (no RMB look), the HUD exposes debug buttons:
+    - `Cull` toggles CPU frustum culling.
+    - `Axes` shows a world-axis gizmo (RGB = +X/+Y/+Z) rendered with the main pipeline.
+    - `Tri` draws a screen-space orientation triangle (R/G/B corners) to sanity-check clip-space conventions.
 
 Config options:
 - File `wanderforge.cfg` (same directory) or env vars:
@@ -119,8 +122,8 @@ The renderer is now aligned with Vulkan’s column-major + depth‑0..1 expectat
 - Matrices: CPU builds column-major `MVP = P * V` using `wf::perspective_vk` (Vulkan 0..1 clip depth). Shaders multiply `pc.mvp * vec4(inPos, 1)` directly.
 - Coordinate frame: right-handed world with +Y up. Free-fly and walk cameras derive yaw from the local +Y axis and pitch about the camera’s right axis.
 - Projection: default field of view comes from `wanderforge.cfg` (`fov_deg`, default 60°); near/far planes are `near_m`/`far_m` (defaults 0.1/1000.0).
-- Front faces & culling: the primary pipeline culls `VK_CULL_MODE_BACK_BIT` with `VK_FRONT_FACE_COUNTER_CLOCKWISE`. The chunk and overlay pipelines currently disable culling but their meshes still follow the same CCW orientation.
-- Overlay/HUD: quads are generated in screen pixels, converted to Vulkan NDC (Y up), and rendered with alpha blending.
+- Front faces & culling: chunk rendering now uses `VK_CULL_MODE_BACK_BIT` with `VK_FRONT_FACE_COUNTER_CLOCKWISE`. Overlay/HUD pipelines keep culling disabled but follow the same CCW winding, so they render correctly under the new convention.
+- Overlay/HUD: quads are generated in screen pixels, converted to Vulkan NDC (Y up), and rendered with alpha blending. Use the `Axes`/`Tri` HUD toggles to verify orientation after camera or matrix changes.
 
 Notes
 - The above choices worked reliably across our targets. Mixing GL/Vulkan depth or matrix layouts caused the visual anomalies we debugged; Phase 3.5 will migrate to Vulkan‑native depth and column‑major matrices with validation helpers.

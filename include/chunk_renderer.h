@@ -38,7 +38,6 @@ public:
     void set_pool_caps_bytes(VkDeviceSize vtx_bytes, VkDeviceSize idx_bytes) { vtx_initial_cap_ = vtx_bytes; idx_initial_cap_ = idx_bytes; }
     void set_device_local(bool enable) { use_device_local_ = enable; }
     void set_transfer_context(uint32_t queue_family, VkQueue queue) { transfer_queue_family_ = queue_family; transfer_queue_ = queue; }
-    void set_front_face_cw(bool cw) { front_face_cw_ = cw; }
 
     // Upload a mesh into the shared pools; returns offsets for indirect drawing
     // Returns false if the pool has no space (mesh not uploaded)
@@ -64,8 +63,6 @@ private:
 
     // Device-local toggle
     bool use_device_local_ = false;
-    bool front_face_cw_ = true;
-
     // Shared mesh pools (either host-visible or device-local)
     VkBuffer vtx_pool_ = VK_NULL_HANDLE;
     VkDeviceMemory vtx_mem_ = VK_NULL_HANDLE;
