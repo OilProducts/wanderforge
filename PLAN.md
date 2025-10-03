@@ -216,7 +216,7 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
   - Prepare the codebase for larger simulation phases by clarifying ownership of streaming/meshing state and persistence. *(streaming manager introduced; loader still pending)*
 - Deliverables:
   - Introduce a `wf_core` static library aggregating domain modules (`chunk`, `chunk_delta`, `planet`, `mesh_*`, `region_io`, `config_loader`, `ui` primitives as needed). The main executable and CPU tools link this target instead of listing sources individually. Build files updated accordingly. *(Done — 2025-10-03)*
-  - Extract a `ChunkStreamingManager` (or similar) owning loader threads, request queues, neighbor gathering, and result draining. `VulkanApp` becomes a client that issues camera-driven requests, consumes ready meshes, and pushes edits without touching worker internals. *(In progress — manager now holds cache/delta/remesh state; loader thread still attached to `VulkanApp`)*
+  - Extract a `ChunkStreamingManager` (or similar) owning loader threads, request queues, neighbor gathering, and result draining. `VulkanApp` becomes a client that issues camera-driven requests, consumes ready meshes, and pushes edits without touching worker internals. *(Done — 2025-10-03; loader thread, request queue, and mesh result handling fully migrated)*
   - Document subsystem seams in `PLAN.md`/`README`: which headers belong to the core library, how the streaming manager communicates (callbacks, ring buffers, or message structs). *(Pending)*
 - Acceptance:
   - `cmake --build` succeeds for `wanderforge`, `wf_ringmap`, `wf_chunk_demo`, and `wf_region_demo` without duplicate source lists. *(Done — verified 2025-10-03)*

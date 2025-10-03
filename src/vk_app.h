@@ -69,6 +69,8 @@ private:
     void generate_base_chunk(const FaceChunkKey& key, const Float3& right, const Float3& up, const Float3& forward, Chunk64& chunk);
     void flush_dirty_chunk_deltas();
     using VoxelHit = wf::VoxelHit;
+    using MeshResult = ChunkStreamingManager::MeshResult;
+    using LoadRequest = ChunkStreamingManager::LoadRequest;
     bool world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const;
     bool pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before);
     bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim = 1);
@@ -283,9 +285,6 @@ private:
     int surface_band_pad_shells_ = 2; // intersects [minR-pad*chunk_thickness, maxR+pad*chunk_thickness]
 
     // Profiling/metrics
-    std::atomic<double> loader_last_mesh_ms_{0.0};
-    std::atomic<double> loader_last_total_ms_{0.0};
-    std::atomic<int>    loader_last_meshed_{0};
     int                 last_upload_count_ = 0;
     double              last_upload_ms_ = 0.0;
     double              upload_ms_avg_ = 0.0;
@@ -298,16 +297,6 @@ private:
     void schedule_delete_chunk(const RenderChunk& rc);
 
     // Async loading/meshing
-    struct MeshResult {
-        std::vector<Vertex> vertices;
-        std::vector<uint32_t> indices;
-        float center[3] = {0,0,0};
-        float radius = 0.0f;
-        FaceChunkKey key{0,0,0,0};
-        uint64_t job_gen = 0;
-        uint32_t first_index = 0;
-        int32_t base_vertex = 0;
-    };
     struct CachedNeighborChunks {
         std::optional<Chunk64> neg_x;
         std::optional<Chunk64> pos_x;
@@ -327,32 +316,16 @@ private:
                                  const Chunk64& chunk,
                                  MeshResult& out) const;
     bool build_chunk_mesh_result(const FaceChunkKey& key,
-                                         const Chunk64& chunk,
-                                         const Chunk64* nx, const Chunk64* px,
-                                         const Chunk64* ny, const Chunk64* py,
-                                         const Chunk64* nz, const Chunk64* pz,
-                                         MeshResult& out) const;
-    std::thread loader_thread_;
-    std::mutex loader_mutex_;
-    std::condition_variable loader_cv_;
-    bool loader_quit_ = false;
-    bool loader_busy_ = false;
-    std::deque<MeshResult> results_queue_;
+                                 const Chunk64& chunk,
+                                 const Chunk64* nx, const Chunk64* px,
+                                 const Chunk64* ny, const Chunk64* py,
+                                 const Chunk64* nz, const Chunk64* pz,
+                                 MeshResult& out) const;
     int uploads_per_frame_limit_ = 16;
     int loader_threads_ = 0; // 0 = auto
-    std::atomic<double> loader_last_gen_ms_{0.0};
-    std::atomic<int> loader_last_chunks_{0};
-
-    // Persistent loader: request queue and helpers
-    struct LoadRequest { int face; int ring_radius; std::int64_t ci; std::int64_t cj; std::int64_t ck; int k_down; int k_up; float fwd_s; float fwd_t; uint64_t gen; };
-    std::deque<LoadRequest> request_queue_;
-    std::atomic<uint64_t> request_gen_{0};
-
     void start_initial_ring_async();
-    void start_loader_thread();
-    void enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t);
-    void loader_thread_main();
-    void build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t, uint64_t job_gen);
+    uint64_t enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t);
+    void build_ring_job(const LoadRequest& request);
     void drain_mesh_results();
     void update_streaming();
     void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);

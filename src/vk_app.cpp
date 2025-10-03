@@ -105,6 +105,9 @@ VulkanApp::VulkanApp() {
     streaming_manager_.set_save_chunks_enabled(save_chunks_enabled_);
     streaming_manager_.set_log_stream(log_stream_);
     streaming_manager_.set_remesh_per_frame_cap(4);
+    streaming_manager_.set_load_job([this](const LoadRequest& req) {
+        this->build_ring_job(req);
+    });
 }
 
 void VulkanApp::set_config_path(std::string path) {
@@ -112,13 +115,7 @@ void VulkanApp::set_config_path(std::string path) {
 }
 
 VulkanApp::~VulkanApp() {
-    // Stop loader thread if running
-    {
-        std::lock_guard<std::mutex> lk(loader_mutex_);
-        loader_quit_ = true;
-    }
-    loader_cv_.notify_all();
-    if (loader_thread_.joinable()) loader_thread_.join();
+    streaming_manager_.stop();
     flush_dirty_chunk_deltas();
     vkDeviceWaitIdle(device_);
 
@@ -1174,15 +1171,12 @@ void VulkanApp::update_hud(float dt) {
         float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         float i_used_mb = (float)i_used / (1024.0f*1024.0f);
         float i_cap_mb  = (float)(i_cap ? i_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
-        size_t qdepth = 0; {
-            std::lock_guard<std::mutex> lk(loader_mutex_);
-            qdepth = results_queue_.size();
-        }
-        double gen_ms = loader_last_gen_ms_.load();
-        int gen_chunks = loader_last_chunks_.load();
+        size_t qdepth = streaming_manager_.result_queue_depth();
+        double gen_ms = streaming_manager_.last_generation_ms();
+        int gen_chunks = streaming_manager_.last_generated_chunks();
         double ms_per = (gen_chunks > 0) ? (gen_ms / (double)gen_chunks) : 0.0;
-        double mesh_ms = loader_last_mesh_ms_.load();
-        int meshed = loader_last_meshed_.load();
+        double mesh_ms = streaming_manager_.last_mesh_ms();
+        int meshed = streaming_manager_.last_meshed_chunks();
         double mesh_ms_per = (meshed > 0) ? (mesh_ms / (double)meshed) : 0.0;
         double up_ms = last_upload_ms_;
         int up_count = last_upload_count_;
@@ -1205,7 +1199,7 @@ void VulkanApp::update_hud(float dt) {
                       mesh_ms, meshed, mesh_ms_per,
                       up_count, up_ms, upload_ms_avg_,
                       (float)cam_rd_hud, (float)target_r, (float)dr, eye_height_m_, walk_surface_bias_m_,
-                      v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, loader_busy_?"busy":"idle");
+                      v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, streaming_manager_.loader_busy()?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
                       "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
@@ -2449,62 +2443,32 @@ void VulkanApp::profile_append_csv(const std::string& line) {
     out << line;
 }
 
-void VulkanApp::loader_thread_main() {
-    for (;;) {
-        LoadRequest req;
-        {
-            std::unique_lock<std::mutex> lk(loader_mutex_);
-            loader_cv_.wait(lk, [&]{ return loader_quit_ || !request_queue_.empty(); });
-            if (loader_quit_) break;
-            // Coalesce to latest request
-            req = request_queue_.back();
-            request_queue_.clear();
-            loader_busy_ = true;
-        }
-        if (log_stream_) {
-            std::cout << "[stream] process request: face=" << req.face << " ring=" << req.ring_radius
-                      << " ci=" << req.ci << " cj=" << req.cj << " ck=" << req.ck
-                      << " k_down=" << req.k_down << " k_up=" << req.k_up << "\n";
-        }
-        build_ring_job(req.face, req.ring_radius, req.ci, req.cj, req.ck, req.k_down, req.k_up, req.fwd_s, req.fwd_t, req.gen);
-        {
-            std::lock_guard<std::mutex> lk(loader_mutex_);
-            loader_busy_ = false;
-        }
-    }
-}
 void VulkanApp::schedule_delete_chunk(const RenderChunk& rc) {
     // Defer destruction to the next frame slot to guarantee GPU is done using previous submissions.
     size_t slot = (current_frame_ + 1) % kFramesInFlight;
     trash_[slot].push_back(rc);
 }
 
-void VulkanApp::start_loader_thread() {
-    if (!loader_thread_.joinable()) {
-        std::lock_guard<std::mutex> lk(loader_mutex_);
-        loader_quit_ = false;
-        loader_busy_ = false;
-        loader_thread_ = std::thread(&VulkanApp::loader_thread_main, this);
-    }
-}
-
-void VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t) {
-    uint64_t gen = ++request_gen_;
+uint64_t VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t) {
+    LoadRequest req{};
+    req.face = face;
+    req.ring_radius = ring_radius;
+    req.ci = center_i;
+    req.cj = center_j;
+    req.ck = center_k;
+    req.k_down = k_down;
+    req.k_up = k_up;
+    req.fwd_s = fwd_s;
+    req.fwd_t = fwd_t;
+    uint64_t gen = streaming_manager_.enqueue_request(req);
     stream_face_ready_ = false;
     pending_request_gen_ = gen;
-    {
-        std::lock_guard<std::mutex> lk(loader_mutex_);
-        // Collapse to the latest request
-        LoadRequest req{face, ring_radius, center_i, center_j, center_k, k_down, k_up, fwd_s, fwd_t, gen};
-        request_queue_.clear();
-        request_queue_.push_back(req);
-    }
-    loader_cv_.notify_one();
+    return gen;
 }
 
 void VulkanApp::start_initial_ring_async() {
     // Initialize persistent worker and enqueue initial ring around current camera on the appropriate face
-    start_loader_thread();
+    streaming_manager_.start();
     const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;
@@ -2535,7 +2499,17 @@ void VulkanApp::start_initial_ring_async() {
     }
 }
 
-void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t, uint64_t job_gen) {
+void VulkanApp::build_ring_job(const LoadRequest& request) {
+    const int face = request.face;
+    const int ring_radius = request.ring_radius;
+    const std::int64_t center_i = request.ci;
+    const std::int64_t center_j = request.cj;
+    const std::int64_t center_k = request.ck;
+    const int k_down = request.k_down;
+    const int k_up = request.k_up;
+    const float fwd_s = request.fwd_s;
+    const float fwd_t = request.fwd_t;
+    const uint64_t job_gen = request.gen;
     const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const float s = (float)cfg.voxel_size_m;
@@ -2588,8 +2562,8 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     for (int w = 0; w < nthreads; ++w) {
         workers.emplace_back([&, job_gen](){
             for (;;) {
-                if (loader_quit_) return;
-                if (request_gen_.load() != job_gen) return;
+                if (streaming_manager_.should_abort(job_gen)) return;
+                if (streaming_manager_.should_abort(job_gen)) return;
                 size_t idx = ti.fetch_add(1, std::memory_order_relaxed);
                 if (idx >= tasks.size()) break;
                 const Task t = tasks[idx];
@@ -2619,9 +2593,8 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     for (auto& th : workers) th.join();
     auto t1 = std::chrono::steady_clock::now();
     double gen_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    loader_last_gen_ms_.store(gen_ms);
-    loader_last_chunks_.store((int)tasks.size());
-    if (loader_quit_ || request_gen_.load() != job_gen) return;
+    streaming_manager_.update_generation_stats(gen_ms, (int)tasks.size());
+    if (streaming_manager_.should_abort(job_gen)) return;
 
     // Meshing pass: parallelize over prioritized tasks (di,dj,dk)
     int meshed_count = 0;
@@ -2647,7 +2620,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     auto mesh_worker = [&]() {
         int local_meshed = 0;
         while (true) {
-            if (loader_quit_ || request_gen_.load() != job_gen) break;
+            if (streaming_manager_.should_abort(job_gen)) break;
             size_t idx = mi.fetch_add(1, std::memory_order_relaxed);
             if (idx >= mtasks.size()) break;
             const auto t = mtasks[idx];
@@ -2684,11 +2657,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.job_gen = job_gen;
-            {
-                std::lock_guard<std::mutex> lk(loader_mutex_);
-                results_queue_.push_back(std::move(res));
-            }
-            loader_cv_.notify_one();
+            streaming_manager_.push_mesh_result(std::move(res));
             local_meshed++;
         }
         if (local_meshed) meshed_accum.fetch_add(local_meshed, std::memory_order_relaxed);
@@ -2698,9 +2667,7 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
     meshed_count = meshed_accum.load();
     auto t2 = std::chrono::steady_clock::now();
     double mesh_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    loader_last_mesh_ms_.store(mesh_ms);
-    loader_last_meshed_.store(meshed_count);
-    loader_last_total_ms_.store(gen_ms + mesh_ms);
+    streaming_manager_.update_mesh_stats(mesh_ms, meshed_count, gen_ms + mesh_ms);
     if (profile_csv_enabled_) {
         double tsec = std::chrono::duration<double>(t2 - app_start_tp_).count();
         char line[256];
@@ -2717,12 +2684,7 @@ void VulkanApp::drain_mesh_results() {
     auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         MeshResult res;
-        {
-            std::lock_guard<std::mutex> lk(loader_mutex_);
-            if (results_queue_.empty()) break;
-            res = std::move(results_queue_.front());
-            results_queue_.pop_front();
-        }
+        if (!streaming_manager_.try_pop_result(res)) break;
         RenderChunk rc;
         rc.index_count = (uint32_t)res.indices.size();
         rc.vertex_count = (uint32_t)res.vertices.size();
@@ -2945,11 +2907,8 @@ void VulkanApp::update_streaming() {
     }
 
     // Build prune allow-list: keep current face ring with hysteresis in s/t and k; optionally keep previous face while timer active
-    if (!stream_face_ready_) {
-        std::lock_guard<std::mutex> lk(loader_mutex_);
-        if (!loader_busy_ && request_queue_.empty()) {
-            stream_face_ready_ = true;
-        }
+    if (!stream_face_ready_ && streaming_manager_.loader_idle()) {
+        stream_face_ready_ = true;
     }
 
     std::vector<AllowRegion> allows;
