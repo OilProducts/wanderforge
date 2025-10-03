@@ -205,6 +205,7 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
   - Fast apply path so edits remesh locally without full world rebuild; instrumentation to monitor delta footprint.
   - Action items: extract single-chunk remesh helper (reuse greedy meshing with cached neighbors),
     store neighboring chunks in the cache, and drain a per-frame remesh queue triggered by ChunkDelta dirty flags.
+- Follow-up: camera still floats at baked walk height; once edits create voids or raised columns the player doesn’t drop or collide. Add gravity/collision handling so dig/build affects navigation (phase 5 prep?).
 - Acceptance:
   - Dig/place tools run against regenerated base chunks; edits persist across runs and remesh only touched chunks.
   - Worlds without edits no longer consume multi-GB of on-disk chunk data; loader regenerates base content on demand with deltas applied.

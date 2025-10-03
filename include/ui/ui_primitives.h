@@ -19,6 +19,17 @@ struct ButtonStyle {
     float text_scale = 1.0f;
 };
 
+struct SelectableStyle {
+    Color bg = Color{0.16f, 0.16f, 0.18f, 0.85f};
+    Color bg_hover = Color{0.24f, 0.24f, 0.28f, 0.95f};
+    Color bg_active = Color{0.10f, 0.10f, 0.12f, 1.0f};
+    Color bg_selected = Color{0.30f, 0.25f, 0.12f, 0.95f};
+    Color bg_selected_hover = Color{0.35f, 0.28f, 0.14f, 1.0f};
+    Color text = Color{1.0f, 1.0f, 1.0f, 1.0f};
+    float padding_px = 6.0f;
+    float text_scale = 1.0f;
+};
+
 struct CrosshairStyle {
     Color color = Color{1.0f, 1.0f, 1.0f, 0.85f};
     float arm_length_px = 8.0f;
@@ -55,6 +66,14 @@ bool button(UIContext& ctx,
             const Rect& rect_px,
             std::string_view label,
             const ButtonStyle& style = ButtonStyle{});
+
+bool selectable(UIContext& ctx,
+                UIBackend& backend,
+                UIID id,
+                const Rect& rect_px,
+                std::string_view label,
+                bool selected,
+                const SelectableStyle& style = SelectableStyle{});
 
 void crosshair(UIContext& ctx,
                const Vec2& center_px,

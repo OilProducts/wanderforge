@@ -17,6 +17,8 @@
 #include <sstream>
 #include <cmath>
 #include <chrono>
+#include <string_view>
+#include <span>
 
 #include "chunk.h"
 #include "chunk_delta.h"
@@ -36,6 +38,18 @@ namespace wf {
 namespace {
 constexpr float kDeltaPromoteDensity = 0.18f; // promote sparse deltas once ~18% of voxels diverge
 constexpr float kDeltaDemoteDensity = 0.08f; // demote dense deltas when activity subsides
+
+struct ResolutionOption {
+    int width = 0;
+    int height = 0;
+    std::string_view label;
+};
+
+static constexpr std::array<ResolutionOption, 4> kResolutionOptions = {{{1280, 720, "1280 x 720 (720p)"},
+                                                                        {1920, 1080, "1920 x 1080 (1080p)"},
+                                                                        {2560, 1440, "2560 x 1440 (1440p)"},
+                                                                        {3840, 2160, "3840 x 2160 (2160p)"}}};
+static_assert(!kResolutionOptions.empty());
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -184,11 +198,15 @@ void VulkanApp::run() {
             std::abort();
         }
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        window_ = glfwCreateWindow(width_, height_, "Wanderforge", nullptr, nullptr);
+        window_ = glfwCreateWindow(window_width_, window_height_, "Wanderforge", nullptr, nullptr);
         if (!window_) {
             std::cerr << "Failed to create GLFW window\n";
             std::abort();
         }
+        glfwGetWindowSize(window_, &window_width_, &window_height_);
+        framebuffer_width_ = window_width_;
+        framebuffer_height_ = window_height_;
+        hud_resolution_index_ = find_resolution_index(window_width_, window_height_);
     }
 
 void VulkanApp::set_mouse_capture(bool capture) {
@@ -430,7 +448,7 @@ void VulkanApp::create_swapchain() {
     for (auto m : pms) if (m == VK_PRESENT_MODE_MAILBOX_KHR) { chosenPm = m; break; }
 
     VkExtent2D extent = caps.currentExtent;
-    if (extent.width == 0xFFFFFFFF) { extent = { (uint32_t)width_, (uint32_t)height_ }; }
+    if (extent.width == 0xFFFFFFFF) { extent = { (uint32_t)window_width_, (uint32_t)window_height_ }; }
     uint32_t imageCount = caps.minImageCount + 1; if (caps.maxImageCount && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
 
     VkSwapchainCreateInfoKHR sci{};
@@ -454,6 +472,9 @@ void VulkanApp::create_swapchain() {
     uint32_t count=0; vkGetSwapchainImagesKHR(device_, swapchain_, &count, nullptr);
     swapchain_images_.resize(count); vkGetSwapchainImagesKHR(device_, swapchain_, &count, swapchain_images_.data());
     swapchain_format_ = chosenFmt.format; swapchain_extent_ = extent;
+    framebuffer_width_ = static_cast<int>(extent.width);
+    framebuffer_height_ = static_cast<int>(extent.height);
+    hud_resolution_index_ = find_resolution_index(window_width_, window_height_);
 }
 
 void VulkanApp::create_image_views() {
@@ -1066,7 +1087,7 @@ void VulkanApp::update_input(float dt) {
             if (pick_voxel(solid, empty)) {
                 edit_last_solid_ = solid;
                 if (empty.key.face >= 0) edit_last_empty_ = empty;
-                apply_voxel_edit(solid, MAT_AIR);
+                apply_voxel_edit(solid, MAT_AIR, current_brush_dim());
             }
         }
         edit_lmb_prev_down_ = lmb;
@@ -1077,7 +1098,7 @@ void VulkanApp::update_input(float dt) {
             VoxelHit empty{};
             if (pick_voxel(solid, empty) && empty.key.face >= 0) {
                 edit_last_empty_ = empty;
-                apply_voxel_edit(empty, edit_place_material_);
+                apply_voxel_edit(empty, edit_place_material_, current_brush_dim());
             }
         }
         edit_place_prev_down_ = place_key;
@@ -1089,8 +1110,26 @@ void VulkanApp::update_input(float dt) {
     // Feed UI backend
     ui::UIBackend::InputState ui_input{};
     glfwGetCursorPos(window_, &cursor_x, &cursor_y);
-    ui_input.mouse_x = cursor_x;
-    ui_input.mouse_y = cursor_y;
+    glfwGetWindowSize(window_, &window_width_, &window_height_);
+    int fb_w = 0;
+    int fb_h = 0;
+    glfwGetFramebufferSize(window_, &fb_w, &fb_h);
+    if (fb_w > 0 && fb_h > 0) {
+        framebuffer_width_ = fb_w;
+        framebuffer_height_ = fb_h;
+    }
+    double scale_x = 1.0;
+    double scale_y = 1.0;
+    if (window_width_ > 0) {
+        scale_x = static_cast<double>(swapchain_extent_.width ? swapchain_extent_.width : framebuffer_width_) /
+                  static_cast<double>(window_width_);
+    }
+    if (window_height_ > 0) {
+        scale_y = static_cast<double>(swapchain_extent_.height ? swapchain_extent_.height : framebuffer_height_) /
+                  static_cast<double>(window_height_);
+    }
+    ui_input.mouse_x = cursor_x * scale_x;
+    ui_input.mouse_y = cursor_y * scale_y;
     ui_input.mouse_down[0] = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     ui_input.mouse_down[1] = (rmb == GLFW_PRESS);
     ui_input.mouse_down[2] = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
@@ -1292,6 +1331,49 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     std::cout << "[config] region_root=" << region_root_ << " (active)\n";
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 
+    hud_force_refresh_ = true;
+}
+
+std::size_t VulkanApp::find_resolution_index(int width, int height) const {
+    for (std::size_t i = 0; i < kResolutionOptions.size(); ++i) {
+        if (kResolutionOptions[i].width == width && kResolutionOptions[i].height == height) {
+            return i;
+        }
+    }
+    return (hud_resolution_index_ < kResolutionOptions.size()) ? hud_resolution_index_ : 0;
+}
+
+int VulkanApp::current_brush_dim() const {
+    switch (selected_tool_) {
+        case ToolSelection::SmallShovel: return 2;
+        case ToolSelection::LargeShovel: return 5;
+        case ToolSelection::None:
+        default: return 1;
+    }
+}
+
+void VulkanApp::apply_resolution_option(std::size_t index) {
+    if (kResolutionOptions.empty() || index >= kResolutionOptions.size() || !window_) {
+        return;
+    }
+
+    const ResolutionOption& opt = kResolutionOptions[index];
+    int cur_w = 0;
+    int cur_h = 0;
+    glfwGetWindowSize(window_, &cur_w, &cur_h);
+
+    if (cur_w == opt.width && cur_h == opt.height) {
+        hud_resolution_index_ = index;
+        window_width_ = cur_w;
+        window_height_ = cur_h;
+        return;
+    }
+
+    std::cout << "[hud] resizing window to " << opt.width << " x " << opt.height << "\n";
+    glfwSetWindowSize(window_, opt.width, opt.height);
+    window_width_ = opt.width;
+    window_height_ = opt.height;
+    hud_resolution_index_ = index;
     hud_force_refresh_ = true;
 }
 
@@ -1729,23 +1811,66 @@ void VulkanApp::process_pending_remeshes() {
     }
 }
 
-bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material) {
+bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim) {
     FaceChunkKey key = target.key;
-    uint32_t lidx = Chunk64::lindex(target.x, target.y, target.z);
-    BaseSample base = sample_base(planet_cfg_, target.voxel);
+    brush_dim = std::max(brush_dim, 1);
+    if (brush_dim > Chunk64::N) brush_dim = Chunk64::N;
 
-    std::unique_lock delta_lock(chunk_delta_mutex_);
-    ChunkDelta& delta = chunk_deltas_.try_emplace(key, ChunkDelta{}).first->second;
-    delta.apply_edit(lidx, base.material, new_material);
-    normalize_chunk_delta_representation(delta);
-    delta_lock.unlock();
+    int half = brush_dim / 2;
+    bool even = (brush_dim % 2) == 0;
+    int start = -half;
+    int end = even ? half - 1 : half;
+
+    struct PendingEdit {
+        int lx;
+        int ly;
+        int lz;
+        uint16_t base_material;
+    };
+
+    std::vector<PendingEdit> edits;
+    edits.reserve(brush_dim * brush_dim * brush_dim);
+
+    for (int dz = start; dz <= end; ++dz) {
+        int lz = target.z + dz;
+        if (lz < 0 || lz >= Chunk64::N) continue;
+        for (int dy = start; dy <= end; ++dy) {
+            int ly = target.y + dy;
+            if (ly < 0 || ly >= Chunk64::N) continue;
+            for (int dx = start; dx <= end; ++dx) {
+                int lx = target.x + dx;
+                if (lx < 0 || lx >= Chunk64::N) continue;
+                wf::i64 vx = target.voxel.x + static_cast<wf::i64>(dx);
+                wf::i64 vy = target.voxel.y + static_cast<wf::i64>(dy);
+                wf::i64 vz = target.voxel.z + static_cast<wf::i64>(dz);
+                BaseSample base = sample_base(planet_cfg_, Int3{vx, vy, vz});
+                edits.push_back(PendingEdit{lx, ly, lz, base.material});
+            }
+        }
+    }
+
+    if (edits.empty()) {
+        return false;
+    }
+
+    {
+        std::unique_lock delta_lock(chunk_delta_mutex_);
+        ChunkDelta& delta = chunk_deltas_.try_emplace(key, ChunkDelta{}).first->second;
+        for (const PendingEdit& edit : edits) {
+            uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
+            delta.apply_edit(lidx, edit.base_material, new_material);
+        }
+        normalize_chunk_delta_representation(delta);
+    }
 
     std::vector<FaceChunkKey> neighbors_to_remesh;
     {
         std::scoped_lock cache_lock(chunk_cache_mutex_);
         auto it = chunk_cache_.find(key);
         if (it != chunk_cache_.end()) {
-            it->second.set_voxel(target.x, target.y, target.z, new_material);
+            for (const PendingEdit& edit : edits) {
+                it->second.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
+            }
         }
         auto consider = [&](const FaceChunkKey& k) {
             if (chunk_cache_.find(k) != chunk_cache_.end()) neighbors_to_remesh.push_back(k);
@@ -1888,6 +2013,72 @@ void VulkanApp::draw_frame() {
     std::string tri_label = std::string("Tri: ") + (debug_show_test_triangle_ ? "ON" : "OFF");
     if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.triangle"), button_rect_at(button_y), tri_label, button_style)) {
         debug_show_test_triangle_ = !debug_show_test_triangle_;
+        hud_force_refresh_ = true;
+    }
+    button_y += button_height + button_spacing;
+
+    std::array<std::string_view, kResolutionOptions.size()> resolution_labels{};
+    for (std::size_t i = 0; i < kResolutionOptions.size(); ++i) {
+        resolution_labels[i] = kResolutionOptions[i].label;
+    }
+
+    ui::Rect dropdown_rect{6.0f, button_y, button_width, button_height};
+    ui::DropdownResult resolution_dropdown = ui::dropdown(
+        hud_ui_context_,
+        hud_ui_backend_,
+        ui::hash_id("hud.resolution"),
+        dropdown_rect,
+        std::span<const std::string_view>(resolution_labels.data(), resolution_labels.size()),
+        std::min(hud_resolution_index_, kResolutionOptions.size() - 1));
+
+    if (resolution_dropdown.selection_changed) {
+        apply_resolution_option(resolution_dropdown.selected_index);
+    } else {
+        hud_resolution_index_ = std::min(resolution_dropdown.selected_index, kResolutionOptions.size() - 1);
+    }
+
+    const float hud_scale = (ui_params.style.scale > 0.0f) ? ui_params.style.scale : 1.0f;
+    auto unscale = [&](float px) { return px / hud_scale; };
+
+    const float tool_slot_px = 72.0f;
+    const float tool_slot_spacing_px = 16.0f;
+    const float tool_bottom_margin_px = 32.0f;
+    const float tool_total_width_px = tool_slot_px * 2.0f + tool_slot_spacing_px;
+    const float tool_start_x_px = (ui_params.screen_width - tool_total_width_px) * 0.5f;
+    const float tool_y_px = std::max(0.0f, ui_params.screen_height - tool_bottom_margin_px - tool_slot_px);
+
+    ui::SelectableStyle tool_style;
+    tool_style.text_scale = 0.9f;
+    tool_style.padding_px = 8.0f;
+
+    auto tool_rect_at = [&](int index) {
+        float x_px = tool_start_x_px + static_cast<float>(index) * (tool_slot_px + tool_slot_spacing_px);
+        return ui::Rect{unscale(x_px), unscale(tool_y_px), unscale(tool_slot_px), unscale(tool_slot_px)};
+    };
+
+    bool small_selected = (selected_tool_ == ToolSelection::SmallShovel);
+    bool clicked_small = ui::selectable(hud_ui_context_,
+                                        hud_ui_backend_,
+                                        ui::hash_id("hud.tool.small"),
+                                        tool_rect_at(0),
+                                        "Small\nShovel",
+                                        small_selected,
+                                        tool_style);
+    if (clicked_small) {
+        selected_tool_ = small_selected ? ToolSelection::None : ToolSelection::SmallShovel;
+        hud_force_refresh_ = true;
+    }
+
+    bool large_selected = (selected_tool_ == ToolSelection::LargeShovel);
+    bool clicked_large = ui::selectable(hud_ui_context_,
+                                        hud_ui_backend_,
+                                        ui::hash_id("hud.tool.large"),
+                                        tool_rect_at(1),
+                                        "Big\nShovel",
+                                        large_selected,
+                                        tool_style);
+    if (clicked_large) {
+        selected_tool_ = large_selected ? ToolSelection::None : ToolSelection::LargeShovel;
         hud_force_refresh_ = true;
     }
 

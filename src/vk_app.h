@@ -61,6 +61,9 @@ private:
     void load_config();
     AppConfig snapshot_config() const;
     void apply_config(const AppConfig& cfg);
+    void apply_resolution_option(std::size_t index);
+    std::size_t find_resolution_index(int width, int height) const;
+    int current_brush_dim() const;
     void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
     void generate_base_chunk(const FaceChunkKey& key, const Float3& right, const Float3& up, const Float3& forward, Chunk64& chunk);
     void normalize_chunk_delta_representation(ChunkDelta& delta);
@@ -76,7 +79,7 @@ private:
     };
     bool world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const;
     bool pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before);
-    bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material);
+    bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim = 1);
     void queue_chunk_remesh(const FaceChunkKey& key);
     void process_pending_remeshes();
 
@@ -91,8 +94,18 @@ private:
 private:
     // Window
     GLFWwindow* window_ = nullptr;
-    int width_ = 1280;
-    int height_ = 720;
+    int window_width_ = 1280;
+    int window_height_ = 720;
+    int framebuffer_width_ = 1280;
+    int framebuffer_height_ = 720;
+    std::size_t hud_resolution_index_ = 0;
+
+    enum class ToolSelection {
+        None,
+        SmallShovel,
+        LargeShovel
+    };
+    ToolSelection selected_tool_ = ToolSelection::None;
 
     // Vulkan core
     VkInstance instance_ = VK_NULL_HANDLE;

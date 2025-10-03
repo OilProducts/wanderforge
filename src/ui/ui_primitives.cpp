@@ -63,6 +63,48 @@ bool button(UIContext& ctx,
     return state.pressed;
 }
 
+bool selectable(UIContext& ctx,
+                UIBackend& backend,
+                UIID id,
+                const Rect& rect_px,
+                std::string_view label,
+                bool selected,
+                const SelectableStyle& style) {
+    UIBackend::InputState input = backend.input();
+    WidgetState& state = backend.state(id);
+
+    Rect scaled_rect = scale_rect(rect_px, ctx.params().style.scale);
+    bool inside = input.has_mouse && point_in_rect(input.mouse_x, input.mouse_y, scaled_rect);
+    bool just_pressed = input.mouse_pressed[0] && inside;
+
+    state.hovered = inside;
+    state.active = inside && input.mouse_down[0];
+    state.pressed = just_pressed;
+    state.value = selected ? 1.0f : 0.0f;
+
+    Color fill = selected ? style.bg_selected : style.bg;
+    if (state.active) {
+        fill = style.bg_active;
+    } else if (inside) {
+        fill = selected ? style.bg_selected_hover : style.bg_hover;
+    }
+
+    ctx.add_shadowed_quad_pixels(rect_px, fill);
+
+    TextDrawParams text_params;
+    text_params.origin_px = Vec2{rect_px.x + style.padding_px, rect_px.y + style.padding_px};
+    text_params.margin_right_px = std::max(0.0f, rect_px.w - style.padding_px * 2.0f);
+    text_params.line_spacing_px = 2.0f;
+    text_params.scale = style.text_scale;
+    text_params.color = style.text;
+    text_params.ellipsis = false;
+
+    std::string label_str(label);
+    add_text_block(ctx, label_str.c_str(), ctx.params().screen_width, text_params);
+
+    return state.pressed;
+}
+
 void crosshair(UIContext& ctx,
                const Vec2& center_px,
                const CrosshairStyle& style) {
