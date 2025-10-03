@@ -6,6 +6,7 @@
 #endif
 #include <cassert>
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <cstdio>
@@ -18,8 +19,10 @@
 #include <chrono>
 
 #include "chunk.h"
+#include "chunk_delta.h"
 #include "mesh.h"
 #include "planet.h"
+#include "wf_noise.h"
 #include "region_io.h"
 #include "vk_utils.h"
 #include "camera.h"
@@ -29,6 +32,11 @@
 #include "ui/ui_id.h"
 
 namespace wf {
+
+namespace {
+constexpr float kDeltaPromoteDensity = 0.18f; // promote sparse deltas once ~18% of voxels diverge
+constexpr float kDeltaDemoteDensity = 0.08f; // demote dense deltas when activity subsides
+}
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -92,6 +100,7 @@ VulkanApp::~VulkanApp() {
     }
     loader_cv_.notify_all();
     if (loader_thread_.joinable()) loader_thread_.join();
+    flush_dirty_chunk_deltas();
     vkDeviceWaitIdle(device_);
 
     cleanup_swapchain();
@@ -1049,6 +1058,34 @@ void VulkanApp::update_input(float dt) {
     if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; }
     key_prev_toggle_y_ = (ky == GLFW_PRESS);
 
+    if (mouse_captured_) {
+        bool lmb = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (lmb && !edit_lmb_prev_down_) {
+            VoxelHit solid{};
+            VoxelHit empty{};
+            if (pick_voxel(solid, empty)) {
+                edit_last_solid_ = solid;
+                if (empty.key.face >= 0) edit_last_empty_ = empty;
+                apply_voxel_edit(solid, MAT_AIR);
+            }
+        }
+        edit_lmb_prev_down_ = lmb;
+
+        bool place_key = glfwGetKey(window_, GLFW_KEY_G) == GLFW_PRESS;
+        if (place_key && !edit_place_prev_down_) {
+            VoxelHit solid{};
+            VoxelHit empty{};
+            if (pick_voxel(solid, empty) && empty.key.face >= 0) {
+                edit_last_empty_ = empty;
+                apply_voxel_edit(empty, edit_place_material_);
+            }
+        }
+        edit_place_prev_down_ = place_key;
+    } else {
+        edit_lmb_prev_down_ = false;
+        edit_place_prev_down_ = false;
+    }
+
     // Feed UI backend
     ui::UIBackend::InputState ui_input{};
     glfwGetCursorPos(window_, &cursor_x, &cursor_y);
@@ -1256,6 +1293,296 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 
     hud_force_refresh_ = true;
+}
+
+void VulkanApp::generate_base_chunk(const FaceChunkKey& key,
+                                    const Float3& right,
+                                    const Float3& up,
+                                    const Float3& forward,
+                                    Chunk64& chunk) {
+    const PlanetConfig& cfg = planet_cfg_;
+    const int N = Chunk64::N;
+    const double voxel_m = cfg.voxel_size_m;
+    const double chunk_m = (double)N * voxel_m;
+    const double s_origin = (double)key.i * chunk_m;
+    const double t_origin = (double)key.j * chunk_m;
+    const double r_origin = (double)key.k * chunk_m;
+
+    chunk.fill_all_air();
+
+    // Precompute radial shells for this chunk (meters from origin to voxel centers)
+    std::array<double, Chunk64::N> radial_m{};
+    for (int z = 0; z < N; ++z) {
+        radial_m[z] = r_origin + (z + 0.5) * voxel_m;
+    }
+
+    struct ColumnGenData {
+        Float3 dir_unit;
+        double surface_r;
+    };
+    std::vector<ColumnGenData> column_cache(N * N);
+
+    const double r_reference = std::max(cfg.radius_m, r_origin + 0.5 * chunk_m);
+    const uint32_t cave_seed = cfg.seed + 777u;
+
+    for (int y = 0; y < N; ++y) {
+        double t0 = t_origin + (y + 0.5) * voxel_m;
+        for (int x = 0; x < N; ++x) {
+            double s0 = s_origin + (x + 0.5) * voxel_m;
+            // Approximate direction for the entire column using a reference radius. This is consistent
+            // with the cube-sphere mapping while avoiding per-voxel normalization work.
+            Float3 dir_cart = Float3{
+                float(right.x * s0 + up.x * t0 + forward.x * r_reference),
+                float(right.y * s0 + up.y * t0 + forward.y * r_reference),
+                float(right.z * s0 + up.z * t0 + forward.z * r_reference)
+            };
+            Float3 dir_unit = wf::normalize(dir_cart);
+
+            ColumnGenData data{};
+            data.dir_unit = dir_unit;
+            double surface_h = terrain_height_m(cfg, dir_unit);
+            data.surface_r = cfg.radius_m + surface_h;
+            column_cache[y * N + x] = data;
+        }
+    }
+
+    constexpr double kWaterBandDepthM = 5.0;
+    constexpr double kDirtDepthM = 2.0;
+    constexpr double kCaveDepthM = 3.0;
+    constexpr float  kCaveScale = 0.05f;
+    constexpr float  kCaveThreshold = 0.35f;
+
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+            const ColumnGenData& col = column_cache[y * N + x];
+            const Float3 dir = col.dir_unit;
+            const float dir_x = dir.x;
+            const float dir_y = dir.y;
+            const float dir_z = dir.z;
+            for (int z = 0; z < N; ++z) {
+                double r0 = radial_m[z];
+                uint16_t mat = MAT_AIR;
+                if (r0 <= col.surface_r) {
+                    double depth = col.surface_r - r0;
+                    if (r0 > cfg.sea_level_m && depth < kWaterBandDepthM) {
+                        mat = MAT_WATER;
+                    } else {
+                        bool carve_cave = false;
+                        if (depth > kCaveDepthM) {
+                            float radius_f = static_cast<float>(r0);
+                            float px = dir_x * radius_f;
+                            float py = dir_y * radius_f;
+                            float pz = dir_z * radius_f;
+                            Float3 cave_pt{ px * kCaveScale, py * kCaveScale, pz * kCaveScale };
+                            float cave = fbm(cave_pt, 4, 2.2f, 0.5f, cave_seed);
+                            carve_cave = (cave > kCaveThreshold);
+                        }
+                        if (carve_cave) {
+                            mat = MAT_AIR;
+                        } else if (depth < kDirtDepthM) {
+                            mat = MAT_DIRT;
+                        } else {
+                            mat = MAT_ROCK;
+                        }
+                    }
+                }
+                chunk.set_voxel(x, y, z, mat);
+            }
+        }
+    }
+}
+
+void VulkanApp::normalize_chunk_delta_representation(ChunkDelta& delta) {
+    if (delta.empty()) {
+        if (delta.mode != ChunkDelta::Mode::kSparse) delta.clear(ChunkDelta::Mode::kSparse);
+        return;
+    }
+
+    float density = delta.edit_density();
+    if (delta.mode == ChunkDelta::Mode::kSparse) {
+        if (density >= kDeltaPromoteDensity) {
+            delta.ensure_dense();
+        }
+    } else {
+        if (density <= kDeltaDemoteDensity) {
+            delta.ensure_sparse();
+        }
+    }
+}
+
+bool VulkanApp::world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const {
+    const PlanetConfig& cfg = planet_cfg_;
+    const double voxel_m = cfg.voxel_size_m;
+    const double chunk_m = (double)Chunk64::N * voxel_m;
+    double px = pos[0];
+    double py = pos[1];
+    double pz = pos[2];
+    double radius = std::sqrt(px * px + py * py + pz * pz);
+    if (radius <= 0.0) return false;
+    Float3 dir = wf::normalize(Float3{static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)});
+    int face = 0; float u = 0.0f, v = 0.0f;
+    if (!face_uv_from_direction(dir, face, u, v)) return false;
+    Float3 right, up, forward; face_basis(face, right, up, forward);
+    double s = px * right.x + py * right.y + pz * right.z;
+    double t = px * up.x    + py * up.y    + pz * up.z;
+    std::int64_t i = (std::int64_t)std::floor(s / chunk_m);
+    std::int64_t j = (std::int64_t)std::floor(t / chunk_m);
+    std::int64_t k = (std::int64_t)std::floor(radius / chunk_m);
+    key = FaceChunkKey{ face, i, j, k };
+
+    double s_local = s - (double)i * chunk_m;
+    double t_local = t - (double)j * chunk_m;
+    double r_local = radius - (double)k * chunk_m;
+    int xi = (int)std::floor(s_local / voxel_m);
+    int yi = (int)std::floor(t_local / voxel_m);
+    int zi = (int)std::floor(r_local / voxel_m);
+    if (xi < 0 || xi >= Chunk64::N || yi < 0 || yi >= Chunk64::N || zi < 0 || zi >= Chunk64::N) return false;
+    lx = xi; ly = yi; lz = zi;
+    voxel_out = Int3{ (i64)std::llround(px / voxel_m),
+                      (i64)std::llround(py / voxel_m),
+                      (i64)std::llround(pz / voxel_m) };
+    return true;
+}
+
+bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
+    const PlanetConfig& cfg = planet_cfg_;
+    float cyaw = std::cos(cam_yaw_);
+    float syaw = std::sin(cam_yaw_);
+    float cp = std::cos(cam_pitch_);
+    float sp = std::sin(cam_pitch_);
+    Float3 dir = wf::normalize(Float3{cp * cyaw, sp, cp * syaw});
+    double step = cfg.voxel_size_m * 0.5;
+    if (step <= 0.0) step = 0.1;
+    const double max_dist = edit_max_distance_m_;
+    std::optional<VoxelHit> last_empty;
+
+    for (double t = 0.0; t <= max_dist; t += step) {
+        double pos[3] = {
+            cam_pos_[0] + dir.x * t,
+            cam_pos_[1] + dir.y * t,
+            cam_pos_[2] + dir.z * t
+        };
+
+        FaceChunkKey key{};
+        int lx = 0, ly = 0, lz = 0;
+        Int3 voxel_idx{0,0,0};
+        if (!world_to_chunk_coords(pos, key, lx, ly, lz, voxel_idx)) continue;
+
+        uint16_t mat = MAT_AIR;
+        {
+            std::scoped_lock lock(chunk_cache_mutex_);
+            auto it = chunk_cache_.find(key);
+            if (it == chunk_cache_.end()) continue;
+            mat = it->second.get_material(lx, ly, lz);
+        }
+
+        if (mat != MAT_AIR) {
+            solid_hit.key = key;
+            solid_hit.x = lx;
+            solid_hit.y = ly;
+            solid_hit.z = lz;
+            solid_hit.voxel = voxel_idx;
+            solid_hit.material = mat;
+            solid_hit.world_pos[0] = pos[0];
+            solid_hit.world_pos[1] = pos[1];
+            solid_hit.world_pos[2] = pos[2];
+            if (last_empty.has_value()) {
+                empty_before = *last_empty;
+            } else {
+                empty_before = VoxelHit{};
+                empty_before.key.face = -1;
+            }
+            return true;
+        }
+
+        VoxelHit empty{};
+        empty.key = key;
+        empty.x = lx;
+        empty.y = ly;
+        empty.z = lz;
+        empty.voxel = voxel_idx;
+        empty.material = MAT_AIR;
+        empty.world_pos[0] = pos[0];
+        empty.world_pos[1] = pos[1];
+        empty.world_pos[2] = pos[2];
+        last_empty = empty;
+    }
+    return false;
+}
+
+bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material) {
+    FaceChunkKey key = target.key;
+    uint32_t lidx = Chunk64::lindex(target.x, target.y, target.z);
+    BaseSample base = sample_base(planet_cfg_, target.voxel);
+
+    std::unique_lock delta_lock(chunk_delta_mutex_);
+    ChunkDelta& delta = chunk_deltas_.try_emplace(key, ChunkDelta{}).first->second;
+    delta.apply_edit(lidx, base.material, new_material);
+    normalize_chunk_delta_representation(delta);
+    delta_lock.unlock();
+
+    {
+        std::scoped_lock cache_lock(chunk_cache_mutex_);
+        auto it = chunk_cache_.find(key);
+        if (it != chunk_cache_.end()) {
+            it->second.set_voxel(target.x, target.y, target.z, new_material);
+        }
+    }
+
+    enqueue_ring_request(key.face, 0, key.i, key.j, key.k, k_down_, k_up_, 0.0f, 0.0f);
+    return true;
+}
+
+void VulkanApp::flush_dirty_chunk_deltas() {
+    if (!save_chunks_enabled_) return;
+
+    std::vector<std::pair<FaceChunkKey, ChunkDelta>> pending;
+    {
+        std::scoped_lock lock(chunk_delta_mutex_);
+        for (auto& kv : chunk_deltas_) {
+            ChunkDelta& delta = kv.second;
+            if (!delta.dirty) continue;
+            pending.emplace_back(kv.first, delta);
+            delta.dirty = false;
+            if (!delta.dirty_mask.empty()) {
+                std::fill(delta.dirty_mask.begin(), delta.dirty_mask.end(), 0ull);
+            }
+        }
+    }
+
+    for (auto& pair : pending) {
+        FaceChunkKey key = pair.first;
+        ChunkDelta& delta = pair.second;
+        normalize_chunk_delta_representation(delta);
+        RegionIO::save_chunk_delta(key, delta, 32, region_root_);
+    }
+}
+
+void VulkanApp::overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk) {
+    {
+        std::scoped_lock lock(chunk_delta_mutex_);
+        auto it = chunk_deltas_.find(key);
+        if (it != chunk_deltas_.end()) {
+            normalize_chunk_delta_representation(it->second);
+            if (!it->second.empty()) apply_chunk_delta(it->second, chunk);
+            return;
+        }
+    }
+
+    ChunkDelta delta;
+    if (!RegionIO::load_chunk_delta(key, delta, 32, region_root_)) {
+        std::scoped_lock lock(chunk_delta_mutex_);
+        chunk_deltas_.emplace(key, ChunkDelta{});
+        return;
+    }
+
+    if (!delta.empty()) {
+        normalize_chunk_delta_representation(delta);
+        apply_chunk_delta(delta, chunk);
+    }
+
+    std::scoped_lock lock(chunk_delta_mutex_);
+    chunk_deltas_.insert_or_assign(key, std::move(delta));
 }
 
 void VulkanApp::draw_frame() {
@@ -1894,29 +2221,11 @@ void VulkanApp::build_ring_job(int face, int ring_radius, std::int64_t center_i,
                     }
                 }
                 Chunk64& c = chunks[idx_of(di, dj, dk)];
-                if (!RegionIO::load_chunk(key, c, 32, region_root_)) {
-                    for (int z = 0; z < N; ++z) {
-                        for (int y = 0; y < N; ++y) {
-                            for (int x = 0; x < N; ++x) {
-                                double s0 = (double)(center_i + di) * chunk_m + (x + 0.5) * cfg.voxel_size_m;
-                                double t0 = (double)(center_j + dj) * chunk_m + (y + 0.5) * cfg.voxel_size_m;
-                                double r0 = (double)kk * chunk_m + (z + 0.5) * cfg.voxel_size_m;
-                                // Map face-local s/t at radius r0 to a spherical direction via face-basis cosines
-                                float uc = (float)(s0 / r0);
-                                float vc = (float)(t0 / r0);
-                                float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
-                                float wc = std::sqrt(w2);
-                                Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
-                                                                       right.y*uc + up.y*vc + forward.y*wc,
-                                                                       right.z*uc + up.z*vc + forward.z*wc });
-                                Float3 p = dir_sph * (float)r0;
-                                Int3 voxel{ (i64)std::llround(p.x / cfg.voxel_size_m), (i64)std::llround(p.y / cfg.voxel_size_m), (i64)std::llround(p.z / cfg.voxel_size_m) };
-                                auto sb = sample_base(cfg, voxel);
-                                c.set_voxel(x, y, z, sb.material);
-                            }
-                        }
-                    }
-                    if (save_chunks_enabled_) RegionIO::save_chunk(key, c, 32, region_root_);
+                generate_base_chunk(key, right, up, forward, c);
+                overlay_chunk_delta(key, c);
+                {
+                    std::scoped_lock cache_lock(chunk_cache_mutex_);
+                    chunk_cache_[key] = c;
                 }
             }
         });
@@ -2179,6 +2488,10 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
                           << " idx_count=" << render_chunks_[i].index_count
                           << " vtx_count=" << render_chunks_[i].vertex_count << "\n";
             }
+            {
+                std::scoped_lock cache_lock(chunk_cache_mutex_);
+                chunk_cache_.erase(rk);
+            }
             // Defer deletion/free; chunk might still be referenced by commands submitted last frame
             schedule_delete_chunk(render_chunks_[i]);
             render_chunks_.erase(render_chunks_.begin() + i);
@@ -2210,6 +2523,10 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
                           << " base_vertex=" << rc.base_vertex
                           << " idx_count=" << rc.index_count
                           << " vtx_count=" << rc.vertex_count << "\n";
+            }
+            {
+                std::scoped_lock cache_lock(chunk_cache_mutex_);
+                chunk_cache_.erase(rc.key);
             }
             schedule_delete_chunk(rc);
             render_chunks_.erase(render_chunks_.begin() + i);

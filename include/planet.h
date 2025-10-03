@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include "wf_math.h"
 
 namespace wf {
@@ -51,6 +52,20 @@ void lat_lon_h_from_voxel(const PlanetConfig& cfg, Int3 voxel, double& lat_rad, 
 // Face-local chunk grid mapping for early streaming prototypes
 struct FaceChunkKey { int face; std::int64_t i; std::int64_t j; std::int64_t k; };
 FaceChunkKey face_chunk_from_voxel(const PlanetConfig& cfg, Int3 voxel, int chunk_vox = 64);
+
+inline bool operator==(const FaceChunkKey& a, const FaceChunkKey& b) {
+    return a.face == b.face && a.i == b.i && a.j == b.j && a.k == b.k;
+}
+
+struct FaceChunkKeyHash {
+    std::size_t operator()(const FaceChunkKey& key) const noexcept {
+        std::size_t h = std::hash<int>{}(key.face);
+        h ^= std::hash<std::int64_t>{}(key.i) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<std::int64_t>{}(key.j) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<std::int64_t>{}(key.k) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return h;
+    }
+};
 
 // Sample the base world (procedural, read-only).
 BaseSample sample_base(const PlanetConfig& cfg, Int3 voxel);

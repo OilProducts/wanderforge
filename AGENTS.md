@@ -42,6 +42,9 @@
 - Cube‑sphere mapping APIs must remain exact inverses (`direction_from_face_uv` ↔ `face_uv_from_direction`).
 - Keep conversions stable: `voxel_from_lat_lon_h` and `lat_lon_h_from_voxel` should round‑trip within voxel precision.
 - Tools: `wf_ringmap` provides quick visual checks; keep it CPU‑only and dependency‑light.
+- Chunk generation now runs column-by-column (cache face direction/surface height once per 64×64 column, fill vertical strata, and only evaluate cave FBM below the surface). Keep the fast path intact when tweaking terrain so generation stays sub-millisecond per chunk.
+- `ChunkDelta` is tiered: start sparse, promote to dense when ~18 % of voxels change, and demote once activity drops. Always mark deltas dirty when mutating entries so `flush_dirty_chunk_deltas()` can persist them when `save_chunks_enabled=true`.
+- Runtime editing: loader threads cache the latest `Chunk64` contents per `FaceChunkKey`. Left click (while in mouse-look) digs the targeted voxel to air; `G` places dirt into the empty cell in front of the surface. Any edit must go through `ChunkDelta::apply_edit` so overrides stay consistent and deltas remain flushable.
 
 ## Meshing
 - Maintain both naive and greedy meshers; greedy must merge coplanar quads per axis and preserve face normals/material ids.

@@ -5,9 +5,12 @@
 #include <string>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
+#include <optional>
 #include "overlay.h"
 #include "chunk_renderer.h"
 #include "mesh.h"
+#include "chunk_delta.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
@@ -57,6 +60,22 @@ private:
     void load_config();
     AppConfig snapshot_config() const;
     void apply_config(const AppConfig& cfg);
+    void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
+    void generate_base_chunk(const FaceChunkKey& key, const Float3& right, const Float3& up, const Float3& forward, Chunk64& chunk);
+    void normalize_chunk_delta_representation(ChunkDelta& delta);
+    void flush_dirty_chunk_deltas();
+    struct VoxelHit {
+        FaceChunkKey key{};
+        int x = 0;
+        int y = 0;
+        int z = 0;
+        Int3 voxel{0,0,0};
+        double world_pos[3] = {0.0, 0.0, 0.0};
+        uint16_t material = MAT_AIR;
+    };
+    bool world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const;
+    bool pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before);
+    bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material);
 
     void cleanup_swapchain();
     void recreate_swapchain();
@@ -231,6 +250,17 @@ private:
     uint32_t debug_axes_vertex_count_ = 0;
     VkPipelineLayout debug_axes_layout_ = VK_NULL_HANDLE;
     VkPipeline debug_axes_pipeline_ = VK_NULL_HANDLE;
+
+    std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash> chunk_deltas_;
+    std::mutex chunk_delta_mutex_;
+    std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash> chunk_cache_;
+    std::mutex chunk_cache_mutex_;
+    bool edit_lmb_prev_down_ = false;
+    bool edit_place_prev_down_ = false;
+    uint16_t edit_place_material_ = MAT_DIRT;
+    double edit_max_distance_m_ = 40.0;
+    std::optional<VoxelHit> edit_last_empty_;
+    std::optional<VoxelHit> edit_last_solid_;
 
     // Deferred GPU resource destruction to avoid device-lost
     std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;

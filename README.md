@@ -80,6 +80,8 @@ Controls (chunk view):
 - W/A/S/D: move forward/left/back/right
 - Q/E: move down/up
 - Right mouse drag: look around (yaw/pitch)
+- Left mouse (while in mouse-look): dig the block under the crosshair (sets material to air)
+- Hold `G` (while in mouse-look) to place dirt into the empty cell in front of the crosshair
 - Shift: hold to move faster
  - Default: horizontal mouse is inverted (A.K.A. swap left/right). Press `X` to toggle.
  - Title bar HUD shows FPS, position, yaw/pitch, invert flags, and speed. If shaders are available, an in-window overlay mirrors the same info.
@@ -142,7 +144,8 @@ Notes
   - `voxel_from_lat_lon_h(cfg, lat, lon, height_m)` → voxel index from latitude, longitude, and height above “sea level”.
   - `lat_lon_h_from_voxel(cfg, voxel, out_lat, out_lon, out_h)` → back to spherical coordinates.
 
-- Base world (what’s in a voxel): `sample_base(cfg, voxel)` uses deterministic noise (seeded FBM) to assign materials like air, water, dirt, and rock, with a configurable sea level and sparse caves. This is the read‑only baseline; later, edits are stored as sparse deltas and meshed locally.
+- Base world (what’s in a voxel): `sample_base(cfg, voxel)` uses deterministic noise (seeded FBM) to assign materials like air, water, dirt, and rock, with a configurable sea level and sparse caves. The generation path now runs column-by-column—each 64×64 column caches its face direction and surface height once, then fills vertical runs and only evaluates cave FBM deeper underground—so a chunk regenerates in a few milliseconds.
+  - Edits layer on top through `ChunkDelta`. Sparse `(index, material)` entries automatically promote to dense arrays once ~18 % of voxels diverge and demote when activity drops; deltas flush to disk on shutdown whenever `save_chunks_enabled=true`.
 
 - See it yourself: generate a thin strip image around the planet’s surface:
   - `./build/wf_ringmap 1024 256 0 ring.ppm` (equator)

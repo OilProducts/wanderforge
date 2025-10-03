@@ -55,6 +55,7 @@ add_executable(wanderforge
   src/region_io.cpp
   src/overlay.cpp
   src/chunk_renderer.cpp
+  src/chunk_delta.cpp
   src/camera.cpp
   src/config_loader.cpp
   src/vk_utils.cpp

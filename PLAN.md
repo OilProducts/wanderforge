@@ -203,6 +203,8 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
   - Sparse delta map keyed by `(chunk, localIndex)`; runtime loads regenerate procedural base chunks and overlay deltas before meshing.
   - Region IO persists only the sparse edits (base chunks remain implicit), with hooks to mark chunks/neighbor shells dirty when deltas change.
   - Fast apply path so edits remesh locally without full world rebuild; instrumentation to monitor delta footprint.
+  - Action items: extract single-chunk remesh helper (reuse greedy meshing with cached neighbors),
+    store neighboring chunks in the cache, and drain a per-frame remesh queue triggered by ChunkDelta dirty flags.
 - Acceptance:
   - Dig/place tools run against regenerated base chunks; edits persist across runs and remesh only touched chunks.
   - Worlds without edits no longer consume multi-GB of on-disk chunk data; loader regenerates base content on demand with deltas applied.

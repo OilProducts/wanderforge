@@ -7,6 +7,7 @@
 #include <string>
 #include "planet.h"
 #include "chunk.h"
+#include "chunk_delta.h"
 
 namespace wf {
 
@@ -44,6 +45,13 @@ struct ChunkBlobHeaderV1 {
     std::uint32_t occ_words;     // number of 64-bit words in occupancy
 };
 
+struct ChunkDeltaHeaderV1 {
+    char     magic[8];      // "WFDEL1\0"
+    uint32_t version;       // 1
+    uint32_t entry_count;   // number of delta entries following header
+    uint32_t reserved;      // storage mode: 0 = sparse entries, 1 = dense payload
+};
+
 class RegionIO {
 public:
     // Compute region file path for a given face chunk key.
@@ -54,9 +62,11 @@ public:
     static bool save_chunk(const FaceChunkKey& key, const Chunk64& c, int tile = 32, const std::string& root = "regions");
     static bool load_chunk(const FaceChunkKey& key, Chunk64& out, int tile = 32, const std::string& root = "regions");
 
+    static bool save_chunk_delta(const FaceChunkKey& key, const ChunkDelta& delta, int tile = 32, const std::string& root = "regions");
+    static bool load_chunk_delta(const FaceChunkKey& key, ChunkDelta& out, int tile = 32, const std::string& root = "regions");
+
     // Utility: convert chunk key to its local tile indices and region origin.
     static void region_coords(const FaceChunkKey& key, int tile, std::int64_t& i0, std::int64_t& j0, int& ti, int& tj);
 };
 
 } // namespace wf
-
