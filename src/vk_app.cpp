@@ -60,13 +60,13 @@ static void throw_if_failed(VkResult r, const char* msg) {
 
 VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
-    streaming_.manager().set_planet_config(planet_cfg_);
-    streaming_.manager().set_region_root(region_root_);
-    streaming_.manager().set_save_chunks_enabled(save_chunks_enabled_);
-    streaming_.manager().set_log_stream(log_stream_);
-    streaming_.manager().set_remesh_per_frame_cap(4);
-    streaming_.manager().set_worker_count(loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
-    streaming_.manager().set_load_job([this](const LoadRequest& req) {
+    streaming_.configure(planet_cfg_,
+                         region_root_,
+                         save_chunks_enabled_,
+                         log_stream_,
+                         /*remesh_per_frame_cap=*/4,
+                         loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
+    streaming_.set_load_job([this](const LoadRequest& req) {
         this->build_ring_job(req);
     });
 }
@@ -77,8 +77,8 @@ void VulkanApp::set_config_path(std::string path) {
 
 VulkanApp::~VulkanApp() {
     flush_dirty_chunk_deltas();
-    streaming_.manager().wait_for_pending_saves();
-    streaming_.manager().stop();
+    streaming_.wait_for_pending_saves();
+    streaming_.stop();
     renderer_.wait_idle();
 
     VkDevice device = renderer_.device();
@@ -802,12 +802,12 @@ void VulkanApp::update_hud(float dt) {
         float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         float i_used_mb = (float)i_used / (1024.0f*1024.0f);
         float i_cap_mb  = (float)(i_cap ? i_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
-        size_t qdepth = streaming_.manager().result_queue_depth();
-        double gen_ms = streaming_.manager().last_generation_ms();
-        int gen_chunks = streaming_.manager().last_generated_chunks();
+        size_t qdepth = streaming_.result_queue_depth();
+        double gen_ms = streaming_.last_generation_ms();
+        int gen_chunks = streaming_.last_generated_chunks();
         double ms_per = (gen_chunks > 0) ? (gen_ms / (double)gen_chunks) : 0.0;
-        double mesh_ms = streaming_.manager().last_mesh_ms();
-        int meshed = streaming_.manager().last_meshed_chunks();
+        double mesh_ms = streaming_.last_mesh_ms();
+        int meshed = streaming_.last_meshed_chunks();
         double mesh_ms_per = (meshed > 0) ? (mesh_ms / (double)meshed) : 0.0;
         double up_ms = last_upload_ms_;
         int up_count = last_upload_count_;
@@ -830,7 +830,7 @@ void VulkanApp::update_hud(float dt) {
                       mesh_ms, meshed, mesh_ms_per,
                       up_count, up_ms, upload_ms_avg_,
                       (float)cam_rd_hud, (float)target_r, (float)dr, eye_height_m_, walk_surface_bias_m_,
-                      v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, streaming_.manager().loader_busy()?"busy":"idle");
+                      v_used_mb, v_cap_mb, i_used_mb, i_cap_mb, streaming_.loader_busy()?"busy":"idle");
     } else {
         std::snprintf(hud, sizeof(hud),
                       "FPS: %.1f\nPos:(%.1f,%.1f,%.1f)  Yaw/Pitch:(%.1f,%.1f)  InvX:%d InvY:%d  Speed:%.1f",
@@ -958,12 +958,12 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     config_path_used_ = cfg.config_path;
     region_root_ = cfg.region_root;
 
-    streaming_.manager().set_planet_config(planet_cfg_);
-    streaming_.manager().set_save_chunks_enabled(save_chunks_enabled_);
-    streaming_.manager().set_region_root(region_root_);
-    streaming_.manager().set_log_stream(log_stream_);
-    streaming_.manager().set_remesh_per_frame_cap(4);
-    streaming_.manager().set_worker_count(loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
+    streaming_.configure(planet_cfg_,
+                         region_root_,
+                         save_chunks_enabled_,
+                         log_stream_,
+                         /*remesh_per_frame_cap=*/4,
+                         loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
 
     std::cout << "[config] region_root=" << region_root_ << " (active)\n";
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
@@ -2129,7 +2129,7 @@ uint64_t VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t
 
 void VulkanApp::start_initial_ring_async() {
     // Initialize persistent worker and enqueue initial ring around current camera on the appropriate face
-    streaming_.manager().start();
+    streaming_.start();
     const PlanetConfig& cfg = planet_cfg_;
     const int N = Chunk64::N;
     const double chunk_m = (double)N * cfg.voxel_size_m;

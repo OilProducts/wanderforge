@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
 
 #include "chunk_streaming_manager.h"
 
@@ -10,8 +12,27 @@ class WorldStreamingSubsystem {
 public:
     WorldStreamingSubsystem() = default;
 
+    void configure(const PlanetConfig& planet_cfg,
+                   const std::string& region_root,
+                   bool save_chunks,
+                   bool log_stream,
+                   std::size_t remesh_per_frame_cap,
+                   std::size_t worker_count_hint);
+    void set_load_job(ChunkStreamingManager::LoadJob job);
+
+    void start();
+    void stop();
+    void wait_for_pending_saves();
+
     ChunkStreamingManager& manager() { return manager_; }
     const ChunkStreamingManager& manager() const { return manager_; }
+
+    size_t result_queue_depth() const { return manager_.result_queue_depth(); }
+    double last_generation_ms() const { return manager_.last_generation_ms(); }
+    int last_generated_chunks() const { return manager_.last_generated_chunks(); }
+    double last_mesh_ms() const { return manager_.last_mesh_ms(); }
+    int last_meshed_chunks() const { return manager_.last_meshed_chunks(); }
+    bool loader_busy() const { return manager_.loader_busy(); }
 
     int stream_face() const { return stream_face_; }
     void set_stream_face(int face) { stream_face_ = face; }

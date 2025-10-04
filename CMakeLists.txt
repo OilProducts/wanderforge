@@ -75,6 +75,7 @@ add_executable(wanderforge
   src/camera.cpp
   src/vk_utils.cpp
   src/renderer.cpp
+  src/world_streaming_subsystem.cpp
   src/streaming_service.cpp
   src/window_input.cpp
 )
