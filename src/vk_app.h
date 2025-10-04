@@ -3,7 +3,6 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <string>
-#include <array>
 #include <cstdint>
 #include <unordered_map>
 #include <optional>
@@ -17,6 +16,8 @@
 #include "config_loader.h"
 #include "ui/ui_context.h"
 #include "ui/ui_backend.h"
+#include "window_input.h"
+#include "renderer.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -40,22 +41,10 @@ public:
 private:
     void init_window();
     void init_vulkan();
-    void create_instance();
-    void setup_debug_messenger();
-    void create_surface();
-    void pick_physical_device();
-    void create_logical_device();
-    void create_swapchain();
-    void create_image_views();
-    void create_render_pass();
     void create_graphics_pipeline();
     // Legacy chunk pipeline removed; ChunkRenderer is authoritative
     void create_compute_pipeline();
-    void create_framebuffers();
-    void create_command_pool_and_buffers();
-    void create_sync_objects();
-
-    void record_command_buffer(VkCommandBuffer cmd, uint32_t imageIndex);
+    void record_command_buffer(const Renderer::FrameContext& ctx);
     void draw_frame();
     void update_input(float dt);
     void update_hud(float dt);
@@ -77,8 +66,8 @@ private:
     void queue_chunk_remesh(const FaceChunkKey& key);
     void process_pending_remeshes();
 
-    void cleanup_swapchain();
     void recreate_swapchain();
+    void rebuild_swapchain_dependents();
     VkShaderModule load_shader_module(const std::string& path);
     void create_debug_axes_buffer();
     void destroy_debug_axes_buffer();
@@ -87,7 +76,7 @@ private:
 
 private:
     // Window
-    GLFWwindow* window_ = nullptr;
+    WindowInput window_system_;
     int window_width_ = 1280;
     int window_height_ = 720;
     int framebuffer_width_ = 1280;
@@ -101,35 +90,12 @@ private:
     };
     ToolSelection selected_tool_ = ToolSelection::None;
 
-    // Vulkan core
-    VkInstance instance_ = VK_NULL_HANDLE;
-    VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
-    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
-    VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
-    VkDevice device_ = VK_NULL_HANDLE;
-    uint32_t queue_family_graphics_ = 0;
-    uint32_t queue_family_present_ = 0;
-    VkQueue queue_graphics_ = VK_NULL_HANDLE;
-    VkQueue queue_present_ = VK_NULL_HANDLE;
+    // Renderer core
+    Renderer renderer_;
 
-    // Swapchain
-    VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
-    VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
-    VkExtent2D swapchain_extent_{};
-    std::vector<VkImage> swapchain_images_;
-    std::vector<VkImageView> swapchain_image_views_;
-
-    // Render pass & framebuffers
-    VkRenderPass render_pass_ = VK_NULL_HANDLE;
-    VkImage depth_image_ = VK_NULL_HANDLE;
-    VkDeviceMemory depth_mem_ = VK_NULL_HANDLE;
-    VkImageView depth_view_ = VK_NULL_HANDLE;
-    VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
     // Legacy chunk pipeline removed
-
-    std::vector<VkFramebuffer> framebuffers_;
 
     // Compute pipeline (no-op dispatch)
     VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
@@ -153,26 +119,8 @@ private:
     };
     std::vector<RenderChunk> render_chunks_;
 
-    // Helpers for buffers
-    uint32_t find_memory_type(uint32_t typeBits, VkMemoryPropertyFlags properties);
-    void create_host_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buf, VkDeviceMemory& mem, const void* data);
-    VkFormat find_depth_format();
-    void create_depth_resources();
-
-    // Commands & sync
-    VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> command_buffers_;
-    static constexpr int kFramesInFlight = 2;
-    std::vector<VkSemaphore> sem_image_available_;
-    std::vector<VkSemaphore> sem_render_finished_;
-    std::vector<VkFence> fences_in_flight_;
-    size_t current_frame_ = 0;
-
     // Settings
     bool enable_validation_ = false;
-    std::vector<const char*> enabled_layers_;
-    std::vector<const char*> enabled_instance_exts_;
-    std::vector<const char*> enabled_device_exts_;
 
 #ifdef WF_HAVE_VMA
     // Optional: Vulkan Memory Allocator
@@ -220,10 +168,12 @@ private:
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
+    bool overlay_initialized_ = false;
     ui::UIContext hud_ui_context_;
     ui::UIBackend hud_ui_backend_;
     std::uint64_t hud_ui_frame_index_ = 0;
     ChunkRenderer chunk_renderer_;
+    bool chunk_renderer_initialized_ = false;
     // Reused per-frame container to avoid allocations when building draw items
     std::vector<ChunkDrawItem> chunk_items_tmp_;
 
@@ -270,7 +220,7 @@ private:
     std::optional<VoxelHit> edit_last_solid_;
 
     // Deferred GPU resource destruction to avoid device-lost
-    std::array<std::vector<RenderChunk>, kFramesInFlight> trash_;
+    std::vector<std::vector<RenderChunk>> trash_;
 
     // Input helpers
     void set_mouse_capture(bool capture);

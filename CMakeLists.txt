@@ -74,6 +74,8 @@ add_executable(wanderforge
   src/chunk_renderer.cpp
   src/camera.cpp
   src/vk_utils.cpp
+  src/renderer.cpp
+  src/window_input.cpp
 )
 
 target_link_libraries(wanderforge PRIVATE wf_core Vulkan::Vulkan)

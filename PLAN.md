@@ -215,13 +215,14 @@ Completion of Phase A satisfies the current Phase3 HUD requirements; subsequent 
   - Reduce `VulkanApp` surface area by teasing out reusable subsystems and enabling unit-style testing for CPU-only components. *(wf_core in place)*
   - Prepare the codebase for larger simulation phases by clarifying ownership of streaming/meshing state and persistence. *(streaming manager introduced; loader still pending)*
 - Deliverables:
+  - Extract GLFW/window/input handling into a lightweight wrapper so `VulkanApp` no longer owns raw `GLFWwindow*` lifecycles and headless tests can reuse it. *(Done — 2025-10-04; `WindowInput` subsystem wired through app/build)*
   - Introduce a `wf_core` static library aggregating domain modules (`chunk`, `chunk_delta`, `planet`, `mesh_*`, `region_io`, `config_loader`, `ui` primitives as needed). The main executable and CPU tools link this target instead of listing sources individually. Build files updated accordingly. *(Done — 2025-10-03)*
   - Extract a `ChunkStreamingManager` (or similar) owning loader threads, request queues, neighbor gathering, and result draining. `VulkanApp` becomes a client that issues camera-driven requests, consumes ready meshes, and pushes edits without touching worker internals. *(Done — 2025-10-03; loader thread, request queue, and mesh result handling fully migrated)*
   - Document subsystem seams in `PLAN.md`/`README`: which headers belong to the core library, how the streaming manager communicates (callbacks, ring buffers, or message structs). *(Pending)*
 - Acceptance:
   - `cmake --build` succeeds for `wanderforge`, `wf_ringmap`, `wf_chunk_demo`, and `wf_region_demo` without duplicate source lists. *(Done — verified 2025-10-03)*
   - Streaming continues to function with the new manager structure (parity with previous behavior during a manual playtest around the planet’s equator). *(Pending manual test after loader migration)*
-  - `VulkanApp` no longer creates/joins the loader thread directly; instead it calls into the manager interface and receives mesh uploads through clearly defined hooks. *(Pending)
+  - `VulkanApp` no longer creates/joins the loader thread directly; instead it calls into the manager interface and receives mesh uploads through clearly defined hooks. *(Done — validated during WindowInput refactor; renderer extraction next)*
 
 ### Phase 5 — Simulation Islands v1 (10 cm) (2–3 weeks)
 - Deliverables:
