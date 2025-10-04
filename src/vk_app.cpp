@@ -1454,22 +1454,22 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
         return false;
     }
 
-    streaming_.modify_chunk_delta(key, [&](ChunkDelta& delta) {
-        for (const PendingEdit& edit : edits) {
-            uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
-            delta.apply_edit(lidx, edit.base_material, new_material);
-        }
-    });
-
     std::vector<FaceChunkKey> neighbors_to_remesh;
-    streaming_.update_chunk(key, [&](Chunk64& chunk_in_cache) {
-        for (const PendingEdit& edit : edits) {
-            chunk_in_cache.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
-        }
-    });
-    streaming_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk_ptr) {
-        if (chunk_ptr) neighbors_to_remesh.push_back(neighbor_key);
-    });
+    bool updated = streaming_.modify_chunk_and_delta(
+        key,
+        [&](Chunk64& chunk_in_cache) {
+            for (const PendingEdit& edit : edits) {
+                chunk_in_cache.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
+            }
+        },
+        [&](ChunkDelta& delta) {
+            for (const PendingEdit& edit : edits) {
+                uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
+                delta.apply_edit(lidx, edit.base_material, new_material);
+            }
+        },
+        neighbors_to_remesh);
+    if (!updated) return false;
 
     queue_chunk_remesh(key);
     for (const FaceChunkKey& nkey : neighbors_to_remesh) queue_chunk_remesh(nkey);

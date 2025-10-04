@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "chunk_streaming_manager.h"
 
@@ -88,6 +89,27 @@ public:
     template <typename Fn>
     bool update_chunk(const FaceChunkKey& key, Fn&& fn) {
         return manager_.update_chunk(key, std::forward<Fn>(fn));
+    }
+
+    template <typename ChunkFn, typename DeltaFn>
+    bool modify_chunk_and_delta(const FaceChunkKey& key,
+                                ChunkFn&& chunk_fn,
+                                DeltaFn&& delta_fn,
+                                std::vector<FaceChunkKey>& neighbors_out) {
+        bool updated = manager_.update_chunk(key, [&](Chunk64& chunk) {
+            chunk_fn(chunk);
+        });
+        if (!updated) return false;
+
+        modify_chunk_delta(key, [&](ChunkDelta& delta) {
+            delta_fn(delta);
+        });
+
+        neighbors_out.clear();
+        manager_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk_ptr) {
+            if (chunk_ptr) neighbors_out.push_back(neighbor_key);
+        });
+        return true;
     }
 
     int stream_face() const { return stream_face_; }
