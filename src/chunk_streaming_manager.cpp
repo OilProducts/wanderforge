@@ -55,7 +55,7 @@ uint64_t ChunkStreamingManager::enqueue_request(LoadRequest req) {
     }
 
     if (job_copy) {
-        worker_pool_.submit([job_copy, req]() { job_copy(req); }, true);
+        worker_pool_.submit([job_copy, req]() { job_copy(req); });
     }
 
     return gen;
@@ -264,7 +264,7 @@ void ChunkStreamingManager::flush_dirty_chunk_deltas() {
             normalize_chunk_delta_representation(delta);
             RegionIO::save_chunk_delta(key, delta, 32, region_root_);
         }
-    }, false);
+    });
 }
 
 void ChunkStreamingManager::wait_for_pending_saves() {

@@ -41,13 +41,10 @@ void StreamingService::stop() {
     active_workers_.store(0, std::memory_order_relaxed);
 }
 
-void StreamingService::submit(Task task, bool drop_pending) {
+void StreamingService::submit(Task task) {
     if (!task) return;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (drop_pending) {
-            tasks_.clear();
-        }
         tasks_.push_back(std::move(task));
     }
     cv_.notify_one();
@@ -92,4 +89,3 @@ void StreamingService::worker_main(std::size_t /*index*/) {
 }
 
 } // namespace wf
-

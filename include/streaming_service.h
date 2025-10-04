@@ -18,7 +18,7 @@ public:
     void start(std::size_t thread_count);
     void stop();
 
-    void submit(Task task, bool drop_pending);
+    void submit(Task task);
     bool busy() const;
     bool idle() const;
     std::size_t pending_tasks() const;
@@ -35,4 +35,3 @@ private:
 };
 
 } // namespace wf
-
