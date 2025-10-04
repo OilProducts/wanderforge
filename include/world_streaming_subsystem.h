@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -41,6 +42,11 @@ public:
                    bool log_stream,
                    std::size_t remesh_per_frame_cap,
                    std::size_t worker_count_hint);
+    void apply_runtime_settings(float surface_push_m,
+                                bool debug_chunk_keys,
+                                bool profile_enabled,
+                                std::function<void(const std::string&)> profile_sink,
+                                std::chrono::steady_clock::time_point profile_start_tp);
     void set_load_job(ChunkStreamingManager::LoadJob job);
 
     void start();
@@ -92,6 +98,20 @@ public:
 
     ChunkDelta load_delta_copy(const FaceChunkKey& key) const;
     void normalize_delta(ChunkDelta& delta) { manager_.normalize_chunk_delta_representation(delta); }
+
+    bool build_chunk_mesh(const FaceChunkKey& key,
+                          const Chunk64& chunk,
+                          const Chunk64* nx,
+                          const Chunk64* px,
+                          const Chunk64* ny,
+                          const Chunk64* py,
+                          const Chunk64* nz,
+                          const Chunk64* pz,
+                          MeshResult& out) const;
+
+    bool build_chunk_mesh(const FaceChunkKey& key,
+                          const Chunk64& chunk,
+                          MeshResult& out) const;
 
     template <typename Fn>
     void modify_chunk_delta(const FaceChunkKey& key, Fn&& fn) {
@@ -162,7 +182,29 @@ public:
     void set_face_keep_timer_s(float value) { face_keep_timer_s_ = value; }
 
 private:
+    void build_ring_job(const LoadRequest& request);
+    void generate_base_chunk(const FaceChunkKey& key,
+                             const Float3& right,
+                             const Float3& up,
+                             const Float3& forward,
+                             Chunk64& chunk);
+    bool build_chunk_mesh_result(const FaceChunkKey& key,
+                                 const Chunk64& chunk,
+                                 const Chunk64* nx,
+                                 const Chunk64* px,
+                                 const Chunk64* ny,
+                                 const Chunk64* py,
+                                 const Chunk64* nz,
+                                 const Chunk64* pz,
+                                 MeshResult& out) const;
+
     ChunkStreamingManager manager_;
+    float surface_push_m_ = 0.0f;
+    bool debug_chunk_keys_ = false;
+    bool profile_enabled_ = false;
+    std::function<void(const std::string&)> profile_sink_;
+    std::chrono::steady_clock::time_point profile_start_tp_{};
+    std::size_t worker_count_hint_ = 0;
     int stream_face_ = 0;
     bool stream_face_ready_ = false;
     uint64_t pending_request_gen_ = 0;

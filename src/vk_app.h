@@ -55,8 +55,7 @@ private:
     void apply_resolution_option(std::size_t index);
     std::size_t find_resolution_index(int width, int height) const;
     int current_brush_dim() const;
-    void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
-    void generate_base_chunk(const FaceChunkKey& key, const Float3& right, const Float3& up, const Float3& forward, Chunk64& chunk);
+    void update_streaming_runtime_settings();
     void flush_dirty_chunk_deltas();
     using VoxelHit = wf::VoxelHit;
     using MeshResult = ChunkStreamingManager::MeshResult;
@@ -248,35 +247,10 @@ private:
     void schedule_delete_chunk(const RenderChunk& rc);
 
     // Async loading/meshing
-    struct CachedNeighborChunks {
-        std::optional<Chunk64> neg_x;
-        std::optional<Chunk64> pos_x;
-        std::optional<Chunk64> neg_y;
-        std::optional<Chunk64> pos_y;
-        std::optional<Chunk64> neg_z;
-        std::optional<Chunk64> pos_z;
-        const Chunk64* nx_ptr() const { return neg_x ? &*neg_x : nullptr; }
-        const Chunk64* px_ptr() const { return pos_x ? &*pos_x : nullptr; }
-        const Chunk64* ny_ptr() const { return neg_y ? &*neg_y : nullptr; }
-        const Chunk64* py_ptr() const { return pos_y ? &*pos_y : nullptr; }
-        const Chunk64* nz_ptr() const { return neg_z ? &*neg_z : nullptr; }
-        const Chunk64* pz_ptr() const { return pos_z ? &*pos_z : nullptr; }
-    };
-    CachedNeighborChunks gather_cached_neighbors(const FaceChunkKey& key) const;
-    bool build_chunk_mesh_result(const FaceChunkKey& key,
-                                 const Chunk64& chunk,
-                                 MeshResult& out) const;
-    bool build_chunk_mesh_result(const FaceChunkKey& key,
-                                 const Chunk64& chunk,
-                                 const Chunk64* nx, const Chunk64* px,
-                                 const Chunk64* ny, const Chunk64* py,
-                                 const Chunk64* nz, const Chunk64* pz,
-                                 MeshResult& out) const;
     int uploads_per_frame_limit_ = 16;
     int loader_threads_ = 0; // 0 = auto
     void start_initial_ring_async();
     uint64_t enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t);
-    void build_ring_job(const LoadRequest& request);
     void drain_mesh_results();
     void update_streaming();
     void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);

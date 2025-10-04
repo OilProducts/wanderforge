@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <cstdio>
 #include <optional>
@@ -66,9 +67,6 @@ VulkanApp::VulkanApp() {
                          log_stream_,
                          /*remesh_per_frame_cap=*/4,
                          loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
-    streaming_.set_load_job([this](const LoadRequest& req) {
-        this->build_ring_job(req);
-    });
 }
 
 void VulkanApp::set_config_path(std::string path) {
@@ -137,6 +135,7 @@ void VulkanApp::run() {
     load_config();
     init_vulkan();
     app_start_tp_ = std::chrono::steady_clock::now();
+    update_streaming_runtime_settings();
     last_time_ = glfwGetTime();
     while (!window_system_.should_close()) {
         window_system_.poll_events();
@@ -969,6 +968,22 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
 
     hud_force_refresh_ = true;
+
+    update_streaming_runtime_settings();
+}
+
+void VulkanApp::update_streaming_runtime_settings() {
+    std::function<void(const std::string&)> profile_sink;
+    if (profile_csv_enabled_) {
+        profile_sink = [this](const std::string& line) {
+            this->profile_append_csv(line);
+        };
+    }
+    streaming_.apply_runtime_settings(surface_push_m_,
+                                      debug_chunk_keys_,
+                                      profile_csv_enabled_,
+                                      std::move(profile_sink),
+                                      app_start_tp_);
 }
 
 std::size_t VulkanApp::find_resolution_index(int width, int height) const {
@@ -1015,230 +1030,6 @@ void VulkanApp::apply_resolution_option(std::size_t index) {
     hud_force_refresh_ = true;
 }
 
-void VulkanApp::generate_base_chunk(const FaceChunkKey& key,
-                                    const Float3& right,
-                                    const Float3& up,
-                                    const Float3& forward,
-                                    Chunk64& chunk) {
-    const PlanetConfig& cfg = planet_cfg_;
-    const int N = Chunk64::N;
-    const double voxel_m = cfg.voxel_size_m;
-    const double chunk_m = (double)N * voxel_m;
-    const double s_origin = (double)key.i * chunk_m;
-    const double t_origin = (double)key.j * chunk_m;
-    const double r_origin = (double)key.k * chunk_m;
-
-    chunk.fill_all_air();
-
-    // Precompute radial shells for this chunk (meters from origin to voxel centers)
-    std::array<double, Chunk64::N> radial_m{};
-    for (int z = 0; z < N; ++z) {
-        radial_m[z] = r_origin + (z + 0.5) * voxel_m;
-    }
-
-    struct ColumnGenData {
-        Float3 dir_unit;
-        double surface_r;
-    };
-    std::vector<ColumnGenData> column_cache(N * N);
-
-    const double r_reference = std::max(cfg.radius_m, r_origin + 0.5 * chunk_m);
-    const uint32_t cave_seed = cfg.seed + 777u;
-
-    for (int y = 0; y < N; ++y) {
-        double t0 = t_origin + (y + 0.5) * voxel_m;
-        for (int x = 0; x < N; ++x) {
-            double s0 = s_origin + (x + 0.5) * voxel_m;
-            // Approximate direction for the entire column using a reference radius. This is consistent
-            // with the cube-sphere mapping while avoiding per-voxel normalization work.
-            Float3 dir_cart = Float3{
-                float(right.x * s0 + up.x * t0 + forward.x * r_reference),
-                float(right.y * s0 + up.y * t0 + forward.y * r_reference),
-                float(right.z * s0 + up.z * t0 + forward.z * r_reference)
-            };
-            Float3 dir_unit = wf::normalize(dir_cart);
-
-            ColumnGenData data{};
-            data.dir_unit = dir_unit;
-            double surface_h = terrain_height_m(cfg, dir_unit);
-            data.surface_r = cfg.radius_m + surface_h;
-            column_cache[y * N + x] = data;
-        }
-    }
-
-    constexpr double kWaterBandDepthM = 5.0;
-    constexpr double kDirtDepthM = 2.0;
-    constexpr double kCaveDepthM = 3.0;
-    constexpr float  kCaveScale = 0.05f;
-    constexpr float  kCaveThreshold = 0.35f;
-
-    for (int y = 0; y < N; ++y) {
-        for (int x = 0; x < N; ++x) {
-            const ColumnGenData& col = column_cache[y * N + x];
-            const Float3 dir = col.dir_unit;
-            const float dir_x = dir.x;
-            const float dir_y = dir.y;
-            const float dir_z = dir.z;
-            for (int z = 0; z < N; ++z) {
-                double r0 = radial_m[z];
-                uint16_t mat = MAT_AIR;
-                if (r0 <= col.surface_r) {
-                    double depth = col.surface_r - r0;
-                    if (r0 > cfg.sea_level_m && depth < kWaterBandDepthM) {
-                        mat = MAT_WATER;
-                    } else {
-                        bool carve_cave = false;
-                        if (depth > kCaveDepthM) {
-                            float radius_f = static_cast<float>(r0);
-                            float px = dir_x * radius_f;
-                            float py = dir_y * radius_f;
-                            float pz = dir_z * radius_f;
-                            Float3 cave_pt{ px * kCaveScale, py * kCaveScale, pz * kCaveScale };
-                            float cave = fbm(cave_pt, 4, 2.2f, 0.5f, cave_seed);
-                            carve_cave = (cave > kCaveThreshold);
-                        }
-                        if (carve_cave) {
-                            mat = MAT_AIR;
-                        } else if (depth < kDirtDepthM) {
-                            mat = MAT_DIRT;
-                        } else {
-                            mat = MAT_ROCK;
-                        }
-                    }
-                }
-                chunk.set_voxel(x, y, z, mat);
-            }
-        }
-    }
-}
-
-bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
-                                        const Chunk64& chunk,
-                                        const Chunk64* nx, const Chunk64* px,
-                                        const Chunk64* ny, const Chunk64* py,
-                                        const Chunk64* nz, const Chunk64* pz,
-                                        MeshResult& out) const {
-    const PlanetConfig& cfg = planet_cfg_;
-    const int N = Chunk64::N;
-    const float voxel_m = static_cast<float>(cfg.voxel_size_m);
-    const float chunk_m = voxel_m * static_cast<float>(N);
-    const float halfm = chunk_m * 0.5f;
-
-    Float3 right, up, forward;
-    face_basis(key.face, right, up, forward);
-
-    float S0 = static_cast<float>(key.i * chunk_m);
-    float T0 = static_cast<float>(key.j * chunk_m);
-    float R0 = static_cast<float>(key.k * chunk_m);
-    float Sc = S0 + halfm;
-    float Tc = T0 + halfm;
-    float Rc = R0 + halfm;
-    if (Rc <= 0.0f) Rc = halfm; // avoid divide-by-zero; degenerate only at origin
-
-    float cr = Sc / Rc;
-    float cu = Tc / Rc;
-    float cf = std::sqrt(std::max(0.0f, 1.0f - (cr*cr + cu*cu)));
-    Float3 dirc = wf::normalize(Float3{ right.x*cr + up.x*cu + forward.x*cf,
-                                        right.y*cr + up.y*cu + forward.y*cf,
-                                        right.z*cr + up.z*cu + forward.z*cf });
-
-    Mesh mesh;
-    mesh_chunk_greedy_neighbors(chunk, nx, px, ny, py, nz, pz, mesh, voxel_m);
-    if (mesh.indices.empty()) return false;
-
-    for (auto& vert : mesh.vertices) {
-        Float3 lp{vert.x, vert.y, vert.z};
-        float S = S0 + lp.x;
-        float T = T0 + lp.y;
-        float R = R0 + lp.z;
-        float uc = (R != 0.0f) ? (S / R) : 0.0f;
-        float vc = (R != 0.0f) ? (T / R) : 0.0f;
-        float w2 = std::max(0.0f, 1.0f - (uc*uc + vc*vc));
-        float wc = std::sqrt(w2);
-        Float3 dir_sph = wf::normalize(Float3{ right.x*uc + up.x*vc + forward.x*wc,
-                                               right.y*uc + up.y*vc + forward.y*wc,
-                                               right.z*uc + up.z*vc + forward.z*wc });
-        Float3 wp = dir_sph * R;
-        vert.x = wp.x; vert.y = wp.y; vert.z = wp.z;
-    }
-
-    auto cross = [](Float3 a, Float3 b) -> Float3 {
-        return Float3{ a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
-    };
-    auto sub = [](Float3 a, Float3 b) -> Float3 { return Float3{a.x-b.x, a.y-b.y, a.z-b.z}; };
-
-    if (surface_push_m_ > 0.0f) {
-        const float push = surface_push_m_;
-        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
-            uint32_t i0 = mesh.indices[i];
-            uint32_t i1 = mesh.indices[i + 1];
-            uint32_t i2 = mesh.indices[i + 2];
-            Float3 p0{mesh.vertices[i0].x, mesh.vertices[i0].y, mesh.vertices[i0].z};
-            Float3 p1{mesh.vertices[i1].x, mesh.vertices[i1].y, mesh.vertices[i1].z};
-            Float3 p2{mesh.vertices[i2].x, mesh.vertices[i2].y, mesh.vertices[i2].z};
-            Float3 e1 = sub(p1, p0);
-            Float3 e2 = sub(p2, p0);
-            Float3 n = wf::normalize(cross(e1, e2));
-            Float3 r0 = wf::normalize(p0);
-            float radial = std::fabs(n.x*r0.x + n.y*r0.y + n.z*r0.z);
-            if (radial > 0.8f) {
-                Float3 push_vec{ r0.x * push, r0.y * push, r0.z * push };
-                mesh.vertices[i0].x = p0.x + push_vec.x; mesh.vertices[i0].y = p0.y + push_vec.y; mesh.vertices[i0].z = p0.z + push_vec.z;
-                mesh.vertices[i1].x = p1.x + push_vec.x; mesh.vertices[i1].y = p1.y + push_vec.y; mesh.vertices[i1].z = p1.z + push_vec.z;
-                mesh.vertices[i2].x = p2.x + push_vec.x; mesh.vertices[i2].y = p2.y + push_vec.y; mesh.vertices[i2].z = p2.z + push_vec.z;
-            }
-        }
-    }
-    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
-        uint32_t i0 = mesh.indices[i];
-        uint32_t i1 = mesh.indices[i + 1];
-        uint32_t i2 = mesh.indices[i + 2];
-        const Vertex& v0 = mesh.vertices[i0];
-        const Vertex& v1 = mesh.vertices[i1];
-        const Vertex& v2 = mesh.vertices[i2];
-        Float3 p0{v0.x, v0.y, v0.z};
-        Float3 p1{v1.x, v1.y, v1.z};
-        Float3 p2{v2.x, v2.y, v2.z};
-        Float3 e1 = sub(p1, p0);
-        Float3 e2 = sub(p2, p0);
-        Float3 n = wf::normalize(cross(e1, e2));
-        mesh.vertices[i0].nx = n.x; mesh.vertices[i0].ny = n.y; mesh.vertices[i0].nz = n.z;
-        mesh.vertices[i1].nx = n.x; mesh.vertices[i1].ny = n.y; mesh.vertices[i1].nz = n.z;
-        mesh.vertices[i2].nx = n.x; mesh.vertices[i2].ny = n.y; mesh.vertices[i2].nz = n.z;
-    }
-
-    out.key = key;
-    out.vertices = std::move(mesh.vertices);
-    out.indices = std::move(mesh.indices);
-    out.center[0] = dirc.x * Rc;
-    out.center[1] = dirc.y * Rc;
-    out.center[2] = dirc.z * Rc;
-    out.radius = halfm * 1.73205080757f; // sqrt(3)
-    return true;
-}
-
-VulkanApp::CachedNeighborChunks VulkanApp::gather_cached_neighbors(const FaceChunkKey& key) const {
-    CachedNeighborChunks neighbors;
-    auto gathered = streaming_.gather_neighbor_chunks(key);
-    if (gathered.neg_x) neighbors.neg_x = *gathered.neg_x;
-    if (gathered.pos_x) neighbors.pos_x = *gathered.pos_x;
-    if (gathered.neg_y) neighbors.neg_y = *gathered.neg_y;
-    if (gathered.pos_y) neighbors.pos_y = *gathered.pos_y;
-    if (gathered.neg_z) neighbors.neg_z = *gathered.neg_z;
-    if (gathered.pos_z) neighbors.pos_z = *gathered.pos_z;
-    return neighbors;
-}
-
-bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
-                                        const Chunk64& chunk,
-                                        MeshResult& out) const {
-    CachedNeighborChunks neighbors = gather_cached_neighbors(key);
-    return build_chunk_mesh_result(key, chunk,
-                                   neighbors.nx_ptr(), neighbors.px_ptr(),
-                                   neighbors.ny_ptr(), neighbors.py_ptr(),
-                                   neighbors.nz_ptr(), neighbors.pz_ptr(),
-                                   out);
-}
 
 bool VulkanApp::world_to_chunk_coords(const double pos[3], FaceChunkKey& key, int& lx, int& ly, int& lz, Int3& voxel_out) const {
     const PlanetConfig& cfg = planet_cfg_;
@@ -1360,7 +1151,7 @@ void VulkanApp::process_pending_remeshes() {
         apply_chunk_delta(delta, chunk);
 
         MeshResult res;
-        if (!build_chunk_mesh_result(key, chunk, res)) {
+        if (!streaming_.build_chunk_mesh(key, chunk, res)) {
             streaming_.store_chunk(key, chunk);
             continue;
         }
@@ -1473,10 +1264,6 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
 
 void VulkanApp::flush_dirty_chunk_deltas() {
     streaming_.flush_dirty_chunk_deltas();
-}
-
-void VulkanApp::overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk) {
-    streaming_.overlay_chunk_delta(key, chunk);
 }
 
 void VulkanApp::draw_frame() {
@@ -2131,182 +1918,6 @@ void VulkanApp::start_initial_ring_async() {
         std::cout << "[stream] initial request: face=" << face << " ring=" << ring_radius_
                   << " ci=" << streaming_.ring_center_i() << " cj=" << streaming_.ring_center_j() << " ck=" << streaming_.ring_center_k()
                   << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << " k_down=" << k_down_ << " k_up=" << k_up_ << "\n";
-    }
-}
-
-void VulkanApp::build_ring_job(const LoadRequest& request) {
-    const int face = request.face;
-    const int ring_radius = request.ring_radius;
-    const std::int64_t center_i = request.ci;
-    const std::int64_t center_j = request.cj;
-    const std::int64_t center_k = request.ck;
-    const int k_down = request.k_down;
-    const int k_up = request.k_up;
-    const float fwd_s = request.fwd_s;
-    const float fwd_t = request.fwd_t;
-    const uint64_t job_gen = request.gen;
-    const PlanetConfig& cfg = planet_cfg_;
-    const int N = Chunk64::N;
-    const float s = (float)cfg.voxel_size_m;
-    const double chunk_m = (double)N * cfg.voxel_size_m;
-    const std::int64_t k0 = center_k; // center radial shell from request
-    Float3 right, up, forward; face_basis(face, right, up, forward);
-
-    const int tile_span = ring_radius;
-    const int W = 2*tile_span + 1;
-    const int KD = k_down + k_up + 1;
-    auto idx_of = [&](int di, int dj, int dk){ int ix = di + tile_span; int jy = dj + tile_span; int kz = dk + k_down; return (kz * W + jy) * W + ix; };
-    std::vector<Chunk64> chunks(W * W * KD);
-
-    // Build prioritized list of tile offsets: prefer ahead of camera (by fwd_s/fwd_t), then nearer distance
-    struct Off { int di, dj; int dist2; float dot; };
-    std::vector<Off> order; order.reserve(W*W);
-    // Normalize the direction bias in the s/t plane
-    float len = std::sqrt(fwd_s*fwd_s + fwd_t*fwd_t);
-    float dir_s = (len > 1e-6f) ? (fwd_s / len) : 0.0f;
-    float dir_t = (len > 1e-6f) ? (fwd_t / len) : 0.0f;
-    for (int dj = -tile_span; dj <= tile_span; ++dj) {
-        for (int di = -tile_span; di <= tile_span; ++di) {
-            int d2 = di*di + dj*dj;
-            float dot = di*dir_s + dj*dir_t;
-            order.push_back(Off{di, dj, d2, dot});
-        }
-    }
-    std::sort(order.begin(), order.end(), [&](const Off& a, const Off& b){
-        if (a.dist2 != b.dist2) return a.dist2 < b.dist2; // always prefer nearer rings first
-        if (a.dot != b.dot) return a.dot > b.dot;         // within ring, prefer ahead of camera
-        if (a.dj != b.dj) return a.dj < b.dj;             // stable
-        return a.di < b.di;
-    });
-
-    // Two-phase approach: parallel generation first, then neighbor-aware meshing pass.
-    struct Task { int di, dj, dk; };
-    std::vector<Task> tasks;
-    tasks.reserve(W * W * KD);
-    for (int dj = -tile_span; dj <= tile_span; ++dj) {
-        for (int di = -tile_span; di <= tile_span; ++di) {
-            for (int dk = -k_down; dk <= k_up; ++dk) tasks.push_back(Task{di, dj, dk});
-        }
-    }
-    // Parallel generation
-    auto t0 = std::chrono::steady_clock::now();
-    std::atomic<size_t> ti{0};
-    int nthreads = loader_threads_ > 0 ? loader_threads_ : (int)std::max(1u, std::thread::hardware_concurrency());
-    std::vector<std::thread> workers;
-    workers.reserve(nthreads);
-    for (int w = 0; w < nthreads; ++w) {
-        workers.emplace_back([&, job_gen](){
-            for (;;) {
-                if (streaming_.should_abort(job_gen)) return;
-                if (streaming_.should_abort(job_gen)) return;
-                size_t idx = ti.fetch_add(1, std::memory_order_relaxed);
-                if (idx >= tasks.size()) break;
-                const Task t = tasks[idx];
-                int di = t.di, dj = t.dj, dk = t.dk;
-                std::int64_t kk = k0 + dk;
-                FaceChunkKey key{face, center_i + di, center_j + dj, kk};
-                if (debug_chunk_keys_) {
-                    static std::atomic<int> debug_chunk_log_count{0};
-                    if (debug_chunk_log_count.load(std::memory_order_relaxed) < 32) {
-                        int prev = debug_chunk_log_count.fetch_add(1, std::memory_order_relaxed);
-                        if (prev < 32) {
-                            std::cout << "[chunk-load] face=" << key.face
-                                      << " i=" << key.i << " j=" << key.j << " k=" << key.k << "\n";
-                        }
-                    }
-                }
-                Chunk64& c = chunks[idx_of(di, dj, dk)];
-                generate_base_chunk(key, right, up, forward, c);
-                overlay_chunk_delta(key, c);
-                streaming_.store_chunk(key, c);
-            }
-        });
-    }
-    for (auto& th : workers) th.join();
-    auto t1 = std::chrono::steady_clock::now();
-    double gen_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    streaming_.update_generation_stats(gen_ms, (int)tasks.size());
-    if (streaming_.should_abort(job_gen)) return;
-
-    // Meshing pass: parallelize over prioritized tasks (di,dj,dk)
-    int meshed_count = 0;
-    // Precompute camera forward world vector from fwd_s/fwd_t (projective ratios)
-    float u_cam = fwd_s;
-    float v_cam = fwd_t;
-    float inv_len_cam = 1.0f / std::sqrt(1.0f + u_cam*u_cam + v_cam*v_cam);
-    Float3 fwd_world_cam = wf::normalize(Float3{
-        right.x * (u_cam * inv_len_cam) + up.x * (v_cam * inv_len_cam) + forward.x * (1.0f * inv_len_cam),
-        right.y * (u_cam * inv_len_cam) + up.y * (v_cam * inv_len_cam) + forward.y * (1.0f * inv_len_cam),
-        right.z * (u_cam * inv_len_cam) + up.z * (v_cam * inv_len_cam) + forward.z * (1.0f * inv_len_cam)
-    });
-    float cone_cos = std::cos(stream_cone_deg_ * 0.01745329252f);
-    struct MTask { int di, dj, dk; };
-    std::vector<MTask> mtasks; mtasks.reserve(W * W * KD);
-    for (const auto& off : order) {
-        for (int dk = -k_down; dk <= k_up; ++dk) mtasks.push_back(MTask{off.di, off.dj, dk});
-    }
-    std::atomic<size_t> mi{0};
-    std::atomic<int> meshed_accum{0};
-    std::vector<std::thread> mesh_workers;
-    mesh_workers.reserve(nthreads);
-    auto mesh_worker = [&]() {
-        int local_meshed = 0;
-        while (true) {
-            if (streaming_.should_abort(job_gen)) break;
-            size_t idx = mi.fetch_add(1, std::memory_order_relaxed);
-            if (idx >= mtasks.size()) break;
-            const auto t = mtasks[idx];
-            int di = t.di, dj = t.dj, dk = t.dk;
-            std::int64_t kk = k0 + dk;
-            const Chunk64& c = chunks[idx_of(di, dj, dk)];
-            // Tile center direction for meshing cone test
-            float S0 = (float)((center_i + di) * chunk_m);
-            float T0 = (float)((center_j + dj) * chunk_m);
-            float R0 = (float)(kk * chunk_m);
-            const float halfm = (float)(N * s * 0.5f);
-            float Sc = S0 + halfm, Tc = T0 + halfm, Rc = R0 + halfm;
-            float cr = Sc / Rc, cu = Tc / Rc;
-            float cf = std::sqrt(std::max(0.0f, 1.0f - (cr*cr + cu*cu)));
-            Float3 dirc = wf::normalize(Float3{ right.x*cr + up.x*cu + forward.x*cf,
-                                                right.y*cr + up.y*cu + forward.y*cf,
-                                                right.z*cr + up.z*cu + forward.z*cf });
-            float dcam = fwd_world_cam.x*dirc.x + fwd_world_cam.y*dirc.y + fwd_world_cam.z*dirc.z;
-            if (!debug_chunk_keys_ && dcam < cone_cos) {
-                continue; // outside forward cone, skip meshing this tile for now
-            }
-            const Chunk64* nx = (di > -tile_span) ? &chunks[idx_of(di - 1, dj, dk)] : nullptr;
-            const Chunk64* px = (di <  tile_span) ? &chunks[idx_of(di + 1, dj, dk)] : nullptr;
-            const Chunk64* ny = (dj > -tile_span) ? &chunks[idx_of(di, dj - 1, dk)] : nullptr;
-            const Chunk64* py = (dj <  tile_span) ? &chunks[idx_of(di, dj + 1, dk)] : nullptr;
-            const Chunk64* nz = (dk > -k_down)    ? &chunks[idx_of(di, dj, dk - 1)] : nullptr;
-            const Chunk64* pz = (dk <  k_up)      ? &chunks[idx_of(di, dj, dk + 1)] : nullptr;
-            MeshResult res;
-            if (!build_chunk_mesh_result(FaceChunkKey{face, center_i + di, center_j + dj, kk},
-                                         c, nx, px, ny, py, nz, pz, res)) {
-                continue;
-            }
-            const float diag_half = halfm * 1.73205080757f; // sqrt(3)
-            Float3 wc = dirc * Rc;
-            res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
-            res.job_gen = job_gen;
-            streaming_.push_mesh_result(std::move(res));
-            local_meshed++;
-        }
-        if (local_meshed) meshed_accum.fetch_add(local_meshed, std::memory_order_relaxed);
-    };
-    for (int w = 0; w < nthreads; ++w) mesh_workers.emplace_back(mesh_worker);
-    for (auto& th : mesh_workers) th.join();
-    meshed_count = meshed_accum.load();
-    auto t2 = std::chrono::steady_clock::now();
-    double mesh_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    streaming_.update_mesh_stats(mesh_ms, meshed_count, gen_ms + mesh_ms);
-    if (profile_csv_enabled_) {
-        double tsec = std::chrono::duration<double>(t2 - app_start_tp_).count();
-        char line[256];
-        std::snprintf(line, sizeof(line),
-                      "job,%.3f,%d,%d,%.3f,%.3f,%.3f\n",
-                      tsec, (int)tasks.size(), meshed_count, gen_ms, mesh_ms, gen_ms + mesh_ms);
-        profile_append_csv(line);
     }
 }
 
