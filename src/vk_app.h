@@ -12,6 +12,7 @@
 #include "chunk_delta.h"
 #include "chunk.h"
 #include "chunk_streaming_manager.h"
+#include "world_streaming_subsystem.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
@@ -211,7 +212,7 @@ private:
     VkPipelineLayout debug_axes_layout_ = VK_NULL_HANDLE;
     VkPipeline debug_axes_pipeline_ = VK_NULL_HANDLE;
 
-    ChunkStreamingManager streaming_manager_;
+    WorldStreamingSubsystem streaming_;
     bool edit_lmb_prev_down_ = false;
     bool edit_place_prev_down_ = false;
     uint16_t edit_place_material_ = MAT_DIRT;
@@ -284,20 +285,7 @@ private:
     void prune_chunks_multi(const std::vector<AllowRegion>& allows);
 
     // Streaming state: current face and ring center
-    int stream_face_ = 0;
-    bool stream_face_ready_ = false;
-    uint64_t pending_request_gen_ = 0;
     float face_switch_hysteresis_ = 0.05f;
-    std::int64_t ring_center_i_ = 0;
-    std::int64_t ring_center_j_ = 0;
-    std::int64_t ring_center_k_ = 0;
-
-    // Multi-face transition support: keep previous face briefly while new face loads
-    int prev_face_ = -1;
-    std::int64_t prev_center_i_ = 0;
-    std::int64_t prev_center_j_ = 0;
-    std::int64_t prev_center_k_ = 0;
-    float face_keep_timer_s_ = 0.0f;    // countdown while preserving previous face
     float face_keep_time_cfg_s_ = 0.75f; // configurable hold time
 
     // Radial depth control (number of shells).
