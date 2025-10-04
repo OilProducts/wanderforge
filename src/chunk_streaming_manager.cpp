@@ -1,6 +1,9 @@
 #include "chunk_streaming_manager.h"
 
 #include <algorithm>
+#include <chrono>
+#include <memory>
+#include <thread>
 #include <utility>
 
 namespace wf {
@@ -12,38 +15,54 @@ constexpr float kDeltaDemoteDensity = 0.08f;
 
 ChunkStreamingManager::ChunkStreamingManager() = default;
 
+void ChunkStreamingManager::set_worker_count(std::size_t count) {
+    worker_count_hint_ = count;
+}
+
 void ChunkStreamingManager::set_load_job(LoadJob job) {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
+    std::lock_guard<std::mutex> lock(job_mutex_);
     load_job_ = std::move(job);
 }
 
 void ChunkStreamingManager::start() {
-    if (loader_thread_.joinable()) return;
-    loader_quit_.store(false, std::memory_order_relaxed);
-    loader_thread_ = std::thread(&ChunkStreamingManager::loader_thread_main, this);
+    stop_flag_.store(false, std::memory_order_relaxed);
+    std::size_t resolved = worker_count_hint_;
+    if (resolved == 0) {
+        unsigned int hw = std::thread::hardware_concurrency();
+        resolved = hw == 0 ? 1u : static_cast<std::size_t>(hw);
+    }
+    worker_pool_.start(resolved);
+    save_pool_.start(1);
+    save_pool_started_.store(true, std::memory_order_relaxed);
 }
 
 void ChunkStreamingManager::stop() {
-    loader_quit_.store(true, std::memory_order_relaxed);
-    loader_cv_.notify_all();
-    if (loader_thread_.joinable()) {
-        loader_thread_.join();
-    }
-    loader_busy_atomic_.store(false, std::memory_order_relaxed);
+    stop_flag_.store(true, std::memory_order_relaxed);
+    worker_pool_.stop();
+    wait_for_pending_saves();
+    save_pool_.stop();
+    save_pool_started_.store(false, std::memory_order_relaxed);
 }
 
 uint64_t ChunkStreamingManager::enqueue_request(LoadRequest req) {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
     uint64_t gen = request_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
     req.gen = gen;
-    request_queue_.clear();
-    request_queue_.push_back(req);
-    loader_cv_.notify_one();
+
+    LoadJob job_copy;
+    {
+        std::lock_guard<std::mutex> lock(job_mutex_);
+        job_copy = load_job_;
+    }
+
+    if (job_copy) {
+        worker_pool_.submit([job_copy, req]() { job_copy(req); }, true);
+    }
+
     return gen;
 }
 
 bool ChunkStreamingManager::try_pop_result(MeshResult& out) {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
+    std::lock_guard<std::mutex> lock(results_mutex_);
     if (results_queue_.empty()) return false;
     out = std::move(results_queue_.front());
     results_queue_.pop_front();
@@ -51,22 +70,21 @@ bool ChunkStreamingManager::try_pop_result(MeshResult& out) {
 }
 
 void ChunkStreamingManager::push_mesh_result(MeshResult res) {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
+    std::lock_guard<std::mutex> lock(results_mutex_);
     results_queue_.push_back(std::move(res));
 }
 
 size_t ChunkStreamingManager::result_queue_depth() const {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
+    std::lock_guard<std::mutex> lock(results_mutex_);
     return results_queue_.size();
 }
 
 bool ChunkStreamingManager::loader_busy() const {
-    return loader_busy_atomic_.load(std::memory_order_relaxed);
+    return worker_pool_.busy();
 }
 
 bool ChunkStreamingManager::loader_idle() const {
-    std::lock_guard<std::mutex> lock(loader_mutex_);
-    return !loader_busy_atomic_.load(std::memory_order_relaxed) && request_queue_.empty();
+    return worker_pool_.idle();
 }
 
 uint64_t ChunkStreamingManager::current_request_gen() const {
@@ -74,7 +92,7 @@ uint64_t ChunkStreamingManager::current_request_gen() const {
 }
 
 bool ChunkStreamingManager::should_abort(uint64_t job_gen) const {
-    return loader_quit_.load(std::memory_order_relaxed) || current_request_gen() != job_gen;
+    return stop_flag_.load(std::memory_order_relaxed) || current_request_gen() != job_gen;
 }
 
 void ChunkStreamingManager::update_generation_stats(double gen_ms, int chunks) {
@@ -108,26 +126,6 @@ double ChunkStreamingManager::last_total_ms() const {
     return loader_last_total_ms_.load(std::memory_order_relaxed);
 }
 
-void ChunkStreamingManager::loader_thread_main() {
-    for (;;) {
-        LoadRequest req;
-        {
-            std::unique_lock<std::mutex> lock(loader_mutex_);
-            loader_cv_.wait(lock, [&]{ return loader_quit_.load(std::memory_order_relaxed) || !request_queue_.empty(); });
-            if (loader_quit_.load(std::memory_order_relaxed)) break;
-            req = request_queue_.back();
-            request_queue_.clear();
-            loader_busy_atomic_.store(true, std::memory_order_relaxed);
-        }
-
-        if (load_job_) {
-            load_job_(req);
-        }
-
-        loader_busy_atomic_.store(false, std::memory_order_relaxed);
-    }
-}
-
 void ChunkStreamingManager::set_planet_config(const PlanetConfig& cfg) {
     planet_cfg_ = cfg;
 }
@@ -148,8 +146,21 @@ const std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash>& ChunkStreamin
     return chunk_cache_;
 }
 
-std::mutex& ChunkStreamingManager::chunk_cache_mutex() const {
-    return chunk_cache_mutex_;
+void ChunkStreamingManager::store_chunk(const FaceChunkKey& key, const Chunk64& chunk) {
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    chunk_cache_[key] = chunk;
+}
+
+std::optional<Chunk64> ChunkStreamingManager::find_chunk(const FaceChunkKey& key) const {
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    auto it = chunk_cache_.find(key);
+    if (it == chunk_cache_.end()) return std::nullopt;
+    return it->second;
+}
+
+void ChunkStreamingManager::erase_chunk(const FaceChunkKey& key) {
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    chunk_cache_.erase(key);
 }
 
 std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash>& ChunkStreamingManager::chunk_deltas() {
@@ -233,11 +244,33 @@ void ChunkStreamingManager::flush_dirty_chunk_deltas() {
         }
     }
 
-    for (auto& pair : pending) {
-        FaceChunkKey key = pair.first;
-        ChunkDelta& delta = pair.second;
-        normalize_chunk_delta_representation(delta);
-        RegionIO::save_chunk_delta(key, delta, 32, region_root_);
+    if (pending.empty()) return;
+
+    if (!save_pool_started_.load(std::memory_order_relaxed)) {
+        for (auto& pair : pending) {
+            FaceChunkKey key = pair.first;
+            ChunkDelta& delta = pair.second;
+            normalize_chunk_delta_representation(delta);
+            RegionIO::save_chunk_delta(key, delta, 32, region_root_);
+        }
+        return;
+    }
+
+    auto batch = std::make_shared<std::vector<std::pair<FaceChunkKey, ChunkDelta>>>(std::move(pending));
+    save_pool_.submit([this, batch]() {
+        for (auto& pair : *batch) {
+            FaceChunkKey key = pair.first;
+            ChunkDelta& delta = pair.second;
+            normalize_chunk_delta_representation(delta);
+            RegionIO::save_chunk_delta(key, delta, 32, region_root_);
+        }
+    }, false);
+}
+
+void ChunkStreamingManager::wait_for_pending_saves() {
+    using namespace std::chrono_literals;
+    while (save_pool_started_.load(std::memory_order_relaxed) && !save_pool_.idle()) {
+        std::this_thread::sleep_for(1ms);
     }
 }
 

@@ -1,13 +1,11 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -17,6 +15,7 @@
 #include "mesh.h"
 #include "region_io.h"
 #include "wf_math.h"
+#include "streaming_service.h"
 
 namespace wf {
 
@@ -75,6 +74,7 @@ public:
     void set_remesh_per_frame_cap(std::size_t cap) { remesh_per_frame_cap_ = cap; }
     std::size_t remesh_per_frame_cap() const { return remesh_per_frame_cap_; }
 
+    void set_worker_count(std::size_t count);
     void set_load_job(LoadJob job);
     void start();
     void stop();
@@ -99,7 +99,15 @@ public:
 
     std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash>& chunk_cache();
     const std::unordered_map<FaceChunkKey, Chunk64, FaceChunkKeyHash>& chunk_cache() const;
-    std::mutex& chunk_cache_mutex() const;
+    void store_chunk(const FaceChunkKey& key, const Chunk64& chunk);
+    std::optional<Chunk64> find_chunk(const FaceChunkKey& key) const;
+    void erase_chunk(const FaceChunkKey& key);
+    template <typename F>
+    void visit_neighbors(const FaceChunkKey& key, F&& func) const;
+    template <typename F>
+    bool with_chunk(const FaceChunkKey& key, F&& func) const;
+    template <typename F>
+    bool update_chunk(const FaceChunkKey& key, F&& func);
 
     std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash>& chunk_deltas();
     const std::unordered_map<FaceChunkKey, ChunkDelta, FaceChunkKeyHash>& chunk_deltas() const;
@@ -111,10 +119,9 @@ public:
     void normalize_chunk_delta_representation(ChunkDelta& delta);
     void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
     void flush_dirty_chunk_deltas();
+    void wait_for_pending_saves();
 
 private:
-    void loader_thread_main();
-
     PlanetConfig planet_cfg_{};
     bool save_chunks_enabled_ = false;
     bool log_stream_ = false;
@@ -122,12 +129,15 @@ private:
     std::size_t remesh_per_frame_cap_ = 4;
 
     LoadJob load_job_;
-    std::thread loader_thread_;
-    mutable std::mutex loader_mutex_;
-    std::condition_variable loader_cv_;
-    std::atomic<bool> loader_quit_{false};
-    std::atomic<bool> loader_busy_atomic_{false};
-    std::deque<LoadRequest> request_queue_;
+    mutable std::mutex job_mutex_;
+
+    StreamingService worker_pool_;
+    StreamingService save_pool_;
+    std::atomic<bool> stop_flag_{false};
+    std::size_t worker_count_hint_ = 1;
+    std::atomic<bool> save_pool_started_{false};
+
+    mutable std::mutex results_mutex_;
     std::deque<MeshResult> results_queue_;
     std::atomic<uint64_t> request_gen_{0};
     std::atomic<double> loader_last_gen_ms_{0.0};
@@ -145,5 +155,41 @@ private:
     std::deque<FaceChunkKey> remesh_queue_;
     mutable std::mutex remesh_mutex_;
 };
+
+template <typename F>
+void ChunkStreamingManager::visit_neighbors(const FaceChunkKey& key, F&& func) const {
+    const FaceChunkKey neighbors[6] = {
+        FaceChunkKey{key.face, key.i - 1, key.j, key.k},
+        FaceChunkKey{key.face, key.i + 1, key.j, key.k},
+        FaceChunkKey{key.face, key.i, key.j - 1, key.k},
+        FaceChunkKey{key.face, key.i, key.j + 1, key.k},
+        FaceChunkKey{key.face, key.i, key.j, key.k - 1},
+        FaceChunkKey{key.face, key.i, key.j, key.k + 1}
+    };
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    for (const FaceChunkKey& nk : neighbors) {
+        auto it = chunk_cache_.find(nk);
+        const Chunk64* chunk = (it != chunk_cache_.end()) ? &it->second : nullptr;
+        func(nk, chunk);
+    }
+}
+
+template <typename F>
+bool ChunkStreamingManager::with_chunk(const FaceChunkKey& key, F&& func) const {
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    auto it = chunk_cache_.find(key);
+    if (it == chunk_cache_.end()) return false;
+    func(it->second);
+    return true;
+}
+
+template <typename F>
+bool ChunkStreamingManager::update_chunk(const FaceChunkKey& key, F&& func) {
+    std::lock_guard<std::mutex> lock(chunk_cache_mutex_);
+    auto it = chunk_cache_.find(key);
+    if (it == chunk_cache_.end()) return false;
+    func(it->second);
+    return true;
+}
 
 } // namespace wf
