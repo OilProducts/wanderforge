@@ -1219,7 +1219,7 @@ bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
 
 VulkanApp::CachedNeighborChunks VulkanApp::gather_cached_neighbors(const FaceChunkKey& key) const {
     CachedNeighborChunks neighbors;
-    streaming_.manager().visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk) {
+    streaming_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk) {
         if (!chunk) return;
         int di = neighbor_key.i - key.i;
         int dj = neighbor_key.j - key.j;
@@ -1304,7 +1304,7 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
         if (!world_to_chunk_coords(pos, key, lx, ly, lz, voxel_idx)) continue;
 
         uint16_t mat = MAT_AIR;
-        bool found = streaming_.manager().with_chunk(key, [&](const Chunk64& chunk) {
+        bool found = streaming_.with_chunk(key, [&](const Chunk64& chunk) {
             mat = chunk.get_material(lx, ly, lz);
         });
         if (!found) continue;
@@ -1344,46 +1344,29 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
 }
 
 void VulkanApp::queue_chunk_remesh(const FaceChunkKey& key) {
-    std::scoped_lock lock(streaming_.manager().remesh_mutex());
-    streaming_.manager().remesh_queue().push_back(key);
+    streaming_.queue_remesh(key);
 }
 
 void VulkanApp::process_pending_remeshes() {
-    std::deque<FaceChunkKey> todo;
-    {
-        std::scoped_lock lock(streaming_.manager().remesh_mutex());
-        auto& queue = streaming_.manager().remesh_queue();
-        size_t cap = streaming_.manager().remesh_per_frame_cap();
-        size_t count = 0;
-        while (!queue.empty() && count < cap) {
-            todo.push_back(queue.front());
-            queue.pop_front();
-            ++count;
-        }
-    }
+    std::deque<FaceChunkKey> todo = streaming_.take_remesh_batch(streaming_.remesh_per_frame_cap());
     if (todo.empty()) return;
 
     for (const FaceChunkKey& key : todo) {
         Chunk64 chunk;
-        if (auto existing = streaming_.manager().find_chunk(key)) {
+        if (auto existing = streaming_.find_chunk_copy(key)) {
             chunk = *existing;
         } else {
             continue;
         }
 
         ChunkDelta delta;
-        {
-            std::scoped_lock delta_lock(streaming_.manager().chunk_delta_mutex());
-            auto& deltas = streaming_.manager().chunk_deltas();
-            auto it = deltas.find(key);
-            if (it != deltas.end()) delta = it->second;
-        }
-        streaming_.manager().normalize_chunk_delta_representation(delta);
+        delta = streaming_.load_delta_copy(key);
+        streaming_.normalize_delta(delta);
         apply_chunk_delta(delta, chunk);
 
         MeshResult res;
         if (!build_chunk_mesh_result(key, chunk, res)) {
-            streaming_.manager().store_chunk(key, chunk);
+            streaming_.store_chunk(key, chunk);
             continue;
         }
 
@@ -1425,7 +1408,7 @@ void VulkanApp::process_pending_remeshes() {
             render_chunks_.push_back(rc);
         }
 
-        streaming_.manager().store_chunk(key, chunk);
+        streaming_.store_chunk(key, chunk);
     }
 }
 
@@ -1471,24 +1454,20 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
         return false;
     }
 
-    {
-        std::unique_lock delta_lock(streaming_.manager().chunk_delta_mutex());
-        auto& deltas = streaming_.manager().chunk_deltas();
-        ChunkDelta& delta = deltas.try_emplace(key, ChunkDelta{}).first->second;
+    streaming_.modify_chunk_delta(key, [&](ChunkDelta& delta) {
         for (const PendingEdit& edit : edits) {
             uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
             delta.apply_edit(lidx, edit.base_material, new_material);
         }
-        streaming_.manager().normalize_chunk_delta_representation(delta);
-    }
+    });
 
     std::vector<FaceChunkKey> neighbors_to_remesh;
-    streaming_.manager().update_chunk(key, [&](Chunk64& chunk_in_cache) {
+    streaming_.update_chunk(key, [&](Chunk64& chunk_in_cache) {
         for (const PendingEdit& edit : edits) {
             chunk_in_cache.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
         }
     });
-    streaming_.manager().visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk_ptr) {
+    streaming_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk_ptr) {
         if (chunk_ptr) neighbors_to_remesh.push_back(neighbor_key);
     });
 
@@ -1498,11 +1477,11 @@ bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, 
 }
 
 void VulkanApp::flush_dirty_chunk_deltas() {
-    streaming_.manager().flush_dirty_chunk_deltas();
+    streaming_.flush_dirty_chunk_deltas();
 }
 
 void VulkanApp::overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk) {
-    streaming_.manager().overlay_chunk_delta(key, chunk);
+    streaming_.overlay_chunk_delta(key, chunk);
 }
 
 void VulkanApp::draw_frame() {
@@ -2121,7 +2100,7 @@ uint64_t VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t
     req.k_up = k_up;
     req.fwd_s = fwd_s;
     req.fwd_t = fwd_t;
-    uint64_t gen = streaming_.manager().enqueue_request(req);
+    uint64_t gen = streaming_.enqueue_request(req);
     streaming_.set_stream_face_ready(false);
     streaming_.set_pending_request_gen(gen);
     return gen;
@@ -2223,8 +2202,8 @@ void VulkanApp::build_ring_job(const LoadRequest& request) {
     for (int w = 0; w < nthreads; ++w) {
         workers.emplace_back([&, job_gen](){
             for (;;) {
-                if (streaming_.manager().should_abort(job_gen)) return;
-                if (streaming_.manager().should_abort(job_gen)) return;
+                if (streaming_.should_abort(job_gen)) return;
+                if (streaming_.should_abort(job_gen)) return;
                 size_t idx = ti.fetch_add(1, std::memory_order_relaxed);
                 if (idx >= tasks.size()) break;
                 const Task t = tasks[idx];
@@ -2244,15 +2223,15 @@ void VulkanApp::build_ring_job(const LoadRequest& request) {
                 Chunk64& c = chunks[idx_of(di, dj, dk)];
                 generate_base_chunk(key, right, up, forward, c);
                 overlay_chunk_delta(key, c);
-                streaming_.manager().store_chunk(key, c);
+                streaming_.store_chunk(key, c);
             }
         });
     }
     for (auto& th : workers) th.join();
     auto t1 = std::chrono::steady_clock::now();
     double gen_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    streaming_.manager().update_generation_stats(gen_ms, (int)tasks.size());
-    if (streaming_.manager().should_abort(job_gen)) return;
+    streaming_.update_generation_stats(gen_ms, (int)tasks.size());
+    if (streaming_.should_abort(job_gen)) return;
 
     // Meshing pass: parallelize over prioritized tasks (di,dj,dk)
     int meshed_count = 0;
@@ -2278,7 +2257,7 @@ void VulkanApp::build_ring_job(const LoadRequest& request) {
     auto mesh_worker = [&]() {
         int local_meshed = 0;
         while (true) {
-            if (streaming_.manager().should_abort(job_gen)) break;
+            if (streaming_.should_abort(job_gen)) break;
             size_t idx = mi.fetch_add(1, std::memory_order_relaxed);
             if (idx >= mtasks.size()) break;
             const auto t = mtasks[idx];
@@ -2315,7 +2294,7 @@ void VulkanApp::build_ring_job(const LoadRequest& request) {
             Float3 wc = dirc * Rc;
             res.center[0] = wc.x; res.center[1] = wc.y; res.center[2] = wc.z; res.radius = diag_half;
             res.job_gen = job_gen;
-            streaming_.manager().push_mesh_result(std::move(res));
+            streaming_.push_mesh_result(std::move(res));
             local_meshed++;
         }
         if (local_meshed) meshed_accum.fetch_add(local_meshed, std::memory_order_relaxed);
@@ -2325,7 +2304,7 @@ void VulkanApp::build_ring_job(const LoadRequest& request) {
     meshed_count = meshed_accum.load();
     auto t2 = std::chrono::steady_clock::now();
     double mesh_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    streaming_.manager().update_mesh_stats(mesh_ms, meshed_count, gen_ms + mesh_ms);
+    streaming_.update_mesh_stats(mesh_ms, meshed_count, gen_ms + mesh_ms);
     if (profile_csv_enabled_) {
         double tsec = std::chrono::duration<double>(t2 - app_start_tp_).count();
         char line[256];
@@ -2342,7 +2321,7 @@ void VulkanApp::drain_mesh_results() {
     auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         MeshResult res;
-        if (!streaming_.manager().try_pop_result(res)) break;
+        if (!streaming_.try_pop_result(res)) break;
         RenderChunk rc;
         rc.index_count = (uint32_t)res.indices.size();
         rc.vertex_count = (uint32_t)res.vertices.size();
@@ -2437,7 +2416,7 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
                           << " idx_count=" << render_chunks_[i].index_count
                           << " vtx_count=" << render_chunks_[i].vertex_count << "\n";
             }
-            streaming_.manager().erase_chunk(rk);
+            streaming_.erase_chunk(rk);
             // Defer deletion/free; chunk might still be referenced by commands submitted last frame
             schedule_delete_chunk(render_chunks_[i]);
             render_chunks_.erase(render_chunks_.begin() + i);
@@ -2470,7 +2449,7 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
                           << " idx_count=" << rc.index_count
                           << " vtx_count=" << rc.vertex_count << "\n";
             }
-            streaming_.manager().erase_chunk(rc.key);
+            streaming_.erase_chunk(rc.key);
             schedule_delete_chunk(rc);
             render_chunks_.erase(render_chunks_.begin() + i);
         } else {
@@ -2567,7 +2546,7 @@ void VulkanApp::update_streaming() {
     }
 
     // Build prune allow-list: keep current face ring with hysteresis in s/t and k; optionally keep previous face while timer active
-    if (!streaming_.stream_face_ready() && streaming_.manager().loader_idle()) {
+    if (!streaming_.stream_face_ready() && streaming_.loader_idle()) {
         streaming_.set_stream_face_ready(true);
     }
 

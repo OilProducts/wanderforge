@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "chunk_streaming_manager.h"
 
@@ -11,6 +15,9 @@ namespace wf {
 class WorldStreamingSubsystem {
 public:
     WorldStreamingSubsystem() = default;
+
+    using MeshResult = ChunkStreamingManager::MeshResult;
+    using LoadRequest = ChunkStreamingManager::LoadRequest;
 
     void configure(const PlanetConfig& planet_cfg,
                    const std::string& region_root,
@@ -27,12 +34,61 @@ public:
     ChunkStreamingManager& manager() { return manager_; }
     const ChunkStreamingManager& manager() const { return manager_; }
 
+    uint64_t enqueue_request(LoadRequest req);
+    bool should_abort(uint64_t job_gen) const;
+
+    void push_mesh_result(MeshResult res);
+    bool try_pop_result(MeshResult& out);
+
+    void update_generation_stats(double gen_ms, int chunks);
+    void update_mesh_stats(double mesh_ms, int meshed, double total_ms);
+
+    void flush_dirty_chunk_deltas();
+    void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
+
+    void erase_chunk(const FaceChunkKey& key);
+
     size_t result_queue_depth() const { return manager_.result_queue_depth(); }
     double last_generation_ms() const { return manager_.last_generation_ms(); }
     int last_generated_chunks() const { return manager_.last_generated_chunks(); }
     double last_mesh_ms() const { return manager_.last_mesh_ms(); }
     int last_meshed_chunks() const { return manager_.last_meshed_chunks(); }
     bool loader_busy() const { return manager_.loader_busy(); }
+    bool loader_idle() const { return manager_.loader_idle(); }
+    std::size_t remesh_per_frame_cap() const { return manager_.remesh_per_frame_cap(); }
+
+    template <typename Fn>
+    bool with_chunk(const FaceChunkKey& key, Fn&& fn) const {
+        return manager_.with_chunk(key, std::forward<Fn>(fn));
+    }
+
+    template <typename Fn>
+    void visit_neighbors(const FaceChunkKey& key, Fn&& fn) const {
+        manager_.visit_neighbors(key, std::forward<Fn>(fn));
+    }
+
+    void queue_remesh(const FaceChunkKey& key);
+    std::deque<FaceChunkKey> take_remesh_batch(std::size_t max_count);
+
+    std::optional<Chunk64> find_chunk_copy(const FaceChunkKey& key) const;
+    void store_chunk(const FaceChunkKey& key, const Chunk64& chunk);
+
+    ChunkDelta load_delta_copy(const FaceChunkKey& key) const;
+    void normalize_delta(ChunkDelta& delta) { manager_.normalize_chunk_delta_representation(delta); }
+
+    template <typename Fn>
+    void modify_chunk_delta(const FaceChunkKey& key, Fn&& fn) {
+        std::unique_lock lock(manager_.chunk_delta_mutex());
+        auto& deltas = manager_.chunk_deltas();
+        ChunkDelta& delta = deltas.try_emplace(key, ChunkDelta{}).first->second;
+        fn(delta);
+        manager_.normalize_chunk_delta_representation(delta);
+    }
+
+    template <typename Fn>
+    bool update_chunk(const FaceChunkKey& key, Fn&& fn) {
+        return manager_.update_chunk(key, std::forward<Fn>(fn));
+    }
 
     int stream_face() const { return stream_face_; }
     void set_stream_face(int face) { stream_face_ = face; }
@@ -83,4 +139,3 @@ private:
 };
 
 } // namespace wf
-
