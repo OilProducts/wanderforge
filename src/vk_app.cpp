@@ -1219,18 +1219,13 @@ bool VulkanApp::build_chunk_mesh_result(const FaceChunkKey& key,
 
 VulkanApp::CachedNeighborChunks VulkanApp::gather_cached_neighbors(const FaceChunkKey& key) const {
     CachedNeighborChunks neighbors;
-    streaming_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk) {
-        if (!chunk) return;
-        int di = neighbor_key.i - key.i;
-        int dj = neighbor_key.j - key.j;
-        int dk = neighbor_key.k - key.k;
-        if (di == -1 && dj == 0 && dk == 0) neighbors.neg_x = *chunk;
-        else if (di == 1 && dj == 0 && dk == 0) neighbors.pos_x = *chunk;
-        else if (di == 0 && dj == -1 && dk == 0) neighbors.neg_y = *chunk;
-        else if (di == 0 && dj == 1 && dk == 0) neighbors.pos_y = *chunk;
-        else if (di == 0 && dj == 0 && dk == -1) neighbors.neg_z = *chunk;
-        else if (di == 0 && dj == 0 && dk == 1) neighbors.pos_z = *chunk;
-    });
+    auto gathered = streaming_.gather_neighbor_chunks(key);
+    if (gathered.neg_x) neighbors.neg_x = *gathered.neg_x;
+    if (gathered.pos_x) neighbors.pos_x = *gathered.pos_x;
+    if (gathered.neg_y) neighbors.neg_y = *gathered.neg_y;
+    if (gathered.pos_y) neighbors.pos_y = *gathered.pos_y;
+    if (gathered.neg_z) neighbors.neg_z = *gathered.neg_z;
+    if (gathered.pos_z) neighbors.pos_z = *gathered.pos_z;
     return neighbors;
 }
 

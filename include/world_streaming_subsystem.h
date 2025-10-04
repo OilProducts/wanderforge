@@ -20,6 +20,21 @@ public:
     using MeshResult = ChunkStreamingManager::MeshResult;
     using LoadRequest = ChunkStreamingManager::LoadRequest;
 
+    struct NeighborChunks {
+        std::optional<Chunk64> neg_x;
+        std::optional<Chunk64> pos_x;
+        std::optional<Chunk64> neg_y;
+        std::optional<Chunk64> pos_y;
+        std::optional<Chunk64> neg_z;
+        std::optional<Chunk64> pos_z;
+        const Chunk64* nx_ptr() const { return neg_x ? &*neg_x : nullptr; }
+        const Chunk64* px_ptr() const { return pos_x ? &*pos_x : nullptr; }
+        const Chunk64* ny_ptr() const { return neg_y ? &*neg_y : nullptr; }
+        const Chunk64* py_ptr() const { return pos_y ? &*pos_y : nullptr; }
+        const Chunk64* nz_ptr() const { return neg_z ? &*neg_z : nullptr; }
+        const Chunk64* pz_ptr() const { return pos_z ? &*pos_z : nullptr; }
+    };
+
     void configure(const PlanetConfig& planet_cfg,
                    const std::string& region_root,
                    bool save_chunks,
@@ -44,10 +59,9 @@ public:
     void update_generation_stats(double gen_ms, int chunks);
     void update_mesh_stats(double mesh_ms, int meshed, double total_ms);
 
-    void flush_dirty_chunk_deltas();
-    void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
-
     void erase_chunk(const FaceChunkKey& key);
+    void overlay_chunk_delta(const FaceChunkKey& key, Chunk64& chunk);
+    void flush_dirty_chunk_deltas();
 
     size_t result_queue_depth() const { return manager_.result_queue_depth(); }
     double last_generation_ms() const { return manager_.last_generation_ms(); }
@@ -73,6 +87,8 @@ public:
 
     std::optional<Chunk64> find_chunk_copy(const FaceChunkKey& key) const;
     void store_chunk(const FaceChunkKey& key, const Chunk64& chunk);
+
+    NeighborChunks gather_neighbor_chunks(const FaceChunkKey& key) const;
 
     ChunkDelta load_delta_copy(const FaceChunkKey& key) const;
     void normalize_delta(ChunkDelta& delta) { manager_.normalize_chunk_delta_representation(delta); }

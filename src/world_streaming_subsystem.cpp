@@ -110,4 +110,21 @@ ChunkDelta WorldStreamingSubsystem::load_delta_copy(const FaceChunkKey& key) con
     return ChunkDelta{};
 }
 
+WorldStreamingSubsystem::NeighborChunks WorldStreamingSubsystem::gather_neighbor_chunks(const FaceChunkKey& key) const {
+    NeighborChunks neighbors;
+    manager_.visit_neighbors(key, [&](const FaceChunkKey& neighbor_key, const Chunk64* chunk) {
+        if (!chunk) return;
+        int di = neighbor_key.i - key.i;
+        int dj = neighbor_key.j - key.j;
+        int dk = neighbor_key.k - key.k;
+        if (di == -1 && dj == 0 && dk == 0) neighbors.neg_x = *chunk;
+        else if (di == 1 && dj == 0 && dk == 0) neighbors.pos_x = *chunk;
+        else if (di == 0 && dj == -1 && dk == 0) neighbors.neg_y = *chunk;
+        else if (di == 0 && dj == 1 && dk == 0) neighbors.pos_y = *chunk;
+        else if (di == 0 && dj == 0 && dk == -1) neighbors.neg_z = *chunk;
+        else if (di == 0 && dj == 0 && dk == 1) neighbors.pos_z = *chunk;
+    });
+    return neighbors;
+}
+
 } // namespace wf
