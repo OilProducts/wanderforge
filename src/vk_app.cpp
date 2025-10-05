@@ -17,6 +17,7 @@
 #include <sstream>
 #include <cmath>
 #include <chrono>
+#include <stdexcept>
 #include <string_view>
 #include <span>
 
@@ -26,6 +27,7 @@
 #include "wf_noise.h"
 #include "region_io.h"
 #include "vk_utils.h"
+#include "platform_layer.h"
 #include "camera.h"
 #include "ui/ui_text.h"
 #include "ui/ui_primitives.h"
@@ -70,9 +72,76 @@ VulkanApp::VulkanApp() {
 
 void VulkanApp::set_config_path(std::string path) {
     config_path_override_ = std::move(path);
-    if (config_manager_) {
-        config_manager_->set_cli_config_path(config_path_override_);
+    if (world_runtime_initialized_) {
+        world_runtime_->set_cli_config_path(config_path_override_);
     }
+}
+
+void VulkanApp::set_platform(PlatformLayer* platform) {
+    platform_ = platform;
+}
+
+void VulkanApp::request_reload_config() {
+    reload_config_from_disk();
+}
+
+void VulkanApp::request_save_config() {
+    save_active_config();
+}
+
+void VulkanApp::refresh_runtime_state() {
+    if (!world_runtime_initialized_) {
+        return;
+    }
+
+    runtime_config_ = world_runtime_->snapshot_config();
+    camera_snapshot_ = world_runtime_->snapshot_camera();
+
+    cam_pos_[0] = camera_snapshot_.position.x;
+    cam_pos_[1] = camera_snapshot_.position.y;
+    cam_pos_[2] = camera_snapshot_.position.z;
+
+    Float3 forward = camera_snapshot_.forward;
+    cam_yaw_ = std::atan2(forward.z, forward.x);
+    cam_pitch_ = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
+
+    walk_mode_ = runtime_config_.walk_mode;
+    invert_mouse_x_ = runtime_config_.invert_mouse_x;
+    invert_mouse_y_ = runtime_config_.invert_mouse_y;
+    cam_sensitivity_ = runtime_config_.cam_sensitivity;
+    cam_speed_ = runtime_config_.cam_speed;
+    walk_speed_ = runtime_config_.walk_speed;
+    walk_pitch_max_deg_ = runtime_config_.walk_pitch_max_deg;
+    walk_surface_bias_m_ = runtime_config_.walk_surface_bias_m;
+    eye_height_m_ = runtime_config_.eye_height_m;
+    surface_push_m_ = runtime_config_.surface_push_m;
+}
+
+void VulkanApp::initialize() {
+    init_window();
+    load_config();
+    init_vulkan();
+    app_start_tp_ = std::chrono::steady_clock::now();
+    update_streaming_runtime_settings();
+    refresh_runtime_state();
+    last_time_ = glfwGetTime();
+}
+
+bool VulkanApp::should_close() const {
+    return platform_ ? platform_->should_close() : true;
+}
+
+void VulkanApp::poll_events() {
+    if (platform_) {
+        platform_->poll_events();
+    }
+}
+
+float VulkanApp::advance_time() {
+    double now = glfwGetTime();
+    float dt = static_cast<float>(std::max(0.0, now - last_time_));
+    last_time_ = now;
+    return dt;
 }
 
 VulkanApp::~VulkanApp() {
@@ -113,47 +182,89 @@ VulkanApp::~VulkanApp() {
 #endif
 
     renderer_.shutdown();
-    window_system_.shutdown();
 }
 
 void VulkanApp::run() {
-    init_window();
-    load_config();
-    init_vulkan();
-    app_start_tp_ = std::chrono::steady_clock::now();
-    update_streaming_runtime_settings();
-    last_time_ = glfwGetTime();
-    while (!window_system_.should_close()) {
-        window_system_.poll_events();
-        double now = glfwGetTime();
-        float dt = (float)std::max(0.0, now - last_time_);
-        last_time_ = now;
-        update_input(dt);
+    PlatformLayer local_platform;
+    bool owns_platform = false;
+    if (!platform_) {
+        PlatformLayer::Config cfg;
+        local_platform.initialize(cfg);
+        set_platform(&local_platform);
+        owns_platform = true;
+    }
+
+    PlatformInputState prev_input{};
+    bool prev_input_valid = false;
+
+    initialize();
+    while (!should_close()) {
+        poll_events();
+        float dt = advance_time();
+        PlatformInputState input = platform_ ? platform_->sample_input() : PlatformInputState{};
+        ControllerActions actions;
+        actions.move_forward = (input.key_w ? 1.0f : 0.0f) - (input.key_s ? 1.0f : 0.0f);
+        actions.move_strafe = (input.key_d ? 1.0f : 0.0f) - (input.key_a ? 1.0f : 0.0f);
+        actions.move_vertical = (input.key_e ? 1.0f : 0.0f) - (input.key_q ? 1.0f : 0.0f);
+        actions.sprint = input.key_shift_left || input.key_shift_right;
+
+        if (prev_input_valid) {
+            bool reload_pressed = input.key_reload && !prev_input.key_reload;
+            if (reload_pressed) {
+                if (actions.sprint) {
+                    request_save_config();
+                } else {
+                    request_reload_config();
+                }
+            }
+            actions.walk_toggle = input.key_walk_toggle && !prev_input.key_walk_toggle;
+            actions.invert_x_toggle = input.key_invert_x && !prev_input.key_invert_x;
+            actions.invert_y_toggle = input.key_invert_y && !prev_input.key_invert_y;
+            actions.place_pressed = input.key_place && !prev_input.key_place;
+            actions.dig_pressed = input.mouse_left && !prev_input.mouse_left;
+        }
+
+        update_input(dt, input, actions);
+        prev_input = input;
+        prev_input_valid = true;
         update_hud(dt);
         draw_frame();
     }
+
+    if (owns_platform) {
+        local_platform.shutdown();
+        set_platform(nullptr);
+    }
 }
 
-    void VulkanApp::init_window() {
-        window_system_.initialize(window_width_, window_height_, "Wanderforge");
-        window_system_.get_window_size(window_width_, window_height_);
-        window_system_.get_framebuffer_size(framebuffer_width_, framebuffer_height_);
-        hud_resolution_index_ = find_resolution_index(window_width_, window_height_);
+void VulkanApp::init_window() {
+    if (!platform_) {
+        throw std::runtime_error("PlatformLayer not bound to VulkanApp before initialization");
     }
+    platform_->get_window_size(window_width_, window_height_);
+    platform_->get_framebuffer_size(framebuffer_width_, framebuffer_height_);
+    if (window_width_ <= 0 || window_height_ <= 0) {
+        window_width_ = 1280;
+        window_height_ = 720;
+        platform_->set_window_size(window_width_, window_height_);
+        platform_->get_framebuffer_size(framebuffer_width_, framebuffer_height_);
+    }
+    hud_resolution_index_ = find_resolution_index(window_width_, window_height_);
+}
 
 void VulkanApp::set_mouse_capture(bool capture) {
-    GLFWwindow* window = window_system_.handle();
+    GLFWwindow* window = platform_ ? platform_->window_handle() : nullptr;
     if (!window) return;
     if (mouse_captured_ == capture) return;
     if (capture) {
-        window_system_.set_mouse_capture(true);
+        platform_->set_mouse_capture(true);
 #if GLFW_VERSION_MAJOR >= 3
         if (glfwRawMouseMotionSupported()) {
             glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         }
 #endif
     } else {
-        window_system_.set_mouse_capture(false);
+        platform_->set_mouse_capture(false);
 #if GLFW_VERSION_MAJOR >= 3
         if (glfwRawMouseMotionSupported()) {
             glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
@@ -166,7 +277,7 @@ void VulkanApp::set_mouse_capture(bool capture) {
 
 void VulkanApp::init_vulkan() {
     Renderer::CreateInfo renderer_info{};
-    renderer_info.window = window_system_.handle();
+    renderer_info.window = platform_ ? platform_->window_handle() : nullptr;
     renderer_info.enable_validation = enable_validation_;
     renderer_.initialize(renderer_info);
 
@@ -476,17 +587,23 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
 }
 
-void VulkanApp::update_input(float dt) {
-    GLFWwindow* window = window_system_.handle();
-    if (!window) return;
-    bool runtime_config_dirty = false;
-    if (config_manager_) {
+void VulkanApp::update_input(float dt, const PlatformInputState& input, const ControllerActions& actions) {
+    if (!platform_) {
+        return;
+    }
+
+    if (world_runtime_initialized_) {
+        refresh_runtime_state();
+    }
+
+    if (world_runtime_initialized_) {
         if (config_auto_reload_enabled_) {
             config_watch_accum_ += dt;
             if (config_watch_accum_ >= 1.0) {
                 config_watch_accum_ = 0.0;
-                if (config_manager_->reload_if_file_changed()) {
-                    apply_config(config_manager_->active());
+                if (world_runtime_->reload_config_if_file_changed()) {
+                    apply_config_local(world_runtime_->active_config());
+                    refresh_runtime_state();
                     hud_force_refresh_ = true;
                 }
             }
@@ -495,241 +612,43 @@ void VulkanApp::update_input(float dt) {
         }
     }
 
-    int reload_key = glfwGetKey(window, GLFW_KEY_F5);
-    bool shift_down = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ||
-                     (glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-    if (reload_key == GLFW_PRESS) {
-        if (shift_down) {
-            if (!key_prev_save_config_) {
-                save_active_config();
-            }
-            key_prev_save_config_ = true;
-        } else {
-            if (!key_prev_reload_config_) {
-                reload_config_from_disk();
-            }
-            key_prev_reload_config_ = true;
-        }
-    } else {
-        key_prev_reload_config_ = false;
-        key_prev_save_config_ = false;
-    }
-    // Close on Escape
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    if (input.key_escape) {
+        platform_->request_close();
     }
 
-    double cursor_x = 0.0;
-    double cursor_y = 0.0;
-    glfwGetCursorPos(window, &cursor_x, &cursor_y);
+    double cursor_x = input.mouse_x;
+    double cursor_y = input.mouse_y;
 
-    // Mouse look when RMB is held
-    int rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
-    if (rmb == GLFW_PRESS) {
+    float look_yaw_delta = 0.0f;
+    float look_pitch_delta = 0.0f;
+
+    bool rmb = input.mouse_right;
+    if (rmb) {
         if (!rmb_down_) {
             rmb_down_ = true;
-            // Enable cursor-disabled/raw mode for consistent relative deltas
             set_mouse_capture(true);
-            // Reset deltas to avoid an initial jump
-            last_cursor_x_ = cursor_x; last_cursor_y_ = cursor_y;
+            last_cursor_x_ = cursor_x;
+            last_cursor_y_ = cursor_y;
         }
-        double dx = cursor_x - last_cursor_x_;
-        double dy = cursor_y - last_cursor_y_;
-        last_cursor_x_ = cursor_x; last_cursor_y_ = cursor_y;
-        float sx = invert_mouse_x_ ? -1.0f : 1.0f;
-        float sy = invert_mouse_y_ ?  1.0f : -1.0f;
-        float yaw_delta = sx * (float)(dx * cam_sensitivity_);
-        float pitch_delta = sy * (float)(dy * cam_sensitivity_);
-        if (!walk_mode_) {
-            cam_yaw_ += yaw_delta;
-            if (cam_yaw_ > 3.14159265f) cam_yaw_ -= 6.28318531f;
-            if (cam_yaw_ < -3.14159265f) cam_yaw_ += 6.28318531f;
-            cam_pitch_ += pitch_delta;
-            float maxp = 1.55334306f; // ~89 deg
-            cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
-        } else {
-            Float3 pos{static_cast<float>(cam_pos_[0]),
-                       static_cast<float>(cam_pos_[1]),
-                       static_cast<float>(cam_pos_[2])};
-            Float3 updir = wf::normalize(pos);
-            auto normalize_or = [](Float3 v, Float3 fallback) {
-                float len = wf::length(v);
-                return (len > 1e-5f) ? (v / len) : fallback;
-            };
-            auto cross3 = [](const Float3& a, const Float3& b) {
-                return Float3{
-                    a.y * b.z - a.z * b.y,
-                    a.z * b.x - a.x * b.z,
-                    a.x * b.y - a.y * b.x
-                };
-            };
-            auto dot3 = [](const Float3& a, const Float3& b) {
-                return a.x * b.x + a.y * b.y + a.z * b.z;
-            };
-            auto rotate_axis = [&](const Float3& v, const Float3& axis, float angle) {
-                Float3 n = normalize_or(axis, Float3{0.0f, 1.0f, 0.0f});
-                float c = std::cos(angle);
-                float s = std::sin(angle);
-                float dot = dot3(n, v);
-                Float3 cross_nv = cross3(n, v);
-                return Float3{
-                    v.x * c + cross_nv.x * s + n.x * dot * (1.0f - c),
-                    v.y * c + cross_nv.y * s + n.y * dot * (1.0f - c),
-                    v.z * c + cross_nv.z * s + n.z * dot * (1.0f - c)
-                };
-            };
-
-            Float3 forward = normalize_or(Float3{
-                std::cos(cam_pitch_) * std::cos(cam_yaw_),
-                std::sin(cam_pitch_),
-                std::cos(cam_pitch_) * std::sin(cam_yaw_)
-            }, Float3{1.0f, 0.0f, 0.0f});
-
-            if (yaw_delta != 0.0f) {
-                forward = rotate_axis(forward, updir, yaw_delta);
-                forward = wf::normalize(forward);
-            }
-
-            if (pitch_delta != 0.0f) {
-                Float3 right_axis = normalize_or(cross3(updir, forward), Float3{0.0f, 1.0f, 0.0f});
-                Float3 candidate = rotate_axis(forward, right_axis, pitch_delta);
-                candidate = wf::normalize(candidate);
-                float sin_pitch = std::clamp(dot3(candidate, updir), -1.0f, 1.0f);
-                float max_pitch = walk_pitch_max_deg_ * 0.01745329252f;
-                float max_s = std::sin(max_pitch);
-                if (sin_pitch > max_s || sin_pitch < -max_s) {
-                    float clamped = std::clamp(sin_pitch, -max_s, max_s);
-                    Float3 tangent = normalize_or(candidate - updir * sin_pitch, forward);
-                    float tangent_scale = std::sqrt(std::max(0.0f, 1.0f - clamped * clamped));
-                    candidate = wf::normalize(tangent * tangent_scale + updir * clamped);
-                }
-                forward = candidate;
-            }
-
-            cam_yaw_ = std::atan2(forward.z, forward.x);
-            cam_pitch_ = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
-        }
+        look_yaw_delta = static_cast<float>(cursor_x - last_cursor_x_);
+        look_pitch_delta = static_cast<float>(cursor_y - last_cursor_y_);
+        last_cursor_x_ = cursor_x;
+        last_cursor_y_ = cursor_y;
     } else {
         if (rmb_down_) {
             rmb_down_ = false;
-            // Restore normal cursor when leaving mouse-look
             set_mouse_capture(false);
         }
+        last_cursor_x_ = cursor_x;
+        last_cursor_y_ = cursor_y;
     }
 
-    // Compute basis from yaw/pitch
-    float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-    float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-    float fwd[3] = { cp*cyaw, sp, cp*syaw };
-    float up[3]  = { 0.0f, 1.0f, 0.0f };
-    // Right-handed basis: right = cross(fwd, up)
-    float right[3] = { fwd[1]*up[2]-fwd[2]*up[1], fwd[2]*up[0]-fwd[0]*up[2], fwd[0]*up[1]-fwd[1]*up[0] };
-    float rl = std::sqrt(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
-    if (rl > 0) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
-
-    // Toggle walk mode with F key
-    int kwalk = glfwGetKey(window, GLFW_KEY_F);
-    if (kwalk == GLFW_PRESS && !key_prev_toggle_walk_) {
-        walk_mode_ = !walk_mode_;
+    if (actions.walk_toggle || actions.invert_x_toggle || actions.invert_y_toggle) {
         hud_force_refresh_ = true;
-        runtime_config_dirty = true;
-        if (walk_mode_) {
-            Float3 pos{static_cast<float>(cam_pos_[0]),
-                       static_cast<float>(cam_pos_[1]),
-                       static_cast<float>(cam_pos_[2])};
-            Float3 updir = wf::normalize(pos);
-            const PlanetConfig& cfg = planet_cfg_;
-            double h = terrain_height_m(cfg, updir);
-            double surface_r = cfg.radius_m + h;
-            if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m;
-            // Snap camera to the voxelized mesh surface: floor(surface_r/s)*s + s/2 aligns to top face
-            double s_m = cfg.voxel_size_m;
-            double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
-            double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
-            cam_pos_[0] = (double)updir.x * target_r;
-            cam_pos_[1] = (double)updir.y * target_r;
-            cam_pos_[2] = (double)updir.z * target_r;
-            float maxp = walk_pitch_max_deg_ * 0.01745329252f;
-            cam_pitch_ = std::clamp(cam_pitch_, -maxp, maxp);
-        }
     }
-    key_prev_toggle_walk_ = (kwalk == GLFW_PRESS);
-
-    if (!walk_mode_) {
-        float speed = cam_speed_ * dt * (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 3.0f : 1.0f);
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { cam_pos_[0]+=fwd[0]*speed; cam_pos_[1]+=fwd[1]*speed; cam_pos_[2]+=fwd[2]*speed; }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { cam_pos_[0]-=fwd[0]*speed; cam_pos_[1]-=fwd[1]*speed; cam_pos_[2]-=fwd[2]*speed; }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { cam_pos_[0]-=right[0]*speed; cam_pos_[1]-=right[1]*speed; cam_pos_[2]-=right[2]*speed; }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { cam_pos_[0]+=right[0]*speed; cam_pos_[1]+=right[1]*speed; cam_pos_[2]+=right[2]*speed; }
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) { cam_pos_[1]-=speed; }
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) { cam_pos_[1]+=speed; }
-    } else {
-        // Walk mode: move along surface using projected camera orientation
-        const PlanetConfig& cfg = planet_cfg_;
-        Float3 pos{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
-        Float3 updir = normalize(pos);
-        auto cross3 = [](Float3 a, Float3 b) {
-            return Float3{ a.y * b.z - a.z * b.y,
-                           a.z * b.x - a.x * b.z,
-                           a.x * b.y - a.y * b.x };
-        };
-        auto normalize_or = [](Float3 v, Float3 fallback) {
-            float len = wf::length(v);
-            return (len > 1e-5f) ? (v / len) : fallback;
-        };
-        auto dot3 = [](Float3 a, Float3 b) {
-            return a.x * b.x + a.y * b.y + a.z * b.z;
-        };
-
-        Float3 view_dir{cp * cyaw, sp, cp * syaw};
-        view_dir = normalize_or(view_dir, Float3{1.0f, 0.0f, 0.0f});
-        Float3 fwd_t = view_dir - updir * dot3(view_dir, updir);
-        fwd_t = normalize_or(fwd_t, normalize_or(cross3(updir, Float3{0.0f, 0.0f, 1.0f}), Float3{1.0f, 0.0f, 0.0f}));
-        Float3 right_t = normalize_or(cross3(fwd_t, updir), Float3{0.0f, 1.0f, 0.0f});
-
-        float speed = walk_speed_ * dt * (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 2.0f : 1.0f);
-        Float3 step{0,0,0};
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { step = step + fwd_t   * speed; }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { step = step - fwd_t   * speed; }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { step = step - right_t * speed; }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { step = step + right_t * speed; }
-
-        Float3 ndir = updir;
-        float step_len = wf::length(step);
-        if (step_len > 0.0f) {
-            Float3 tdir = step / step_len;
-            double cam_rd = std::sqrt(cam_pos_[0]*cam_pos_[0] + cam_pos_[1]*cam_pos_[1] + cam_pos_[2]*cam_pos_[2]);
-            float phi = (float)(step_len / std::max(cam_rd, 1e-9));
-            float c = std::cos(phi);
-            float s = std::sin(phi);
-            ndir = wf::normalize(Float3{ updir.x * c + tdir.x * s,
-                                         updir.y * c + tdir.y * s,
-                                         updir.z * c + tdir.z * s });
-            updir = ndir;
-        }
-
-        double h = terrain_height_m(cfg, ndir);
-        double surface_r = cfg.radius_m + h;
-        if (surface_r < cfg.sea_level_m) surface_r = cfg.sea_level_m; // keep above water surface
-        double s_m = cfg.voxel_size_m;
-        double mesh_r = std::floor(surface_r / s_m) * s_m + 0.5 * s_m;
-        double target_r = mesh_r + (double)eye_height_m_ + (double)walk_surface_bias_m_;
-        cam_pos_[0] = (double)ndir.x * target_r;
-        cam_pos_[1] = (double)ndir.y * target_r;
-        cam_pos_[2] = (double)ndir.z * target_r;
-    }
-
-    // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
-    int kx = glfwGetKey(window, GLFW_KEY_X);
-    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; hud_force_refresh_ = true; runtime_config_dirty = true; }
-    key_prev_toggle_x_ = (kx == GLFW_PRESS);
-    int ky = glfwGetKey(window, GLFW_KEY_Y);
-    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; runtime_config_dirty = true; }
-    key_prev_toggle_y_ = (ky == GLFW_PRESS);
 
     if (mouse_captured_) {
-        bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (lmb && !edit_lmb_prev_down_) {
+        if (actions.dig_pressed) {
             VoxelHit solid{};
             VoxelHit empty{};
             if (pick_voxel(solid, empty)) {
@@ -738,10 +657,8 @@ void VulkanApp::update_input(float dt) {
                 apply_voxel_edit(solid, MAT_AIR, current_brush_dim());
             }
         }
-        edit_lmb_prev_down_ = lmb;
 
-        bool place_key = glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
-        if (place_key && !edit_place_prev_down_) {
+        if (actions.place_pressed) {
             VoxelHit solid{};
             VoxelHit empty{};
             if (pick_voxel(solid, empty) && empty.key.face >= 0) {
@@ -749,36 +666,38 @@ void VulkanApp::update_input(float dt) {
                 apply_voxel_edit(empty, edit_place_material_, current_brush_dim());
             }
         }
-        edit_place_prev_down_ = place_key;
-    } else {
-        edit_lmb_prev_down_ = false;
-        edit_place_prev_down_ = false;
+
     }
 
     if (world_runtime_initialized_) {
-        world_runtime_->sync_camera_state(
-            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
-            cam_yaw_,
-            cam_pitch_,
-            walk_mode_);
-
         WorldUpdateInput runtime_input{};
         runtime_input.dt = dt;
-        runtime_input.walk_mode = walk_mode_;
-        runtime_input.sprint = shift_down;
-        runtime_input.ground_follow = walk_mode_;
+        runtime_input.move.forward = actions.move_forward;
+        runtime_input.move.strafe = actions.move_strafe;
+        runtime_input.move.vertical = actions.move_vertical;
+        runtime_input.look.yaw_delta = look_yaw_delta;
+        runtime_input.look.pitch_delta = look_pitch_delta;
+        runtime_input.walk_mode = runtime_config_.walk_mode;
+        runtime_input.sprint = actions.sprint;
+        runtime_input.ground_follow = runtime_config_.walk_mode;
         runtime_input.clamp_pitch = true;
+        runtime_input.toggle_walk_mode = actions.walk_toggle;
+        runtime_input.toggle_invert_x = actions.invert_x_toggle;
+        runtime_input.toggle_invert_y = actions.invert_y_toggle;
+
         WorldUpdateResult runtime_result = world_runtime_->update(runtime_input);
         apply_runtime_result(runtime_result);
+        refresh_runtime_state();
     }
 
     // Feed UI backend
     ui::UIBackend::InputState ui_input{};
-    glfwGetCursorPos(window, &cursor_x, &cursor_y);
-    window_system_.get_window_size(window_width_, window_height_);
-    int fb_w = 0;
-    int fb_h = 0;
-    window_system_.get_framebuffer_size(fb_w, fb_h);
+    cursor_x = input.mouse_x;
+    cursor_y = input.mouse_y;
+    window_width_ = input.window_width;
+    window_height_ = input.window_height;
+    int fb_w = input.framebuffer_width;
+    int fb_h = input.framebuffer_height;
     if (fb_w > 0 && fb_h > 0) {
         framebuffer_width_ = fb_w;
         framebuffer_height_ = fb_h;
@@ -798,18 +717,12 @@ void VulkanApp::update_input(float dt) {
     }
     ui_input.mouse_x = cursor_x * scale_x;
     ui_input.mouse_y = cursor_y * scale_y;
-    ui_input.mouse_down[0] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    ui_input.mouse_down[1] = (rmb == GLFW_PRESS);
-    ui_input.mouse_down[2] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
-    ui_input.has_mouse = (glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) && !mouse_captured_;
+    ui_input.mouse_down[0] = input.mouse_left;
+    ui_input.mouse_down[1] = input.mouse_right;
+    ui_input.mouse_down[2] = input.mouse_middle;
+    ui_input.has_mouse = input.window_focused && !mouse_captured_;
     hud_ui_backend_.begin_frame(ui_input, hud_ui_frame_index_++);
 
-    if (config_manager_ && runtime_config_dirty) {
-        config_manager_->adopt_runtime_state(snapshot_config());
-        if (world_runtime_initialized_) {
-            world_runtime_->apply_config(config_manager_->active());
-        }
-    }
 }
 
 void VulkanApp::update_hud(float dt) {
@@ -833,7 +746,7 @@ void VulkanApp::update_hud(float dt) {
                   "Wanderforge | FPS: %.1f | Pos: (%.1f, %.1f, %.1f) | Yaw/Pitch: (%.1f, %.1f) | InvX:%d InvY:%d | Speed: %.1f",
                   fps_smooth_, cam_pos_[0], cam_pos_[1], cam_pos_[2], yaw_deg, pitch_deg,
                   invert_mouse_x_ ? 1 : 0, invert_mouse_y_ ? 1 : 0, cam_speed_);
-    if (GLFWwindow* window = window_system_.handle()) {
+    if (GLFWwindow* window = platform_ ? platform_->window_handle() : nullptr) {
         glfwSetWindowTitle(window, title);
     }
 
@@ -888,9 +801,10 @@ std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
               debug_show_axes_ ? "on" : "off",
               debug_show_test_triangle_ ? "on" : "off");
 
-const std::string& manager_path = (config_manager_ && !config_manager_->config_path().empty())
-                                      ? config_manager_->config_path()
-                                      : config_path_used_;
+std::string manager_path = config_path_used_;
+if (world_runtime_initialized_) {
+    manager_path = world_runtime_->active_config().config_path;
+}
 const char* auto_reload_text = config_auto_reload_enabled_ ? "on" : "off";
 hud_len = std::strlen(hud);
 std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
@@ -922,44 +836,37 @@ void VulkanApp::load_config() {
                 this->profile_append_csv(line);
             });
         }
+    } else {
+        if (!config_path_override_.empty()) {
+            world_runtime_->set_cli_config_path(config_path_override_);
+        }
+        world_runtime_->reload_config();
     }
 
-    config_manager_ = std::make_unique<AppConfigManager>(defaults);
-    if (!config_path_override_.empty()) {
-        config_manager_->set_cli_config_path(config_path_override_);
-    }
-    config_manager_->reload();
-    apply_config(config_manager_->active());
     if (world_runtime_initialized_) {
-        world_runtime_->sync_camera_state(
-            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
-            cam_yaw_,
-            cam_pitch_,
-            walk_mode_);
+        apply_config_local(world_runtime_->active_config());
+        refresh_runtime_state();
     }
 }
 
 void VulkanApp::reload_config_from_disk() {
-    if (!config_manager_) {
+    if (!world_runtime_initialized_) {
         load_config();
         hud_force_refresh_ = true;
         return;
     }
-    if (config_manager_->reload()) {
-        apply_config(config_manager_->active());
+    if (world_runtime_->reload_config()) {
+        apply_config_local(world_runtime_->active_config());
         hud_force_refresh_ = true;
     }
 }
 
 void VulkanApp::save_active_config() {
-    if (!config_manager_) return;
-    AppConfig runtime = snapshot_config();
-    runtime.config_path = config_manager_->config_path().empty() ? runtime.config_path : config_manager_->config_path();
-    config_manager_->adopt_runtime_state(runtime);
-    if (config_manager_->save_active_to_file()) {
-        if (config_manager_->reload()) {
-            apply_config(config_manager_->active());
-        }
+    if (!world_runtime_initialized_) return;
+    world_runtime_->apply_config(snapshot_config());
+    if (world_runtime_->save_active_config()) {
+        apply_config_local(world_runtime_->active_config());
+        hud_force_refresh_ = true;
     }
 }
 
@@ -1016,7 +923,7 @@ AppConfig VulkanApp::snapshot_config() const {
     return cfg;
 }
 
-void VulkanApp::apply_config(const AppConfig& cfg) {
+void VulkanApp::apply_config_local(const AppConfig& cfg) {
     invert_mouse_x_ = cfg.invert_mouse_x;
     invert_mouse_y_ = cfg.invert_mouse_y;
     cam_sensitivity_ = cfg.cam_sensitivity;
@@ -1065,19 +972,15 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     config_path_used_ = cfg.config_path;
     region_root_ = cfg.region_root;
 
-    if (config_manager_) {
-        config_manager_->adopt_runtime_state(cfg);
-    }
-
     hud_force_refresh_ = true;
+}
+
+void VulkanApp::apply_config(const AppConfig& cfg) {
+    apply_config_local(cfg);
 
     if (world_runtime_initialized_) {
         world_runtime_->apply_config(cfg);
-        world_runtime_->sync_camera_state(
-            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
-            cam_yaw_,
-            cam_pitch_,
-            walk_mode_);
+        refresh_runtime_state();
     } else {
         streaming_.configure(planet_cfg_,
                              region_root_,
@@ -1130,7 +1033,7 @@ int VulkanApp::current_brush_dim() const {
 }
 
 void VulkanApp::apply_resolution_option(std::size_t index) {
-    GLFWwindow* window = window_system_.handle();
+    GLFWwindow* window = platform_ ? platform_->window_handle() : nullptr;
     if (kResolutionOptions.empty() || index >= kResolutionOptions.size() || !window) {
         return;
     }
@@ -1138,7 +1041,9 @@ void VulkanApp::apply_resolution_option(std::size_t index) {
     const ResolutionOption& opt = kResolutionOptions[index];
     int cur_w = 0;
     int cur_h = 0;
-    window_system_.get_window_size(cur_w, cur_h);
+    if (platform_) {
+        platform_->get_window_size(cur_w, cur_h);
+    }
 
     if (cur_w == opt.width && cur_h == opt.height) {
         hud_resolution_index_ = index;
@@ -1148,7 +1053,9 @@ void VulkanApp::apply_resolution_option(std::size_t index) {
     }
 
     std::cout << "[hud] resizing window to " << opt.width << " x " << opt.height << "\n";
-    window_system_.set_window_size(opt.width, opt.height);
+    if (platform_) {
+        platform_->set_window_size(opt.width, opt.height);
+    }
     window_width_ = opt.width;
     window_height_ = opt.height;
     hud_resolution_index_ = index;
@@ -1555,8 +1462,8 @@ void VulkanApp::draw_frame() {
 
     hud_ui_backend_.end_frame();
 
-    if (config_manager_ && runtime_config_dirty) {
-        config_manager_->adopt_runtime_state(snapshot_config());
+    if (world_runtime_initialized_ && runtime_config_dirty) {
+        world_runtime_->apply_config(snapshot_config());
     }
 
     if (renderer_.swapchain_needs_recreate()) {

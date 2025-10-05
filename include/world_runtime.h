@@ -13,6 +13,7 @@
 #include "mesh.h"
 #include "planet.h"
 #include "wf_math.h"
+#include "camera_controller.h"
 
 namespace wf {
 
@@ -31,17 +32,6 @@ struct EditCommand {
     int16_t local_y = 0;
     int16_t local_z = 0;
     uint16_t material = 0;
-};
-
-struct CameraSnapshot {
-    wf::Mat4 view{};
-    wf::Mat4 projection{};
-    wf::Float3 position{0.0f, 0.0f, 0.0f};
-    wf::Float3 forward{1.0f, 0.0f, 0.0f};
-    wf::Float3 up{0.0f, 1.0f, 0.0f};
-    float fov_deg = 60.0f;
-    float near_plane = 0.1f;
-    float far_plane = 300.0f;
 };
 
 struct StreamStatus {
@@ -93,17 +83,6 @@ struct WorldRenderSnapshot {
     std::span<const AllowRegion> allow_regions{};
 };
 
-struct MovementAxes {
-    float forward = 0.0f;
-    float strafe = 0.0f;
-    float vertical = 0.0f;
-};
-
-struct LookInput {
-    float yaw_delta = 0.0f;
-    float pitch_delta = 0.0f;
-};
-
 struct WorldUpdateInput {
     double dt = 0.0;
     MovementAxes move{};
@@ -112,6 +91,9 @@ struct WorldUpdateInput {
     bool sprint = false;
     bool ground_follow = false;
     bool clamp_pitch = true;
+    bool toggle_walk_mode = false;
+    bool toggle_invert_x = false;
+    bool toggle_invert_y = false;
     std::span<const EditCommand> edits{};
     bool reload_config = false;
     bool save_config = false;
@@ -155,6 +137,12 @@ public:
     const AppConfig& active_config() const;
     void apply_config(const AppConfig& cfg);
     AppConfig snapshot_config() const;
+    void set_cli_config_path(std::string path);
+    bool reload_config();
+    bool reload_config_if_file_changed();
+    bool save_active_config();
+    bool has_config_file() const;
+    const std::string& active_config_path() const;
 
     void set_profile_sink(std::function<void(const std::string&)> sink);
 

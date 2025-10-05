@@ -22,6 +22,7 @@
 #include "window_input.h"
 #include "renderer.h"
 #include "vk_handle.h"
+#include "platform_input.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -34,6 +35,8 @@ struct GLFWwindow;
 
 namespace wf {
 
+class PlatformLayer;
+
 class VulkanApp {
 public:
     VulkanApp();
@@ -41,6 +44,16 @@ public:
 
     void run();
     void set_config_path(std::string path);
+    void set_platform(PlatformLayer* platform);
+    void initialize();
+    bool should_close() const;
+    void poll_events();
+    float advance_time();
+    void update_input(float dt, const PlatformInputState& input, const ControllerActions& actions);
+    void update_hud(float dt);
+    void draw_frame();
+    void request_reload_config();
+    void request_save_config();
 
 private:
     void init_window();
@@ -49,11 +62,9 @@ private:
     // Legacy chunk pipeline removed; ChunkRenderer is authoritative
     void create_compute_pipeline();
     void record_command_buffer(const Renderer::FrameContext& ctx);
-    void draw_frame();
-    void update_input(float dt);
-    void update_hud(float dt);
     void load_config();
     AppConfig snapshot_config() const;
+    void apply_config_local(const AppConfig& cfg);
     void apply_config(const AppConfig& cfg);
     void apply_resolution_option(std::size_t index);
     std::size_t find_resolution_index(int width, int height) const;
@@ -73,6 +84,7 @@ private:
     bool process_runtime_mesh_upload(const wf::MeshUpload& upload);
     void process_runtime_mesh_release(const FaceChunkKey& key);
     void apply_runtime_result(const WorldUpdateResult& result);
+    void refresh_runtime_state();
 
     void recreate_swapchain();
     void rebuild_swapchain_dependents();
@@ -83,13 +95,16 @@ private:
     void destroy_debug_axes_pipeline();
 
 private:
-    // Window
-    WindowInput window_system_;
+    // Window / platform
+    PlatformLayer* platform_ = nullptr;
     int window_width_ = 1280;
     int window_height_ = 720;
     int framebuffer_width_ = 1280;
     int framebuffer_height_ = 720;
     std::size_t hud_resolution_index_ = 0;
+
+    CameraSnapshot camera_snapshot_{};
+    AppConfig runtime_config_{};
 
     enum class ToolSelection {
         None,
@@ -208,10 +223,7 @@ private:
 
     bool invert_mouse_x_ = true; // default: inverted horizontal look (swap left/right)
     bool invert_mouse_y_ = true;
-    bool key_prev_toggle_x_ = false;
-    bool key_prev_toggle_y_ = false;
     bool walk_mode_ = false;
-    bool key_prev_toggle_walk_ = false;
     float eye_height_m_ = 1.7f; // camera height above terrain when walking
     float walk_speed_ = 6.0f;   // m/s on ground
     float walk_pitch_max_deg_ = 60.0f; // clamp for walk pitch
@@ -280,8 +292,6 @@ private:
     wf::vk::UniquePipeline debug_axes_pipeline_;
 
     WorldStreamingSubsystem streaming_;
-    bool edit_lmb_prev_down_ = false;
-    bool edit_place_prev_down_ = false;
     uint16_t edit_place_material_ = MAT_DIRT;
     double edit_max_distance_m_ = 40.0;
     std::optional<VoxelHit> edit_last_empty_;
@@ -335,13 +345,10 @@ private:
     // Config state
     std::string config_path_override_;
     std::string config_path_used_ = "wanderforge.cfg";
-    std::unique_ptr<AppConfigManager> config_manager_;
     std::unique_ptr<WorldRuntime> world_runtime_;
     bool world_runtime_initialized_ = false;
     bool config_auto_reload_enabled_ = true;
     double config_watch_accum_ = 0.0;
-    bool key_prev_reload_config_ = false;
-    bool key_prev_save_config_ = false;
 };
 
 } // namespace wf

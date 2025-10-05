@@ -48,6 +48,7 @@ endif()
 
 
 add_library(wf_core STATIC
+  src/camera_controller.cpp
   src/chunk_delta.cpp
   src/config_loader.cpp
   src/mesh_greedy.cpp
@@ -68,11 +69,13 @@ target_include_directories(wf_core
 
 add_executable(wanderforge
   src/main.cpp
+  src/app_controller.cpp
   src/vk_app.cpp
   src/chunk_streaming_manager.cpp
   src/overlay.cpp
   src/chunk_renderer.cpp
   src/camera.cpp
+  src/platform_layer.cpp
   src/vk_utils.cpp
   src/renderer.cpp
   src/world_streaming_subsystem.cpp
@@ -99,6 +102,7 @@ target_compile_definitions(wanderforge PRIVATE
 
 target_include_directories(wanderforge PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 

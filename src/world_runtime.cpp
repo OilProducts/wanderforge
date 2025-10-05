@@ -16,33 +16,11 @@
 
 namespace wf {
 namespace {
-constexpr float kPi = 3.14159265358979323846f;
-constexpr float kHalfPi = 1.57079632679489661923f;
-
-inline Float3 cross3(const Float3& a, const Float3& b) {
-    return Float3{
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-}
 
 inline float dot3(const Float3& a, const Float3& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-inline Float3 normalize_or(Float3 v, Float3 fallback) {
-    float len = wf::length(v);
-    return (len > 1e-5f) ? (v / len) : fallback;
-}
-
-inline Float3 to_float3(const double pos[3]) {
-    return Float3{static_cast<float>(pos[0]), static_cast<float>(pos[1]), static_cast<float>(pos[2])};
-}
-
-inline float deg_to_rad(float deg) {
-    return deg * 0.01745329252f;
-}
 }
 
 struct WorldRuntime::Impl {
@@ -52,19 +30,8 @@ struct WorldRuntime::Impl {
     bool config_loaded_ = false;
     std::chrono::steady_clock::time_point start_tp_ = std::chrono::steady_clock::now();
 
-    float cam_yaw_ = 0.0f;
-    float cam_pitch_ = 0.0f;
-    double cam_pos_[3] = {1165.0, 12.0, 0.0};
-
-    float cam_speed_ = 12.0f;
-    float cam_sensitivity_ = 0.0025f;
-    bool walk_mode_ = false;
-    bool invert_mouse_x_ = true;
-    bool invert_mouse_y_ = true;
-    float walk_speed_ = 6.0f;
-    float walk_pitch_max_deg_ = 60.0f;
-    float walk_surface_bias_m_ = 1.0f;
-    float eye_height_m_ = 1.7f;
+    CameraController camera_{};
+    CameraControllerSettings camera_settings_{};
     float surface_push_m_ = 0.0f;
 
     float aspect_ratio_ = 16.0f / 9.0f;
@@ -120,16 +87,17 @@ struct WorldRuntime::Impl {
 
     AppConfig snapshot_config() const {
         AppConfig cfg = active_config_;
-        cfg.invert_mouse_x = invert_mouse_x_;
-        cfg.invert_mouse_y = invert_mouse_y_;
-        cfg.cam_sensitivity = cam_sensitivity_;
-        cfg.cam_speed = cam_speed_;
-        cfg.walk_mode = walk_mode_;
-        cfg.walk_speed = walk_speed_;
-        cfg.walk_pitch_max_deg = walk_pitch_max_deg_;
-        cfg.walk_surface_bias_m = walk_surface_bias_m_;
-        cfg.eye_height_m = eye_height_m_;
-        cfg.surface_push_m = surface_push_m_;
+        CameraControllerSettings cam_cfg = camera_.settings();
+        cfg.invert_mouse_x = cam_cfg.invert_mouse_x;
+        cfg.invert_mouse_y = cam_cfg.invert_mouse_y;
+        cfg.cam_sensitivity = cam_cfg.cam_sensitivity;
+        cfg.cam_speed = cam_cfg.cam_speed;
+        cfg.walk_mode = cam_cfg.walk_mode;
+        cfg.walk_speed = cam_cfg.walk_speed;
+        cfg.walk_pitch_max_deg = cam_cfg.walk_pitch_max_deg;
+        cfg.walk_surface_bias_m = cam_cfg.walk_surface_bias_m;
+        cfg.eye_height_m = cam_cfg.eye_height_m;
+        cfg.surface_push_m = cam_cfg.surface_push_m;
         return cfg;
     }
 
@@ -165,6 +133,35 @@ struct WorldRuntime::Impl {
         return false;
     }
 
+    void set_cli_config_path(std::string path) {
+        if (config_manager_) {
+            config_manager_->set_cli_config_path(std::move(path));
+        }
+    }
+
+    bool reload_if_file_changed() {
+        if (!config_manager_) {
+            return false;
+        }
+        if (config_manager_->reload_if_file_changed()) {
+            active_config_ = config_manager_->active();
+            apply_config_internal(active_config_);
+            return true;
+        }
+        return false;
+    }
+
+    bool has_config_file() const {
+        return config_manager_ && config_manager_->has_config_file();
+    }
+
+    const std::string& config_path() const {
+        if (config_manager_) {
+            return config_manager_->config_path();
+        }
+        return active_config_.config_path;
+    }
+
     WorldUpdateResult update(const WorldUpdateInput& input) {
         WorldUpdateResult result{};
         if (!config_loaded_) {
@@ -172,16 +169,6 @@ struct WorldRuntime::Impl {
         }
 
         double dt = std::max(0.0, input.dt);
-        bool requested_walk_mode = input.walk_mode;
-        if (requested_walk_mode != walk_mode_) {
-            walk_mode_ = requested_walk_mode;
-            active_config_.walk_mode = walk_mode_;
-            config_dirty_ = true;
-        } else {
-            walk_mode_ = requested_walk_mode;
-            active_config_.walk_mode = walk_mode_;
-        }
-
         bool reloaded = input.reload_config ? reload_config() : false;
         bool saved = input.save_config ? save_config() : false;
 
@@ -190,136 +177,43 @@ struct WorldRuntime::Impl {
             result.streaming_dirty = true;
         }
 
-        float prev_yaw = cam_yaw_;
-        float prev_pitch = cam_pitch_;
-        double prev_pos[3] = {cam_pos_[0], cam_pos_[1], cam_pos_[2]};
-
-        float yaw_delta = input.look.yaw_delta * cam_sensitivity_ * (invert_mouse_x_ ? -1.0f : 1.0f);
-        float pitch_delta = input.look.pitch_delta * cam_sensitivity_ * (invert_mouse_y_ ? 1.0f : -1.0f);
-
-        if (!walk_mode_) {
-            cam_yaw_ += yaw_delta;
-            if (cam_yaw_ > kPi) cam_yaw_ -= 2.0f * kPi;
-            if (cam_yaw_ < -kPi) cam_yaw_ += 2.0f * kPi;
-            cam_pitch_ += pitch_delta;
-            if (input.clamp_pitch) {
-                float max_pitch = kHalfPi - 0.01745329252f;
-                cam_pitch_ = std::clamp(cam_pitch_, -max_pitch, max_pitch);
-            }
-        } else {
-            Float3 pos = to_float3(cam_pos_);
-            Float3 updir = wf::normalize(pos);
-            auto rotate_axis = [](const Float3& v, const Float3& axis, float angle) {
-                Float3 n = normalize_or(axis, Float3{0.0f, 1.0f, 0.0f});
-                float c = std::cos(angle);
-                float s = std::sin(angle);
-                float dot = dot3(n, v);
-                Float3 cross_nv = cross3(n, v);
-                return Float3{
-                    v.x * c + cross_nv.x * s + n.x * dot * (1.0f - c),
-                    v.y * c + cross_nv.y * s + n.y * dot * (1.0f - c),
-                    v.z * c + cross_nv.z * s + n.z * dot * (1.0f - c)
-                };
-            };
-
-            float cyaw = std::cos(cam_yaw_);
-            float syaw = std::sin(cam_yaw_);
-            float cp = std::cos(cam_pitch_);
-            float sp = std::sin(cam_pitch_);
-            Float3 forward = normalize_or(Float3{cp * cyaw, sp, cp * syaw}, Float3{1.0f, 0.0f, 0.0f});
-
-            if (yaw_delta != 0.0f) {
-                forward = rotate_axis(forward, updir, yaw_delta);
-                forward = wf::normalize(forward);
-            }
-            if (pitch_delta != 0.0f) {
-                Float3 right_axis = normalize_or(cross3(updir, forward), Float3{0.0f, 1.0f, 0.0f});
-                Float3 candidate = rotate_axis(forward, right_axis, pitch_delta);
-                candidate = wf::normalize(candidate);
-                if (input.clamp_pitch) {
-                    float sin_pitch = std::clamp(dot3(candidate, updir), -1.0f, 1.0f);
-                    float max_pitch = deg_to_rad(walk_pitch_max_deg_);
-                    float max_s = std::sin(max_pitch);
-                    if (sin_pitch > max_s || sin_pitch < -max_s) {
-                        float clamped = std::clamp(sin_pitch, -max_s, max_s);
-                        Float3 tangent = normalize_or(candidate - updir * sin_pitch, forward);
-                        float tangent_scale = std::sqrt(std::max(0.0f, 1.0f - clamped * clamped));
-                        candidate = wf::normalize(tangent * tangent_scale + updir * clamped);
-                    }
-                }
-                forward = candidate;
-            }
-
-            cam_yaw_ = std::atan2(forward.z, forward.x);
-            cam_pitch_ = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
+        if (input.toggle_walk_mode) {
+            camera_.toggle_walk_mode();
+            camera_settings_ = camera_.settings();
+            active_config_.walk_mode = camera_settings_.walk_mode;
+            config_dirty_ = true;
+        }
+        if (input.toggle_invert_x) {
+            camera_.toggle_invert_x();
+            camera_settings_ = camera_.settings();
+            config_dirty_ = true;
+        }
+        if (input.toggle_invert_y) {
+            camera_.toggle_invert_y();
+            camera_settings_ = camera_.settings();
+            config_dirty_ = true;
         }
 
-        Float3 pos_f = to_float3(cam_pos_);
-        Float3 updir = walk_mode_ ? wf::normalize(pos_f) : Float3{0.0f, 1.0f, 0.0f};
-        float cy = std::cos(cam_yaw_);
-        float sy = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_);
-        float sp = std::sin(cam_pitch_);
-        Float3 forward = normalize_or(Float3{cp * cy, sp, cp * sy}, Float3{1.0f, 0.0f, 0.0f});
-        Float3 world_up = walk_mode_ ? updir : Float3{0.0f, 1.0f, 0.0f};
-        Float3 right = normalize_or(cross3(forward, world_up), Float3{0.0f, 0.0f, 1.0f});
+        CameraUpdateInput cam_input;
+        cam_input.dt = dt;
+        cam_input.move = input.move;
+        cam_input.look = input.look;
+        cam_input.requested_walk_mode = camera_settings_.walk_mode;
+        cam_input.sprint = input.sprint;
+        cam_input.ground_follow = input.ground_follow;
+        cam_input.clamp_pitch = input.clamp_pitch;
 
-        float speed_scale = input.sprint ? (walk_mode_ ? 2.0f : 3.0f) : 1.0f;
-        float base_speed = walk_mode_ ? walk_speed_ : cam_speed_;
-        float step_scale = base_speed * static_cast<float>(dt) * speed_scale;
-
-        if (!walk_mode_) {
-            Float3 delta = Float3{0.0f, 0.0f, 0.0f};
-            delta = delta + forward * input.move.forward;
-            delta = delta + right * input.move.strafe;
-            delta = delta + Float3{0.0f, 1.0f, 0.0f} * input.move.vertical;
-            if (wf::length(delta) > 0.0f) {
-                delta = wf::normalize(delta) * step_scale;
-                cam_pos_[0] += delta.x;
-                cam_pos_[1] += delta.y;
-                cam_pos_[2] += delta.z;
-            }
-        } else {
-            Float3 tangent_forward = normalize_or(forward - updir * dot3(forward, updir), right);
-            Float3 tangent_right = normalize_or(cross3(tangent_forward, updir), Float3{0.0f, 1.0f, 0.0f});
-            Float3 step = Float3{0.0f, 0.0f, 0.0f};
-            step = step + tangent_forward * input.move.forward;
-            step = step + tangent_right * input.move.strafe;
-            if (wf::length(step) > 0.0f) {
-                step = wf::normalize(step) * step_scale;
-                Float3 up = wf::normalize(pos_f);
-                Float3 direction = wf::normalize(step);
-                double cam_radius = std::sqrt(cam_pos_[0] * cam_pos_[0] + cam_pos_[1] * cam_pos_[1] + cam_pos_[2] * cam_pos_[2]);
-                float angle = static_cast<float>(step_scale / std::max(cam_radius, 1e-6));
-                Float3 rotated = up * std::cos(angle) + direction * std::sin(angle);
-                rotated = wf::normalize(rotated);
-                pos_f = rotated;
-                double target_radius = cam_radius;
-                cam_pos_[0] = rotated.x * target_radius;
-                cam_pos_[1] = rotated.y * target_radius;
-                cam_pos_[2] = rotated.z * target_radius;
-            }
-
-            if (input.ground_follow) {
-                Float3 ndir = wf::normalize(to_float3(cam_pos_));
-                double h = terrain_height_m(active_config_.planet_cfg, ndir);
-                double surface_r = active_config_.planet_cfg.radius_m + h;
-                if (surface_r < active_config_.planet_cfg.sea_level_m) {
-                    surface_r = active_config_.planet_cfg.sea_level_m;
-                }
-                double target_r = surface_r + static_cast<double>(eye_height_m_ + walk_surface_bias_m_);
-                cam_pos_[0] = ndir.x * target_r;
-                cam_pos_[1] = ndir.y * target_r;
-                cam_pos_[2] = ndir.z * target_r;
-            }
+        auto cam_result = camera_.update(cam_input);
+        camera_settings_ = camera_.settings();
+        active_config_.walk_mode = camera_settings_.walk_mode;
+        if (cam_result.walk_mode_changed) {
+            config_dirty_ = true;
         }
 
-        bool moved = (std::fabs(cam_pos_[0] - prev_pos[0]) > 1e-5 ||
-                      std::fabs(cam_pos_[1] - prev_pos[1]) > 1e-5 ||
-                      std::fabs(cam_pos_[2] - prev_pos[2]) > 1e-5);
-        bool rotated = (std::fabs(cam_yaw_ - prev_yaw) > 1e-5f || std::fabs(cam_pitch_ - prev_pitch) > 1e-5f);
-        result.camera_changed = moved || rotated;
+        result.camera_changed = cam_result.moved || cam_result.rotated;
         result.streaming_dirty = result.streaming_dirty || result.camera_changed;
+
+        Float3 forward = camera_.forward();
 
         bool streaming_changed = update_streaming_state(dt, forward);
         bool uploads = drain_mesh_results();
@@ -337,24 +231,7 @@ struct WorldRuntime::Impl {
     }
 
     CameraSnapshot snapshot_camera() const {
-        CameraSnapshot snap{};
-        snap.position = to_float3(cam_pos_);
-        float cy = std::cos(cam_yaw_);
-        float sy = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_);
-        float sp = std::sin(cam_pitch_);
-        snap.forward = normalize_or(Float3{cp * cy, sp, cp * sy}, Float3{1.0f, 0.0f, 0.0f});
-        snap.up = walk_mode_ ? wf::normalize(snap.position) : Float3{0.0f, 1.0f, 0.0f};
-        Float3 center = snap.position + snap.forward;
-        snap.view = wf::look_at_rh({snap.position.x, snap.position.y, snap.position.z},
-                                   {center.x, center.y, center.z},
-                                   {snap.up.x, snap.up.y, snap.up.z});
-        float fovy = deg_to_rad(active_config_.fov_deg);
-        snap.projection = wf::perspective_vk(fovy, aspect_ratio_, active_config_.near_m, active_config_.far_m);
-        snap.fov_deg = active_config_.fov_deg;
-        snap.near_plane = active_config_.near_m;
-        snap.far_plane = active_config_.far_m;
-        return snap;
+        return camera_.snapshot(active_config_.fov_deg, active_config_.near_m, active_config_.far_m);
     }
 
     StreamStatus snapshot_stream_status() const {
@@ -396,13 +273,10 @@ struct WorldRuntime::Impl {
     }
 
     void sync_camera_state(const Float3& position, float yaw_rad, float pitch_rad, bool walk_mode) {
-        cam_pos_[0] = position.x;
-        cam_pos_[1] = position.y;
-        cam_pos_[2] = position.z;
-        cam_yaw_ = yaw_rad;
-        cam_pitch_ = pitch_rad;
-        walk_mode_ = walk_mode;
-        active_config_.walk_mode = walk_mode;
+        camera_.sync_state(position, yaw_rad, pitch_rad, walk_mode);
+        camera_.set_aspect_ratio(aspect_ratio_);
+        camera_settings_ = camera_.settings();
+        active_config_.walk_mode = camera_settings_.walk_mode;
         config_loaded_ = true;
     }
 
@@ -568,7 +442,7 @@ private:
         const int N = Chunk64::N;
         const double chunk_m = static_cast<double>(N) * cfg.voxel_size_m;
 
-        Float3 eye = to_float3(cam_pos_);
+        Float3 eye = camera_.position();
         Float3 dir = wf::normalize(eye);
 
         int raw_face = face_from_direction(dir);
@@ -830,15 +704,20 @@ private:
 
     void apply_config_internal(const AppConfig& cfg) {
         active_config_ = cfg;
-        cam_speed_ = cfg.cam_speed;
-        cam_sensitivity_ = cfg.cam_sensitivity;
-        invert_mouse_x_ = cfg.invert_mouse_x;
-        invert_mouse_y_ = cfg.invert_mouse_y;
-        walk_speed_ = cfg.walk_speed;
-        walk_mode_ = cfg.walk_mode;
-        walk_pitch_max_deg_ = cfg.walk_pitch_max_deg;
-        walk_surface_bias_m_ = cfg.walk_surface_bias_m;
-        eye_height_m_ = cfg.eye_height_m;
+        camera_settings_.cam_speed = cfg.cam_speed;
+        camera_settings_.cam_sensitivity = cfg.cam_sensitivity;
+        camera_settings_.invert_mouse_x = cfg.invert_mouse_x;
+        camera_settings_.invert_mouse_y = cfg.invert_mouse_y;
+        camera_settings_.walk_speed = cfg.walk_speed;
+        camera_settings_.walk_mode = cfg.walk_mode;
+        camera_settings_.walk_pitch_max_deg = cfg.walk_pitch_max_deg;
+        camera_settings_.walk_surface_bias_m = cfg.walk_surface_bias_m;
+        camera_settings_.eye_height_m = cfg.eye_height_m;
+        camera_settings_.surface_push_m = cfg.surface_push_m;
+        camera_.apply_settings(camera_settings_);
+        camera_.set_planet_config(cfg.planet_cfg);
+        camera_.set_aspect_ratio(aspect_ratio_);
+        camera_settings_ = camera_.settings();
         surface_push_m_ = cfg.surface_push_m;
         config_dirty_ = true;
 
@@ -933,6 +812,30 @@ void WorldRuntime::set_profile_sink(std::function<void(const std::string&)> sink
 
 void WorldRuntime::sync_camera_state(const Float3& position, float yaw_rad, float pitch_rad, bool walk_mode) {
     impl_->sync_camera_state(position, yaw_rad, pitch_rad, walk_mode);
+}
+
+void WorldRuntime::set_cli_config_path(std::string path) {
+    impl_->set_cli_config_path(std::move(path));
+}
+
+bool WorldRuntime::reload_config() {
+    return impl_->reload_config();
+}
+
+bool WorldRuntime::reload_config_if_file_changed() {
+    return impl_->reload_if_file_changed();
+}
+
+bool WorldRuntime::save_active_config() {
+    return impl_->save_config();
+}
+
+bool WorldRuntime::has_config_file() const {
+    return impl_->has_config_file();
+}
+
+const std::string& WorldRuntime::active_config_path() const {
+    return impl_->config_path();
 }
 
 void WorldRuntime::queue_chunk_remesh(const FaceChunkKey& key) {

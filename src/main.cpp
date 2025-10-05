@@ -1,4 +1,4 @@
-#include "vk_app.h"
+#include "app_controller.h"
 #include "CLI11.hpp"
 
 #include <string>
@@ -10,10 +10,10 @@ int main(int argc, char** argv) {
         "Path to wanderforge.cfg file (defaults to wanderforge.cfg in current directory)");
     CLI11_PARSE(cli, argc, argv);
 
-    wf::VulkanApp app;
+    wf::AppController controller;
     if (opt_config->count() > 0) {
-        app.set_config_path(config_path_cli);
+        controller.set_config_path(config_path_cli);
     }
-    app.run();
-    return 0;
+    return controller.run();
 }
+
