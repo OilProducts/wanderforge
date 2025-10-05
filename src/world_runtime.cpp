@@ -12,6 +12,7 @@
 
 #include "world_streaming_subsystem.h"
 #include "chunk.h"
+#include "chunk_delta.h"
 
 namespace wf {
 namespace {
@@ -86,6 +87,12 @@ struct WorldRuntime::Impl {
         config_manager_ = std::make_unique<AppConfigManager>(params.initial_config);
         if (params.config_path_override && !params.config_path_override->empty()) {
             config_manager_->set_cli_config_path(*params.config_path_override);
+        }
+        if (deps_.streaming) {
+            deps_.streaming->start();
+            deps_.streaming->set_prev_face(-1);
+            deps_.streaming->set_stream_face(-1);
+            deps_.streaming->set_stream_face_ready(false);
         }
         config_manager_->reload();
         active_config_ = config_manager_->active();
@@ -388,6 +395,17 @@ struct WorldRuntime::Impl {
         profile_sink_ = std::move(sink);
     }
 
+    void sync_camera_state(const Float3& position, float yaw_rad, float pitch_rad, bool walk_mode) {
+        cam_pos_[0] = position.x;
+        cam_pos_[1] = position.y;
+        cam_pos_[2] = position.z;
+        cam_yaw_ = yaw_rad;
+        cam_pitch_ = pitch_rad;
+        walk_mode_ = walk_mode;
+        active_config_.walk_mode = walk_mode;
+        config_loaded_ = true;
+    }
+
     std::span<const MeshUpload> mesh_uploads() const {
         return std::span<const MeshUpload>(mesh_uploads_.data(), mesh_uploads_.size());
     }
@@ -396,9 +414,147 @@ struct WorldRuntime::Impl {
         return std::span<const FaceChunkKey>(mesh_releases_.data(), mesh_releases_.size());
     }
 
-    void clear_mesh_transfers() {
-        mesh_uploads_.clear();
-        mesh_releases_.clear();
+    void consume_mesh_transfers(std::size_t uploads_processed, std::size_t releases_processed) {
+        uploads_processed = std::min(uploads_processed, mesh_uploads_.size());
+        releases_processed = std::min(releases_processed, mesh_releases_.size());
+        if (uploads_processed > 0) {
+            mesh_uploads_.erase(mesh_uploads_.begin(), mesh_uploads_.begin() + uploads_processed);
+        }
+        if (releases_processed > 0) {
+            mesh_releases_.erase(mesh_releases_.begin(), mesh_releases_.begin() + releases_processed);
+        }
+    }
+
+    void queue_chunk_remesh(const FaceChunkKey& key) {
+        if (!deps_.streaming) {
+            return;
+        }
+        deps_.streaming->queue_remesh(key);
+    }
+
+    bool process_pending_remeshes(std::size_t max_count) {
+        if (!deps_.streaming) {
+            return false;
+        }
+
+        std::size_t count = max_count > 0 ? max_count : deps_.streaming->remesh_per_frame_cap();
+        auto batch = deps_.streaming->take_remesh_batch(count);
+        if (batch.empty()) {
+            return false;
+        }
+
+        bool any_uploads = false;
+        for (const auto& key : batch) {
+            auto chunk_opt = deps_.streaming->find_chunk_copy(key);
+            if (!chunk_opt.has_value()) {
+                continue;
+            }
+
+            Chunk64 chunk = *chunk_opt;
+            ChunkDelta delta = deps_.streaming->load_delta_copy(key);
+            deps_.streaming->normalize_delta(delta);
+            apply_chunk_delta(delta, chunk);
+
+            ChunkStreamingManager::MeshResult res;
+            if (!deps_.streaming->build_chunk_mesh(key, chunk, res)) {
+                deps_.streaming->store_chunk(key, chunk);
+                continue;
+            }
+
+            MeshUpload upload{};
+            upload.key = key;
+            upload.mesh.vertices = std::move(res.vertices);
+            upload.mesh.indices = std::move(res.indices);
+            upload.center[0] = res.center[0];
+            upload.center[1] = res.center[1];
+            upload.center[2] = res.center[2];
+            upload.radius = res.radius;
+            upload.job_generation = res.job_gen;
+            mesh_uploads_.push_back(std::move(upload));
+
+            deps_.streaming->store_chunk(key, chunk);
+            any_uploads = true;
+        }
+
+        return any_uploads;
+    }
+
+    bool apply_voxel_edit(const VoxelHit& target,
+                          uint16_t new_material,
+                          int brush_dim) {
+        if (!deps_.streaming) {
+            return false;
+        }
+
+        brush_dim = std::max(brush_dim, 1);
+        if (brush_dim > Chunk64::N) {
+            brush_dim = Chunk64::N;
+        }
+
+        const PlanetConfig& cfg = active_config_.planet_cfg;
+        int half = brush_dim / 2;
+        bool even = (brush_dim % 2) == 0;
+        int start = -half;
+        int end = even ? half - 1 : half;
+
+        struct PendingEdit {
+            int lx;
+            int ly;
+            int lz;
+            uint16_t base_material;
+        };
+
+        std::vector<PendingEdit> edits;
+        edits.reserve(static_cast<std::size_t>(brush_dim * brush_dim * brush_dim));
+
+        for (int dz = start; dz <= end; ++dz) {
+            int lz = target.z + dz;
+            if (lz < 0 || lz >= Chunk64::N) continue;
+            for (int dy = start; dy <= end; ++dy) {
+                int ly = target.y + dy;
+                if (ly < 0 || ly >= Chunk64::N) continue;
+                for (int dx = start; dx <= end; ++dx) {
+                    int lx = target.x + dx;
+                    if (lx < 0 || lx >= Chunk64::N) continue;
+                    wf::i64 vx = target.voxel.x + static_cast<wf::i64>(dx);
+                    wf::i64 vy = target.voxel.y + static_cast<wf::i64>(dy);
+                    wf::i64 vz = target.voxel.z + static_cast<wf::i64>(dz);
+                    BaseSample base = sample_base(cfg, Int3{vx, vy, vz});
+                    edits.push_back(PendingEdit{lx, ly, lz, base.material});
+                }
+            }
+        }
+
+        if (edits.empty()) {
+            return false;
+        }
+
+        std::vector<FaceChunkKey> neighbors_to_remesh;
+        bool updated = deps_.streaming->modify_chunk_and_delta(
+            target.key,
+            [&](Chunk64& chunk_in_cache) {
+                for (const PendingEdit& edit : edits) {
+                    chunk_in_cache.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
+                }
+            },
+            [&](ChunkDelta& delta) {
+                for (const PendingEdit& edit : edits) {
+                    uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
+                    delta.apply_edit(lidx, edit.base_material, new_material);
+                }
+            },
+            neighbors_to_remesh);
+
+        if (!updated) {
+            return false;
+        }
+
+        deps_.streaming->queue_remesh(target.key);
+        for (const FaceChunkKey& neighbor : neighbors_to_remesh) {
+            deps_.streaming->queue_remesh(neighbor);
+        }
+
+        return true;
     }
 
 private:
@@ -583,6 +739,12 @@ private:
             upload.job_generation = res.job_gen;
             mesh_uploads_.push_back(std::move(upload));
 
+            if (!deps_.streaming->stream_face_ready() &&
+                res.key.face == deps_.streaming->stream_face() &&
+                res.job_gen >= deps_.streaming->pending_request_gen()) {
+                deps_.streaming->set_stream_face_ready(true);
+            }
+
             update_renderable_entry(res.key, res.center, res.radius, res.job_gen);
             any = true;
         }
@@ -761,12 +923,30 @@ void WorldRuntime::clear_pending_edits() {
     impl_->clear_pending_edits();
 }
 
-void WorldRuntime::clear_mesh_transfer_queues() {
-    impl_->clear_mesh_transfers();
+void WorldRuntime::consume_mesh_transfer_queues(std::size_t uploads_processed, std::size_t releases_processed) {
+    impl_->consume_mesh_transfers(uploads_processed, releases_processed);
 }
 
 void WorldRuntime::set_profile_sink(std::function<void(const std::string&)> sink) {
     impl_->set_profile_sink(std::move(sink));
+}
+
+void WorldRuntime::sync_camera_state(const Float3& position, float yaw_rad, float pitch_rad, bool walk_mode) {
+    impl_->sync_camera_state(position, yaw_rad, pitch_rad, walk_mode);
+}
+
+void WorldRuntime::queue_chunk_remesh(const FaceChunkKey& key) {
+    impl_->queue_chunk_remesh(key);
+}
+
+bool WorldRuntime::apply_voxel_edit(const VoxelHit& target,
+                                    uint16_t new_material,
+                                    int brush_dim) {
+    return impl_->apply_voxel_edit(target, new_material, brush_dim);
+}
+
+bool WorldRuntime::process_pending_remeshes(std::size_t max_count) {
+    return impl_->process_pending_remeshes(max_count);
 }
 
 } // namespace wf

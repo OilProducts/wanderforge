@@ -21,14 +21,12 @@
 #include <span>
 
 #include "chunk.h"
-#include "chunk_delta.h"
 #include "mesh.h"
 #include "planet.h"
 #include "wf_noise.h"
 #include "region_io.h"
 #include "vk_utils.h"
 #include "camera.h"
-#include "planet.h"
 #include "ui/ui_text.h"
 #include "ui/ui_primitives.h"
 #include "ui/ui_id.h"
@@ -61,6 +59,7 @@ static void throw_if_failed(VkResult r, const char* msg) {
 
 VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
+    world_runtime_ = std::make_unique<WorldRuntime>();
     streaming_.configure(planet_cfg_,
                          region_root_,
                          save_chunks_enabled_,
@@ -71,50 +70,40 @@ VulkanApp::VulkanApp() {
 
 void VulkanApp::set_config_path(std::string path) {
     config_path_override_ = std::move(path);
+    if (config_manager_) {
+        config_manager_->set_cli_config_path(config_path_override_);
+    }
 }
 
 VulkanApp::~VulkanApp() {
+    if (world_runtime_initialized_) {
+        world_runtime_->shutdown();
+        world_runtime_initialized_ = false;
+    }
+    world_runtime_.reset();
+
     flush_dirty_chunk_deltas();
     streaming_.wait_for_pending_saves();
     streaming_.stop();
     renderer_.wait_idle();
 
+    trash_.clear();
+    render_chunks_.clear();
+
     VkDevice device = renderer_.device();
     if (device) {
-        // Flush any deferred deletions
-        for (auto& bin : trash_) {
-            for (auto& rc : bin) {
-                if (rc.vbuf) vkDestroyBuffer(device, rc.vbuf, nullptr);
-                if (rc.vmem) vkFreeMemory(device, rc.vmem, nullptr);
-                if (rc.ibuf) vkDestroyBuffer(device, rc.ibuf, nullptr);
-                if (rc.imem) vkFreeMemory(device, rc.imem, nullptr);
-            }
-            bin.clear();
-        }
-
-        for (auto& rc : render_chunks_) {
-            if (rc.vbuf) vkDestroyBuffer(device, rc.vbuf, nullptr);
-            if (rc.vmem) vkFreeMemory(device, rc.vmem, nullptr);
-            if (rc.ibuf) vkDestroyBuffer(device, rc.ibuf, nullptr);
-            if (rc.imem) vkFreeMemory(device, rc.imem, nullptr);
-        }
-
         overlay_.cleanup(device);
         overlay_initialized_ = false;
         chunk_renderer_.cleanup(device);
         chunk_renderer_initialized_ = false;
-        destroy_debug_axes_pipeline();
-        destroy_debug_axes_buffer();
-
-        if (pipeline_compute_) {
-            vkDestroyPipeline(device, pipeline_compute_, nullptr);
-            pipeline_compute_ = VK_NULL_HANDLE;
-        }
-        if (pipeline_layout_compute_) {
-            vkDestroyPipelineLayout(device, pipeline_layout_compute_, nullptr);
-            pipeline_layout_compute_ = VK_NULL_HANDLE;
-        }
     }
+
+    destroy_debug_axes_pipeline();
+    destroy_debug_axes_buffer();
+    pipeline_compute_.reset();
+    pipeline_layout_compute_.reset();
+    pipeline_triangle_.reset();
+    pipeline_layout_.reset();
 
 #ifdef WF_HAVE_VMA
     if (vma_allocator_) {
@@ -122,9 +111,6 @@ VulkanApp::~VulkanApp() {
         vma_allocator_ = nullptr;
     }
 #endif
-
-    trash_.clear();
-    render_chunks_.clear();
 
     renderer_.shutdown();
     window_system_.shutdown();
@@ -184,7 +170,7 @@ void VulkanApp::init_vulkan() {
     renderer_info.enable_validation = enable_validation_;
     renderer_.initialize(renderer_info);
 
-    trash_.assign(renderer_.frame_count(), {});
+    trash_.resize(renderer_.frame_count());
 
     create_compute_pipeline();
 
@@ -249,8 +235,6 @@ void VulkanApp::init_vulkan() {
         std::cout << "[spawn] look=" << look.x << "," << look.y << "," << look.z
                   << " yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
     }
-    // Start persistent loader and enqueue initial ring based on current camera
-    start_initial_ring_async();
 }
 void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     if (!ctx.acquired || ctx.command_buffer == VK_NULL_HANDLE) {
@@ -267,7 +251,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
 
     // No-op compute dispatch before rendering
     if (pipeline_compute_) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_compute_);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_compute_.get());
         vkCmdDispatch(cmd, 1, 1, 1);
     }
 
@@ -443,7 +427,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
                 float dist_bottom = delta.x * plane_bottom.x + delta.y * plane_bottom.y + delta.z * plane_bottom.z;
                 if (dist_bottom < -rc.radius * plane_vert_norm) continue;
                 ChunkDrawItem item{};
-                item.vbuf = rc.vbuf; item.ibuf = rc.ibuf; item.index_count = rc.index_count;
+                item.vbuf = rc.vbuf.get(); item.ibuf = rc.ibuf.get(); item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
                 item.vertex_count = rc.vertex_count;
                 item.center[0] = rc.center[0]; item.center[1] = rc.center[1]; item.center[2] = rc.center[2];
@@ -455,7 +439,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
         } else {
             for (const auto& rc : render_chunks_) {
                 ChunkDrawItem item{};
-                item.vbuf = rc.vbuf; item.ibuf = rc.ibuf; item.index_count = rc.index_count;
+                item.vbuf = rc.vbuf.get(); item.ibuf = rc.ibuf.get(); item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
                 item.vertex_count = rc.vertex_count;
                 item.center[0] = rc.center[0]; item.center[1] = rc.center[1]; item.center[2] = rc.center[2];
@@ -467,21 +451,22 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
         }
         chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_.get());
         vkCmdDraw(cmd, 3, 1, 0, 0);
         debugTrianglePending = false;
     }
 
     if (debug_show_axes_ && debug_axes_pipeline_ && debug_axes_vertex_count_ > 0) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debug_axes_pipeline_);
-        vkCmdPushConstants(cmd, debug_axes_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, MVP.data());
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debug_axes_pipeline_.get());
+        vkCmdPushConstants(cmd, debug_axes_layout_.get(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, MVP.data());
         VkDeviceSize offs = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &debug_axes_vbo_, &offs);
+        VkBuffer axes_buf = debug_axes_vbo_.get();
+        vkCmdBindVertexBuffers(cmd, 0, 1, &axes_buf, &offs);
         vkCmdDraw(cmd, debug_axes_vertex_count_, 1, 0, 0);
     }
 
     if (debugTrianglePending) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_.get());
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
@@ -494,6 +479,41 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
 void VulkanApp::update_input(float dt) {
     GLFWwindow* window = window_system_.handle();
     if (!window) return;
+    bool runtime_config_dirty = false;
+    if (config_manager_) {
+        if (config_auto_reload_enabled_) {
+            config_watch_accum_ += dt;
+            if (config_watch_accum_ >= 1.0) {
+                config_watch_accum_ = 0.0;
+                if (config_manager_->reload_if_file_changed()) {
+                    apply_config(config_manager_->active());
+                    hud_force_refresh_ = true;
+                }
+            }
+        } else {
+            config_watch_accum_ = 0.0;
+        }
+    }
+
+    int reload_key = glfwGetKey(window, GLFW_KEY_F5);
+    bool shift_down = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ||
+                     (glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+    if (reload_key == GLFW_PRESS) {
+        if (shift_down) {
+            if (!key_prev_save_config_) {
+                save_active_config();
+            }
+            key_prev_save_config_ = true;
+        } else {
+            if (!key_prev_reload_config_) {
+                reload_config_from_disk();
+            }
+            key_prev_reload_config_ = true;
+        }
+    } else {
+        key_prev_reload_config_ = false;
+        key_prev_save_config_ = false;
+    }
     // Close on Escape
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -612,6 +632,7 @@ void VulkanApp::update_input(float dt) {
     if (kwalk == GLFW_PRESS && !key_prev_toggle_walk_) {
         walk_mode_ = !walk_mode_;
         hud_force_refresh_ = true;
+        runtime_config_dirty = true;
         if (walk_mode_) {
             Float3 pos{static_cast<float>(cam_pos_[0]),
                        static_cast<float>(cam_pos_[1]),
@@ -700,10 +721,10 @@ void VulkanApp::update_input(float dt) {
 
     // Toggle invert via keys: X for invert X, Y for invert Y (edge-triggered)
     int kx = glfwGetKey(window, GLFW_KEY_X);
-    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; hud_force_refresh_ = true; }
+    if (kx == GLFW_PRESS && !key_prev_toggle_x_) { invert_mouse_x_ = !invert_mouse_x_; std::cout << "invert_mouse_x=" << invert_mouse_x_ << "\n"; hud_force_refresh_ = true; runtime_config_dirty = true; }
     key_prev_toggle_x_ = (kx == GLFW_PRESS);
     int ky = glfwGetKey(window, GLFW_KEY_Y);
-    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; }
+    if (ky == GLFW_PRESS && !key_prev_toggle_y_) { invert_mouse_y_ = !invert_mouse_y_; std::cout << "invert_mouse_y=" << invert_mouse_y_ << "\n"; hud_force_refresh_ = true; runtime_config_dirty = true; }
     key_prev_toggle_y_ = (ky == GLFW_PRESS);
 
     if (mouse_captured_) {
@@ -732,6 +753,23 @@ void VulkanApp::update_input(float dt) {
     } else {
         edit_lmb_prev_down_ = false;
         edit_place_prev_down_ = false;
+    }
+
+    if (world_runtime_initialized_) {
+        world_runtime_->sync_camera_state(
+            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
+            cam_yaw_,
+            cam_pitch_,
+            walk_mode_);
+
+        WorldUpdateInput runtime_input{};
+        runtime_input.dt = dt;
+        runtime_input.walk_mode = walk_mode_;
+        runtime_input.sprint = shift_down;
+        runtime_input.ground_follow = walk_mode_;
+        runtime_input.clamp_pitch = true;
+        WorldUpdateResult runtime_result = world_runtime_->update(runtime_input);
+        apply_runtime_result(runtime_result);
     }
 
     // Feed UI backend
@@ -765,6 +803,13 @@ void VulkanApp::update_input(float dt) {
     ui_input.mouse_down[2] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
     ui_input.has_mouse = (glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) && !mouse_captured_;
     hud_ui_backend_.begin_frame(ui_input, hud_ui_frame_index_++);
+
+    if (config_manager_ && runtime_config_dirty) {
+        config_manager_->adopt_runtime_state(snapshot_config());
+        if (world_runtime_initialized_) {
+            world_runtime_->apply_config(config_manager_->active());
+        }
+    }
 }
 
 void VulkanApp::update_hud(float dt) {
@@ -837,11 +882,21 @@ void VulkanApp::update_hud(float dt) {
                       invert_mouse_x_?1:0, invert_mouse_y_?1:0, cam_speed_);
     }
 
-    size_t hud_len = std::strlen(hud);
-    std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
-                  "\nDebug: Axes:%s  Tri:%s",
-                  debug_show_axes_ ? "on" : "off",
-                  debug_show_test_triangle_ ? "on" : "off");
+size_t hud_len = std::strlen(hud);
+std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
+              "\nDebug: Axes:%s  Tri:%s",
+              debug_show_axes_ ? "on" : "off",
+              debug_show_test_triangle_ ? "on" : "off");
+
+const std::string& manager_path = (config_manager_ && !config_manager_->config_path().empty())
+                                      ? config_manager_->config_path()
+                                      : config_path_used_;
+const char* auto_reload_text = config_auto_reload_enabled_ ? "on" : "off";
+hud_len = std::strlen(hud);
+std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
+              "\nConfig: %s  AutoReload:%s",
+              manager_path.empty() ? "(none)" : manager_path.c_str(),
+              auto_reload_text);
 
     // Only update overlay text if it actually changed
     if (hud_text_ != hud) {
@@ -851,8 +906,61 @@ void VulkanApp::update_hud(float dt) {
 
 void VulkanApp::load_config() {
     AppConfig defaults = snapshot_config();
-    AppConfig loaded = load_app_config(defaults, config_path_override_);
-    apply_config(loaded);
+    if (!world_runtime_) {
+        world_runtime_ = std::make_unique<WorldRuntime>();
+    }
+    if (!world_runtime_initialized_) {
+        WorldRuntime::CreateParams params;
+        params.deps.streaming = &streaming_;
+        params.initial_config = defaults;
+        if (!config_path_override_.empty()) {
+            params.config_path_override = config_path_override_;
+        }
+        world_runtime_initialized_ = world_runtime_->initialize(params);
+        if (world_runtime_initialized_) {
+            world_runtime_->set_profile_sink([this](const std::string& line) {
+                this->profile_append_csv(line);
+            });
+        }
+    }
+
+    config_manager_ = std::make_unique<AppConfigManager>(defaults);
+    if (!config_path_override_.empty()) {
+        config_manager_->set_cli_config_path(config_path_override_);
+    }
+    config_manager_->reload();
+    apply_config(config_manager_->active());
+    if (world_runtime_initialized_) {
+        world_runtime_->sync_camera_state(
+            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
+            cam_yaw_,
+            cam_pitch_,
+            walk_mode_);
+    }
+}
+
+void VulkanApp::reload_config_from_disk() {
+    if (!config_manager_) {
+        load_config();
+        hud_force_refresh_ = true;
+        return;
+    }
+    if (config_manager_->reload()) {
+        apply_config(config_manager_->active());
+        hud_force_refresh_ = true;
+    }
+}
+
+void VulkanApp::save_active_config() {
+    if (!config_manager_) return;
+    AppConfig runtime = snapshot_config();
+    runtime.config_path = config_manager_->config_path().empty() ? runtime.config_path : config_manager_->config_path();
+    config_manager_->adopt_runtime_state(runtime);
+    if (config_manager_->save_active_to_file()) {
+        if (config_manager_->reload()) {
+            apply_config(config_manager_->active());
+        }
+    }
 }
 
 AppConfig VulkanApp::snapshot_config() const {
@@ -957,22 +1065,39 @@ void VulkanApp::apply_config(const AppConfig& cfg) {
     config_path_used_ = cfg.config_path;
     region_root_ = cfg.region_root;
 
-    streaming_.configure(planet_cfg_,
-                         region_root_,
-                         save_chunks_enabled_,
-                         log_stream_,
-                         /*remesh_per_frame_cap=*/4,
-                         loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
-
-    std::cout << "[config] region_root=" << region_root_ << " (active)\n";
-    std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
+    if (config_manager_) {
+        config_manager_->adopt_runtime_state(cfg);
+    }
 
     hud_force_refresh_ = true;
 
-    update_streaming_runtime_settings();
+    if (world_runtime_initialized_) {
+        world_runtime_->apply_config(cfg);
+        world_runtime_->sync_camera_state(
+            Float3{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])},
+            cam_yaw_,
+            cam_pitch_,
+            walk_mode_);
+    } else {
+        streaming_.configure(planet_cfg_,
+                             region_root_,
+                             save_chunks_enabled_,
+                             log_stream_,
+                             /*remesh_per_frame_cap=*/4,
+                             loader_threads_ > 0 ? static_cast<std::size_t>(loader_threads_) : 0);
+
+        std::cout << "[config] region_root=" << region_root_ << " (active)\n";
+        std::cout << "[config] debug_chunk_keys=" << (debug_chunk_keys_ ? "true" : "false") << " (active)\n";
+
+        update_streaming_runtime_settings();
+    }
 }
 
 void VulkanApp::update_streaming_runtime_settings() {
+    if (world_runtime_initialized_) {
+        return;
+    }
+
     std::function<void(const std::string&)> profile_sink;
     if (profile_csv_enabled_) {
         profile_sink = [this](const std::string& line) {
@@ -1130,148 +1255,133 @@ bool VulkanApp::pick_voxel(VoxelHit& solid_hit, VoxelHit& empty_before) {
 }
 
 void VulkanApp::queue_chunk_remesh(const FaceChunkKey& key) {
-    streaming_.queue_remesh(key);
+    if (world_runtime_initialized_) {
+        world_runtime_->queue_chunk_remesh(key);
+    } else {
+        streaming_.queue_remesh(key);
+    }
 }
 
 void VulkanApp::process_pending_remeshes() {
-    std::deque<FaceChunkKey> todo = streaming_.take_remesh_batch(streaming_.remesh_per_frame_cap());
-    if (todo.empty()) return;
-
-    for (const FaceChunkKey& key : todo) {
-        Chunk64 chunk;
-        if (auto existing = streaming_.find_chunk_copy(key)) {
-            chunk = *existing;
-        } else {
-            continue;
-        }
-
-        ChunkDelta delta;
-        delta = streaming_.load_delta_copy(key);
-        streaming_.normalize_delta(delta);
-        apply_chunk_delta(delta, chunk);
-
-        MeshResult res;
-        if (!streaming_.build_chunk_mesh(key, chunk, res)) {
-            streaming_.store_chunk(key, chunk);
-            continue;
-        }
-
-        if (!chunk_renderer_.upload_mesh(res.vertices.data(), res.vertices.size(),
-                                         res.indices.data(), res.indices.size(),
-                                         res.first_index, res.base_vertex)) {
-            continue;
-        }
-
-        bool replaced = false;
-        for (auto& existing : render_chunks_) {
-            if (existing.key == key) {
-                chunk_renderer_.free_mesh(existing.first_index, existing.index_count,
-                                          existing.base_vertex, existing.vertex_count);
-                existing.index_count = static_cast<uint32_t>(res.indices.size());
-                existing.first_index = res.first_index;
-                existing.base_vertex = res.base_vertex;
-                existing.vertex_count = static_cast<uint32_t>(res.vertices.size());
-                existing.key = key;
-                existing.center[0] = res.center[0];
-                existing.center[1] = res.center[1];
-                existing.center[2] = res.center[2];
-                existing.radius = res.radius;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            RenderChunk rc;
-            rc.index_count = static_cast<uint32_t>(res.indices.size());
-            rc.first_index = res.first_index;
-            rc.base_vertex = res.base_vertex;
-            rc.vertex_count = static_cast<uint32_t>(res.vertices.size());
-            rc.key = key;
-            rc.center[0] = res.center[0];
-            rc.center[1] = res.center[1];
-            rc.center[2] = res.center[2];
-            rc.radius = res.radius;
-            render_chunks_.push_back(rc);
-        }
-
-        streaming_.store_chunk(key, chunk);
+    if (world_runtime_initialized_) {
+        world_runtime_->process_pending_remeshes();
     }
 }
 
 bool VulkanApp::apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim) {
-    FaceChunkKey key = target.key;
-    brush_dim = std::max(brush_dim, 1);
-    if (brush_dim > Chunk64::N) brush_dim = Chunk64::N;
-
-    int half = brush_dim / 2;
-    bool even = (brush_dim % 2) == 0;
-    int start = -half;
-    int end = even ? half - 1 : half;
-
-    struct PendingEdit {
-        int lx;
-        int ly;
-        int lz;
-        uint16_t base_material;
-    };
-
-    std::vector<PendingEdit> edits;
-    edits.reserve(brush_dim * brush_dim * brush_dim);
-
-    for (int dz = start; dz <= end; ++dz) {
-        int lz = target.z + dz;
-        if (lz < 0 || lz >= Chunk64::N) continue;
-        for (int dy = start; dy <= end; ++dy) {
-            int ly = target.y + dy;
-            if (ly < 0 || ly >= Chunk64::N) continue;
-            for (int dx = start; dx <= end; ++dx) {
-                int lx = target.x + dx;
-                if (lx < 0 || lx >= Chunk64::N) continue;
-                wf::i64 vx = target.voxel.x + static_cast<wf::i64>(dx);
-                wf::i64 vy = target.voxel.y + static_cast<wf::i64>(dy);
-                wf::i64 vz = target.voxel.z + static_cast<wf::i64>(dz);
-                BaseSample base = sample_base(planet_cfg_, Int3{vx, vy, vz});
-                edits.push_back(PendingEdit{lx, ly, lz, base.material});
-            }
-        }
+    if (world_runtime_initialized_) {
+        return world_runtime_->apply_voxel_edit(target, new_material, brush_dim);
     }
-
-    if (edits.empty()) {
-        return false;
-    }
-
-    std::vector<FaceChunkKey> neighbors_to_remesh;
-    bool updated = streaming_.modify_chunk_and_delta(
-        key,
-        [&](Chunk64& chunk_in_cache) {
-            for (const PendingEdit& edit : edits) {
-                chunk_in_cache.set_voxel(edit.lx, edit.ly, edit.lz, new_material);
-            }
-        },
-        [&](ChunkDelta& delta) {
-            for (const PendingEdit& edit : edits) {
-                uint32_t lidx = Chunk64::lindex(edit.lx, edit.ly, edit.lz);
-                delta.apply_edit(lidx, edit.base_material, new_material);
-            }
-        },
-        neighbors_to_remesh);
-    if (!updated) return false;
-
-    queue_chunk_remesh(key);
-    for (const FaceChunkKey& nkey : neighbors_to_remesh) queue_chunk_remesh(nkey);
-    return true;
+    return false;
 }
 
 void VulkanApp::flush_dirty_chunk_deltas() {
     streaming_.flush_dirty_chunk_deltas();
 }
 
+void VulkanApp::apply_runtime_result(const WorldUpdateResult& result) {
+    if (result.config_changed) {
+        hud_force_refresh_ = true;
+    }
+}
+
+bool VulkanApp::process_runtime_mesh_upload(const MeshUpload& upload) {
+    RenderChunk rc;
+    rc.chunk_renderer = &chunk_renderer_;
+    rc.index_count = static_cast<uint32_t>(upload.mesh.indices.size());
+    rc.vertex_count = static_cast<uint32_t>(upload.mesh.vertices.size());
+    if (rc.vertex_count == 0 || rc.index_count == 0) {
+        return false;
+    }
+
+    bool ok_upload = chunk_renderer_.upload_mesh(upload.mesh.vertices.data(), upload.mesh.vertices.size(),
+                                                upload.mesh.indices.data(), upload.mesh.indices.size(),
+                                                rc.first_index, rc.base_vertex);
+    if (!ok_upload) {
+        if (log_stream_) {
+            std::cerr << "[stream] skip upload (pool full): face=" << upload.key.face
+                      << " i=" << upload.key.i << " j=" << upload.key.j << " k=" << upload.key.k
+                      << " vtx=" << upload.mesh.vertices.size() << " idx=" << upload.mesh.indices.size() << "\n";
+        }
+        return false;
+    }
+
+    rc.center[0] = upload.center[0];
+    rc.center[1] = upload.center[1];
+    rc.center[2] = upload.center[2];
+    rc.radius = upload.radius;
+    rc.key = upload.key;
+
+    if (debug_chunk_keys_) {
+        if (!upload.mesh.vertices.empty()) {
+            const auto& v0 = upload.mesh.vertices.front();
+            std::cout << "[mesh] key face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
+                      << " v0=(" << v0.x << "," << v0.y << "," << v0.z << ")" << std::endl;
+        }
+        std::cout << "[mesh] center=(" << rc.center[0] << "," << rc.center[1] << "," << rc.center[2]
+                  << ") radius=" << rc.radius << " idx=" << rc.index_count << " vtx=" << rc.vertex_count << std::endl;
+    }
+
+    bool replaced = false;
+    RenderChunk* inserted_chunk = nullptr;
+    for (size_t i = 0; i < render_chunks_.size(); ++i) {
+        if (render_chunks_[i].key.face == rc.key.face &&
+            render_chunks_[i].key.i == rc.key.i &&
+            render_chunks_[i].key.j == rc.key.j &&
+            render_chunks_[i].key.k == rc.key.k) {
+            schedule_delete_chunk(std::move(render_chunks_[i]));
+            render_chunks_[i] = std::move(rc);
+            inserted_chunk = &render_chunks_[i];
+            replaced = true;
+            if (log_stream_) {
+                std::cout << "[stream] replace: face=" << inserted_chunk->key.face
+                          << " i=" << inserted_chunk->key.i << " j=" << inserted_chunk->key.j << " k=" << inserted_chunk->key.k
+                          << " idx_count=" << inserted_chunk->index_count << " vtx_count=" << inserted_chunk->vertex_count
+                          << " first_index=" << inserted_chunk->first_index << " base_vertex=" << inserted_chunk->base_vertex << "\n";
+            }
+            break;
+        }
+    }
+    if (!replaced) {
+        render_chunks_.push_back(std::move(rc));
+        inserted_chunk = &render_chunks_.back();
+        if (log_stream_) {
+            std::cout << "[stream] add: face=" << inserted_chunk->key.face
+                      << " i=" << inserted_chunk->key.i << " j=" << inserted_chunk->key.j << " k=" << inserted_chunk->key.k
+                      << " idx_count=" << inserted_chunk->index_count << " vtx_count=" << inserted_chunk->vertex_count
+                      << " first_index=" << inserted_chunk->first_index << " base_vertex=" << inserted_chunk->base_vertex << "\n";
+        }
+    }
+
+    if (debug_chunk_keys_ && !debug_auto_aim_done_ && inserted_chunk) {
+        Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
+        Float3 center{inserted_chunk->center[0], inserted_chunk->center[1], inserted_chunk->center[2]};
+        Float3 dir = wf::normalize(center - eye);
+        cam_yaw_ = std::atan2(dir.z, dir.x);
+        cam_pitch_ = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
+        debug_auto_aim_done_ = true;
+        std::cout << "[debug-aim] yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
+    }
+
+    return true;
+}
+
+void VulkanApp::process_runtime_mesh_release(const FaceChunkKey& key) {
+    for (size_t i = 0; i < render_chunks_.size(); ++i) {
+        const auto& rc_key = render_chunks_[i].key;
+        if (rc_key.face == key.face && rc_key.i == key.i && rc_key.j == key.j && rc_key.k == key.k) {
+            streaming_.erase_chunk(rc_key);
+            schedule_delete_chunk(std::move(render_chunks_[i]));
+            render_chunks_.erase(render_chunks_.begin() + i);
+            return;
+        }
+    }
+}
+
 void VulkanApp::draw_frame() {
     Renderer::FrameContext ctx = renderer_.begin_frame();
-    VkDevice device = renderer_.device();
-
     if (trash_.size() != renderer_.frame_count()) {
-        trash_.assign(renderer_.frame_count(), {});
+        trash_.resize(renderer_.frame_count());
     }
 
     if (!ctx.acquired) {
@@ -1285,20 +1395,8 @@ void VulkanApp::draw_frame() {
 
     const size_t frame_index = ctx.frame_index % renderer_.frame_count();
     auto& deferred = trash_[frame_index];
-    if (device) {
-        for (auto& rc : deferred) {
-            if (rc.vbuf) vkDestroyBuffer(device, rc.vbuf, nullptr);
-            if (rc.vmem) vkFreeMemory(device, rc.vmem, nullptr);
-            if (rc.ibuf) vkDestroyBuffer(device, rc.ibuf, nullptr);
-            if (rc.imem) vkFreeMemory(device, rc.imem, nullptr);
-            if (!rc.vbuf && !rc.ibuf && rc.index_count > 0 && rc.vertex_count > 0) {
-                chunk_renderer_.free_mesh(rc.first_index, rc.index_count, rc.base_vertex, rc.vertex_count);
-            }
-        }
-    }
     deferred.clear();
 
-    update_streaming();
     process_pending_remeshes();
     drain_mesh_results();
 
@@ -1312,6 +1410,7 @@ void VulkanApp::draw_frame() {
     ui_params.style.shadow_offset_px = hud_shadow_offset_px_;
     ui_params.style.shadow_color = ui::Color{0.0f, 0.0f, 0.0f, 0.6f};
     hud_ui_context_.begin(ui_params);
+    bool runtime_config_dirty = false;
 
     ui::TextDrawParams text_params;
     text_params.scale = 1.0f;
@@ -1337,6 +1436,7 @@ void VulkanApp::draw_frame() {
     if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.cull"), button_rect_at(button_y), button_label, button_style)) {
         cull_enabled_ = !cull_enabled_;
         hud_force_refresh_ = true;
+        runtime_config_dirty = true;
     }
     button_y += button_height + button_spacing;
 
@@ -1350,6 +1450,23 @@ void VulkanApp::draw_frame() {
     std::string tri_label = std::string("Tri: ") + (debug_show_test_triangle_ ? "ON" : "OFF");
     if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.triangle"), button_rect_at(button_y), tri_label, button_style)) {
         debug_show_test_triangle_ = !debug_show_test_triangle_;
+        hud_force_refresh_ = true;
+    }
+    button_y += button_height + button_spacing;
+
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.reload_config"), button_rect_at(button_y), "Reload Config", button_style)) {
+        reload_config_from_disk();
+    }
+    button_y += button_height + button_spacing;
+
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.save_config"), button_rect_at(button_y), "Save Config", button_style)) {
+        save_active_config();
+    }
+    button_y += button_height + button_spacing;
+
+    std::string auto_label = std::string("Auto Reload: ") + (config_auto_reload_enabled_ ? "ON" : "OFF");
+    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.auto_reload"), button_rect_at(button_y), auto_label, button_style)) {
+        config_auto_reload_enabled_ = !config_auto_reload_enabled_;
         hud_force_refresh_ = true;
     }
     button_y += button_height + button_spacing;
@@ -1438,6 +1555,10 @@ void VulkanApp::draw_frame() {
 
     hud_ui_backend_.end_frame();
 
+    if (config_manager_ && runtime_config_dirty) {
+        config_manager_->adopt_runtime_state(snapshot_config());
+    }
+
     if (renderer_.swapchain_needs_recreate()) {
         renderer_.recreate_swapchain();
         rebuild_swapchain_dependents();
@@ -1456,7 +1577,7 @@ void VulkanApp::rebuild_swapchain_dependents() {
         return;
     }
 
-    trash_.assign(renderer_.frame_count(), {});
+    trash_.resize(renderer_.frame_count());
 
 #include "wf_config.h"
     const VkPhysicalDevice physical = renderer_.physical_device();
@@ -1467,14 +1588,8 @@ void VulkanApp::rebuild_swapchain_dependents() {
     framebuffer_height_ = static_cast<int>(extent.height);
     hud_resolution_index_ = find_resolution_index(framebuffer_width_, framebuffer_height_);
 
-    if (pipeline_triangle_) {
-        vkDestroyPipeline(device, pipeline_triangle_, nullptr);
-        pipeline_triangle_ = VK_NULL_HANDLE;
-    }
-    if (pipeline_layout_) {
-        vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
-        pipeline_layout_ = VK_NULL_HANDLE;
-    }
+    pipeline_triangle_.reset();
+    pipeline_layout_.reset();
     destroy_debug_axes_pipeline();
 
     if (!overlay_initialized_) {
@@ -1527,14 +1642,15 @@ void VulkanApp::create_graphics_pipeline() {
     const VkExtent2D swap_extent = renderer_.swapchain_extent();
 
 #include "wf_config.h"
+    pipeline_triangle_.reset();
+    pipeline_layout_.reset();
+
     const std::string base = std::string(WF_SHADER_DIR);
     const std::string vsPath = base + "/triangle.vert.spv";
     const std::string fsPath = base + "/triangle.frag.spv";
-    VkShaderModule vs = load_shader_module(vsPath);
-    VkShaderModule fs = load_shader_module(fsPath);
+    wf::vk::UniqueShaderModule vs(device, load_shader_module(vsPath));
+    wf::vk::UniqueShaderModule fs(device, load_shader_module(fsPath));
     if (!vs || !fs) {
-        if (vs) vkDestroyShaderModule(device, vs, nullptr);
-        if (fs) vkDestroyShaderModule(device, fs, nullptr);
         std::cout << "[info] Shaders not found (" << vsPath << ", " << fsPath << "). Triangle disabled." << std::endl;
         return;
     }
@@ -1542,11 +1658,11 @@ void VulkanApp::create_graphics_pipeline() {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
+    stages[0].module = vs.get();
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
+    stages[1].module = fs.get();
     stages[1].pName = "main";
 
     VkPipelineVertexInputStateCreateInfo vi{};
@@ -1590,11 +1706,11 @@ void VulkanApp::create_graphics_pipeline() {
     cb.pAttachments = &cba;
     VkPipelineLayoutCreateInfo plci{};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    if (vkCreatePipelineLayout(device, &plci, nullptr, &pipeline_layout_) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vs, nullptr);
-        vkDestroyShaderModule(device, fs, nullptr);
+    VkPipelineLayout new_layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(device, &plci, nullptr, &new_layout) != VK_SUCCESS) {
         return;
     }
+    pipeline_layout_.reset(device, new_layout);
 
     VkGraphicsPipelineCreateInfo gpi{};
     gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1607,16 +1723,16 @@ void VulkanApp::create_graphics_pipeline() {
     gpi.pMultisampleState = &ms;
     gpi.pDepthStencilState = nullptr;
     gpi.pColorBlendState = &cb;
-    gpi.layout = pipeline_layout_;
+    gpi.layout = pipeline_layout_.get();
     gpi.renderPass = render_pass;
     gpi.subpass = 0;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline_triangle_) != VK_SUCCESS) {
+    VkPipeline new_pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &new_pipeline) != VK_SUCCESS) {
         std::cerr << "Failed to create graphics pipeline.\n";
-        vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
-        pipeline_layout_ = VK_NULL_HANDLE;
+        pipeline_layout_.reset();
+        return;
     }
-    vkDestroyShaderModule(device, vs, nullptr);
-    vkDestroyShaderModule(device, fs, nullptr);
+    pipeline_triangle_.reset(device, new_pipeline);
 
     create_debug_axes_pipeline();
 }
@@ -1642,24 +1758,21 @@ void VulkanApp::create_debug_axes_buffer() {
         {{0.0f, 0.0f, axis_len}, {0.0f, 0.0f, 1.0f}},
     };
     VkDeviceSize bytes = sizeof(verts);
+    VkBuffer buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
     wf::vk::create_buffer(physical, device, bytes,
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          debug_axes_vbo_, debug_axes_vbo_mem_);
-    wf::vk::upload_host_visible(device, debug_axes_vbo_mem_, bytes, verts, 0);
+                          buf, mem);
+    debug_axes_vbo_.reset(device, buf);
+    debug_axes_vbo_mem_.reset(device, mem);
+    wf::vk::upload_host_visible(device, debug_axes_vbo_mem_.get(), bytes, verts, 0);
     debug_axes_vertex_count_ = static_cast<uint32_t>(sizeof(verts) / sizeof(verts[0]));
 }
 
 void VulkanApp::destroy_debug_axes_buffer() {
-    VkDevice device = renderer_.device();
-    if (debug_axes_vbo_ && device) {
-        vkDestroyBuffer(device, debug_axes_vbo_, nullptr);
-        debug_axes_vbo_ = VK_NULL_HANDLE;
-    }
-    if (debug_axes_vbo_mem_ && device) {
-        vkFreeMemory(device, debug_axes_vbo_mem_, nullptr);
-        debug_axes_vbo_mem_ = VK_NULL_HANDLE;
-    }
+    debug_axes_vbo_.reset();
+    debug_axes_vbo_mem_.reset();
     debug_axes_vertex_count_ = 0;
 }
 
@@ -1674,11 +1787,9 @@ void VulkanApp::create_debug_axes_pipeline() {
     const std::string base = std::string(WF_SHADER_DIR);
     const std::string vsPath = base + "/debug_axes.vert.spv";
     const std::string fsPath = base + "/debug_axes.frag.spv";
-    VkShaderModule vs = load_shader_module(vsPath);
-    VkShaderModule fs = load_shader_module(fsPath);
+    wf::vk::UniqueShaderModule vs(device, load_shader_module(vsPath));
+    wf::vk::UniqueShaderModule fs(device, load_shader_module(fsPath));
     if (!vs || !fs) {
-        if (vs) vkDestroyShaderModule(device, vs, nullptr);
-        if (fs) vkDestroyShaderModule(device, fs, nullptr);
         std::cout << "[info] Debug axis shaders not found; axis gizmo disabled." << std::endl;
         return;
     }
@@ -1686,11 +1797,11 @@ void VulkanApp::create_debug_axes_pipeline() {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
+    stages[0].module = vs.get();
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
+    stages[1].module = fs.get();
     stages[1].pName = "main";
 
     VkVertexInputBindingDescription binding{};
@@ -1768,12 +1879,11 @@ void VulkanApp::create_debug_axes_pipeline() {
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
-    if (vkCreatePipelineLayout(device, &plci, nullptr, &debug_axes_layout_) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vs, nullptr);
-        vkDestroyShaderModule(device, fs, nullptr);
-        debug_axes_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout dbg_layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(device, &plci, nullptr, &dbg_layout) != VK_SUCCESS) {
         return;
     }
+    debug_axes_layout_.reset(device, dbg_layout);
 
     VkGraphicsPipelineCreateInfo gpi{};
     gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1786,30 +1896,22 @@ void VulkanApp::create_debug_axes_pipeline() {
     gpi.pMultisampleState = &ms;
     gpi.pDepthStencilState = &ds;
     gpi.pColorBlendState = &cb;
-    gpi.layout = debug_axes_layout_;
+    gpi.layout = debug_axes_layout_.get();
     gpi.renderPass = render_pass;
     gpi.subpass = 0;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &debug_axes_pipeline_) != VK_SUCCESS) {
-        vkDestroyPipelineLayout(device, debug_axes_layout_, nullptr);
-        debug_axes_layout_ = VK_NULL_HANDLE;
-        debug_axes_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline dbg_pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &dbg_pipeline) != VK_SUCCESS) {
+        debug_axes_layout_.reset();
         std::cerr << "Failed to create debug axes pipeline.\n";
+        return;
     }
 
-    vkDestroyShaderModule(device, vs, nullptr);
-    vkDestroyShaderModule(device, fs, nullptr);
+    debug_axes_pipeline_.reset(device, dbg_pipeline);
 }
 
 void VulkanApp::destroy_debug_axes_pipeline() {
-    VkDevice device = renderer_.device();
-    if (debug_axes_pipeline_ && device) {
-        vkDestroyPipeline(device, debug_axes_pipeline_, nullptr);
-        debug_axes_pipeline_ = VK_NULL_HANDLE;
-    }
-    if (debug_axes_layout_ && device) {
-        vkDestroyPipelineLayout(device, debug_axes_layout_, nullptr);
-        debug_axes_layout_ = VK_NULL_HANDLE;
-    }
+    debug_axes_pipeline_.reset();
+    debug_axes_layout_.reset();
 }
 
 void VulkanApp::create_compute_pipeline() {
@@ -1818,7 +1920,9 @@ void VulkanApp::create_compute_pipeline() {
     // Load no-op compute shader
     const std::string base = std::string(WF_SHADER_DIR);
     const std::string csPath = base + "/noop.comp.spv";
-    VkShaderModule cs = load_shader_module(csPath);
+    pipeline_compute_.reset();
+    pipeline_layout_compute_.reset();
+    wf::vk::UniqueShaderModule cs(device, load_shader_module(csPath));
     if (!cs) {
         std::cout << "[info] Compute shader not found (" << csPath << "). Compute disabled." << std::endl;
         return;
@@ -1826,26 +1930,28 @@ void VulkanApp::create_compute_pipeline() {
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = cs;
+    stage.module = cs.get();
     stage.pName = "main";
 
     VkPipelineLayoutCreateInfo plci{};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    if (vkCreatePipelineLayout(device, &plci, nullptr, &pipeline_layout_compute_) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, cs, nullptr);
+    VkPipelineLayout new_layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(device, &plci, nullptr, &new_layout) != VK_SUCCESS) {
         return;
     }
+    pipeline_layout_compute_.reset(device, new_layout);
 
     VkComputePipelineCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     ci.stage = stage;
-    ci.layout = pipeline_layout_compute_;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline_compute_) != VK_SUCCESS) {
+    ci.layout = pipeline_layout_compute_.get();
+    VkPipeline new_pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &new_pipeline) != VK_SUCCESS) {
         std::cerr << "Failed to create compute pipeline." << std::endl;
-        vkDestroyPipelineLayout(device, pipeline_layout_compute_, nullptr);
-        pipeline_layout_compute_ = VK_NULL_HANDLE;
+        pipeline_layout_compute_.reset();
+        return;
     }
-    vkDestroyShaderModule(device, cs, nullptr);
+    pipeline_compute_.reset(device, new_pipeline);
 }
 
 void VulkanApp::profile_append_csv(const std::string& line) {
@@ -1861,153 +1967,73 @@ void VulkanApp::profile_append_csv(const std::string& line) {
     out << line;
 }
 
-void VulkanApp::schedule_delete_chunk(const RenderChunk& rc) {
+void VulkanApp::schedule_delete_chunk(RenderChunk&& rc) {
     // Defer destruction to the next frame slot to guarantee GPU is done using previous submissions.
     size_t frame_count = renderer_.frame_count();
     if (trash_.size() != frame_count) {
-        trash_.assign(frame_count, {});
+        trash_.resize(frame_count);
     }
     size_t slot = (renderer_.current_frame() + 1) % frame_count;
-    trash_[slot].push_back(rc);
+    trash_[slot].push_back(std::move(rc));
 }
 
-uint64_t VulkanApp::enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t) {
-    LoadRequest req{};
-    req.face = face;
-    req.ring_radius = ring_radius;
-    req.ci = center_i;
-    req.cj = center_j;
-    req.ck = center_k;
-    req.k_down = k_down;
-    req.k_up = k_up;
-    req.fwd_s = fwd_s;
-    req.fwd_t = fwd_t;
-    uint64_t gen = streaming_.enqueue_request(req);
-    streaming_.set_stream_face_ready(false);
-    streaming_.set_pending_request_gen(gen);
-    return gen;
-}
-
-void VulkanApp::start_initial_ring_async() {
-    // Initialize persistent worker and enqueue initial ring around current camera on the appropriate face
-    streaming_.start();
-    const PlanetConfig& cfg = planet_cfg_;
-    const int N = Chunk64::N;
-    const double chunk_m = (double)N * cfg.voxel_size_m;
-    // Determine face from camera position
-    Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
-    Float3 dir = normalize(eye);
-    int face = face_from_direction(dir);
-    Float3 right, up, forward; face_basis(face, right, up, forward);
-    double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
-    double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
-    streaming_.set_ring_center_i((std::int64_t)std::floor(s / chunk_m));
-    streaming_.set_ring_center_j((std::int64_t)std::floor(t / chunk_m));
-    streaming_.set_ring_center_k((std::int64_t)std::floor((double)length(eye) / chunk_m));
-    streaming_.set_stream_face(face);
-    streaming_.set_prev_face(-1);
-    streaming_.set_stream_face_ready(false);
-    // Project camera forward to face s/t for prioritization
-    float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-    float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-    float fwd[3] = { cp*cyaw, sp, cp*syaw };
-    float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
-    float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
-    enqueue_ring_request(face, ring_radius_, streaming_.ring_center_i(), streaming_.ring_center_j(), streaming_.ring_center_k(), k_down_, k_up_, fwd_s, fwd_t);
-    if (log_stream_) {
-        std::cout << "[stream] initial request: face=" << face << " ring=" << ring_radius_
-                  << " ci=" << streaming_.ring_center_i() << " cj=" << streaming_.ring_center_j() << " ck=" << streaming_.ring_center_k()
-                  << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << " k_down=" << k_down_ << " k_up=" << k_up_ << "\n";
-    }
-}
 
 void VulkanApp::drain_mesh_results() {
-    // Drain up to uploads_per_frame_limit_ results and create GPU buffers
+    if (!world_runtime_initialized_) {
+        return;
+    }
+
+    auto uploads = world_runtime_->pending_mesh_uploads();
+    auto releases = world_runtime_->pending_mesh_releases();
+
     int uploaded = 0;
     auto t0 = std::chrono::steady_clock::now();
-    for (;;) {
-        MeshResult res;
-        if (!streaming_.try_pop_result(res)) break;
-        RenderChunk rc;
-        rc.index_count = (uint32_t)res.indices.size();
-        rc.vertex_count = (uint32_t)res.vertices.size();
-        // Upload into pooled buffers with free-list reuse
-        bool ok_upload = chunk_renderer_.upload_mesh(res.vertices.data(), res.vertices.size(),
-                                                    res.indices.data(), res.indices.size(),
-                                                    rc.first_index, rc.base_vertex);
-        if (!ok_upload) {
-            if (log_stream_) {
-                std::cerr << "[stream] skip upload (pool full): face=" << rc.key.face
-                          << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                          << " vtx=" << res.vertices.size() << " idx=" << res.indices.size() << "\n";
-            }
-            continue;
+
+    std::size_t uploads_processed = 0;
+    std::size_t max_uploads = uploads_per_frame_limit_ > 0
+                                  ? static_cast<std::size_t>(uploads_per_frame_limit_)
+                                  : uploads.size();
+    for (; uploads_processed < uploads.size() && uploads_processed < max_uploads; ++uploads_processed) {
+        if (process_runtime_mesh_upload(uploads[uploads_processed])) {
+            ++uploaded;
         }
-        rc.vbuf = VK_NULL_HANDLE; rc.vmem = VK_NULL_HANDLE; rc.ibuf = VK_NULL_HANDLE; rc.imem = VK_NULL_HANDLE;
-        rc.center[0] = res.center[0]; rc.center[1] = res.center[1]; rc.center[2] = res.center[2]; rc.radius = res.radius;
-        rc.key = res.key;
-        if (!streaming_.stream_face_ready() && res.key.face == streaming_.stream_face() && res.job_gen >= streaming_.pending_request_gen()) {
-            streaming_.set_stream_face_ready(true);
-        }
-        if (debug_chunk_keys_) {
-            if (!res.vertices.empty()) {
-                const auto &v0 = res.vertices.front();
-                std::cout << "[mesh] key face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                          << " v0=(" << v0.x << "," << v0.y << "," << v0.z << ")" << std::endl;
-            }
-            std::cout << "[mesh] center=(" << rc.center[0] << "," << rc.center[1] << "," << rc.center[2]
-                      << ") radius=" << rc.radius << " idx=" << rc.index_count << " vtx=" << rc.vertex_count << std::endl;
-        }
-        // Replace existing chunk with same key, if present
-        bool replaced = false;
-        for (size_t i = 0; i < render_chunks_.size(); ++i) {
-            if (render_chunks_[i].key.face == rc.key.face && render_chunks_[i].key.i == rc.key.i && render_chunks_[i].key.j == rc.key.j && render_chunks_[i].key.k == rc.key.k) {
-                // Defer deletion to avoid destroying resources still in use by the GPU
-                schedule_delete_chunk(render_chunks_[i]);
-                render_chunks_[i] = rc;
-                replaced = true;
-                if (log_stream_) {
-                    std::cout << "[stream] replace: face=" << rc.key.face
-                              << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                              << " idx_count=" << rc.index_count << " vtx_count=" << rc.vertex_count
-                              << " first_index=" << rc.first_index << " base_vertex=" << rc.base_vertex << "\n";
-                }
-                break;
-            }
-        }
-        if (!replaced) {
-            render_chunks_.push_back(rc);
-            if (log_stream_) {
-                std::cout << "[stream] add: face=" << rc.key.face
-                          << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                          << " idx_count=" << rc.index_count << " vtx_count=" << rc.vertex_count
-                          << " first_index=" << rc.first_index << " base_vertex=" << rc.base_vertex << "\n";
-            }
-        }
-        if (debug_chunk_keys_ && !debug_auto_aim_done_) {
-            Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
-            Float3 center{rc.center[0], rc.center[1], rc.center[2]};
-            Float3 dir = wf::normalize(center - eye);
-            cam_yaw_ = std::atan2(dir.z, dir.x);
-            cam_pitch_ = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
-            debug_auto_aim_done_ = true;
-            std::cout << "[debug-aim] yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
-        }
-        if (++uploaded >= uploads_per_frame_limit_) break;
     }
+
+    std::size_t releases_processed = releases.size();
+    for (const auto& key : releases) {
+        process_runtime_mesh_release(key);
+    }
+
+    world_runtime_->consume_mesh_transfer_queues(uploads_processed, releases_processed);
+
+    auto runtime_allows = world_runtime_->active_allow_regions();
+    if (!runtime_allows.empty()) {
+        std::vector<AllowRegion> allows;
+        allows.reserve(runtime_allows.size());
+        for (const auto& region : runtime_allows) {
+            allows.push_back(AllowRegion{region.face, region.ci, region.cj, region.ck, region.span, region.k_down, region.k_up});
+        }
+        prune_chunks_multi(allows);
+    }
+
     auto t1 = std::chrono::steady_clock::now();
-    last_upload_count_ = uploaded;
-    last_upload_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    // Simple moving average
     if (uploaded > 0) {
-        if (upload_ms_avg_ <= 0.0) upload_ms_avg_ = last_upload_ms_;
-        else upload_ms_avg_ = upload_ms_avg_ * 0.8 + last_upload_ms_ * 0.2;
-    }
-    if (profile_csv_enabled_ && uploaded > 0) {
-        double tsec = std::chrono::duration<double>(t1 - app_start_tp_).count();
-        char line[128];
-        std::snprintf(line, sizeof(line), "upload,%.3f,%d,%.3f\n", tsec, uploaded, last_upload_ms_);
-        profile_append_csv(line);
+        last_upload_count_ = uploaded;
+        last_upload_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        if (upload_ms_avg_ <= 0.0) {
+            upload_ms_avg_ = last_upload_ms_;
+        } else {
+            upload_ms_avg_ = upload_ms_avg_ * 0.8 + last_upload_ms_ * 0.2;
+        }
+        if (profile_csv_enabled_) {
+            double tsec = std::chrono::duration<double>(t1 - app_start_tp_).count();
+            char line[128];
+            std::snprintf(line, sizeof(line), "upload,%.3f,%d,%.3f\n", tsec, uploaded, last_upload_ms_);
+            profile_append_csv(line);
+        }
+    } else {
+        last_upload_count_ = 0;
+        last_upload_ms_ = 0.0;
     }
 }
 
@@ -2024,7 +2050,7 @@ void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj,
             }
             streaming_.erase_chunk(rk);
             // Defer deletion/free; chunk might still be referenced by commands submitted last frame
-            schedule_delete_chunk(render_chunks_[i]);
+            schedule_delete_chunk(std::move(render_chunks_[i]));
             render_chunks_.erase(render_chunks_.begin() + i);
         } else {
             ++i;
@@ -2046,7 +2072,7 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
         return false;
     };
     for (size_t i = 0; i < render_chunks_.size();) {
-        const auto& rc = render_chunks_[i];
+        auto& rc = render_chunks_[i];
         if (!inside_any(rc.key)) {
             if (log_stream_) {
                 std::cout << "[stream] prune: face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
@@ -2056,7 +2082,7 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
                           << " vtx_count=" << rc.vertex_count << "\n";
             }
             streaming_.erase_chunk(rc.key);
-            schedule_delete_chunk(rc);
+            schedule_delete_chunk(std::move(rc));
             render_chunks_.erase(render_chunks_.begin() + i);
         } else {
             ++i;
@@ -2064,112 +2090,4 @@ void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
     }
 }
 
-void VulkanApp::update_streaming() {
-    // Recenter the ring based on camera position; dynamically choose face by camera direction
-    const PlanetConfig& cfg = planet_cfg_;
-    const int N = Chunk64::N;
-    const double chunk_m = (double)N * cfg.voxel_size_m;
-    Float3 eye{static_cast<float>(cam_pos_[0]),
-               static_cast<float>(cam_pos_[1]),
-               static_cast<float>(cam_pos_[2])};
-    Float3 dir = normalize(eye);
-    int raw_face = face_from_direction(dir);
-    int cur_face = raw_face;
-    int stream_face = streaming_.stream_face();
-    if (stream_face >= 0) {
-        Float3 cur_right, cur_up, cur_forward;
-        face_basis(stream_face, cur_right, cur_up, cur_forward);
-        float cur_align = std::fabs(dot(dir, cur_forward));
-        if (raw_face != stream_face) {
-            Float3 cand_right, cand_up, cand_forward;
-            face_basis(raw_face, cand_right, cand_up, cand_forward);
-            float cand_align = std::fabs(dot(dir, cand_forward));
-            if (cand_align < cur_align + face_switch_hysteresis_) {
-                cur_face = stream_face;
-            }
-        }
-    }
-    Float3 right, up, forward; face_basis(cur_face, right, up, forward);
-    double s = eye.x * right.x + eye.y * right.y + eye.z * right.z;
-    double t = eye.x * up.x    + eye.y * up.y    + eye.z * up.z;
-    std::int64_t ci = (std::int64_t)std::floor(s / chunk_m);
-    std::int64_t cj = (std::int64_t)std::floor(t / chunk_m);
-    std::int64_t ck = (std::int64_t)std::floor((double)length(eye) / chunk_m);
-
-    bool face_changed = (cur_face != stream_face);
-    auto ring_center_i = streaming_.ring_center_i();
-    auto ring_center_j = streaming_.ring_center_j();
-    auto ring_center_k = streaming_.ring_center_k();
-    float face_keep_timer = streaming_.face_keep_timer_s();
-    if (face_changed) {
-        // Start holding previous face for a brief time to avoid popping while new face loads
-        streaming_.set_prev_face(stream_face);
-        streaming_.set_prev_center_i(ring_center_i);
-        streaming_.set_prev_center_j(ring_center_j);
-        streaming_.set_prev_center_k(ring_center_k);
-        streaming_.set_face_keep_timer_s(face_keep_time_cfg_s_);
-        streaming_.set_stream_face(cur_face);
-        streaming_.set_ring_center_i(ci);
-        streaming_.set_ring_center_j(cj);
-        streaming_.set_ring_center_k(ck);
-        // Bias loading order by camera forward projected onto new face basis
-        float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-        float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-        float fwd[3] = { cp*cyaw, sp, cp*syaw };
-        float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
-        float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
-        enqueue_ring_request(streaming_.stream_face(), ring_radius_, streaming_.ring_center_i(), streaming_.ring_center_j(), streaming_.ring_center_k(), k_down_, k_up_, fwd_s, fwd_t);
-        if (log_stream_) {
-            std::cout << "[stream] face switch -> face=" << streaming_.stream_face() << " ring=" << ring_radius_
-                      << " ci=" << streaming_.ring_center_i() << " cj=" << streaming_.ring_center_j() << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << "\n";
-        }
-    } else {
-        // Same face: if we've moved tiles, request an update
-        if (ci != ring_center_i || cj != ring_center_j || ck != ring_center_k) {
-            streaming_.set_ring_center_i(ci);
-            streaming_.set_ring_center_j(cj);
-            streaming_.set_ring_center_k(ck);
-            float cyaw = std::cos(cam_yaw_), syaw = std::sin(cam_yaw_);
-            float cp = std::cos(cam_pitch_), sp = std::sin(cam_pitch_);
-            float fwd[3] = { cp*cyaw, sp, cp*syaw };
-            float fwd_s = fwd[0]*right.x + fwd[1]*right.y + fwd[2]*right.z;
-            float fwd_t = fwd[0]*up.x    + fwd[1]*up.y    + fwd[2]*up.z;
-            enqueue_ring_request(streaming_.stream_face(), ring_radius_, streaming_.ring_center_i(), streaming_.ring_center_j(), streaming_.ring_center_k(), k_down_, k_up_, fwd_s, fwd_t);
-            if (log_stream_) {
-                std::cout << "[stream] move request: face=" << streaming_.stream_face() << " ring=" << ring_radius_
-                          << " ci=" << streaming_.ring_center_i() << " cj=" << streaming_.ring_center_j() << " ck=" << streaming_.ring_center_k()
-                          << " fwd_s=" << fwd_s << " fwd_t=" << fwd_t << "\n";
-            }
-        }
-    }
-
-    // Count down previous-face hold timer
-    face_keep_timer = streaming_.face_keep_timer_s();
-    if (face_keep_timer > 0.0f) {
-        // Approximate frame time via HUD smoothing cadence; alternatively, compute dt from glfw each frame
-        // Here, we decrement by a small fixed step per frame; more accurate would be to pass dt
-        streaming_.set_face_keep_timer_s(std::max(0.0f, face_keep_timer - 1.0f/60.0f));
-    }
-
-    // Build prune allow-list: keep current face ring with hysteresis in s/t and k; optionally keep previous face while timer active
-    if (!streaming_.stream_face_ready() && streaming_.loader_idle()) {
-        streaming_.set_stream_face_ready(true);
-    }
-
-    std::vector<AllowRegion> allows;
-    int base_span = ring_radius_ + prune_margin_;
-    int base_k_down = k_down_ + k_prune_margin_;
-    int base_k_up = k_up_ + k_prune_margin_;
-    if (!streaming_.stream_face_ready()) {
-        base_span += 1;
-        base_k_down += 1;
-        base_k_up += 1;
-    }
-    allows.push_back(AllowRegion{streaming_.stream_face(), streaming_.ring_center_i(), streaming_.ring_center_j(), streaming_.ring_center_k(), base_span, base_k_down, base_k_up});
-    bool keep_prev = (streaming_.prev_face() >= 0) && (streaming_.face_keep_timer_s() > 0.0f || !streaming_.stream_face_ready());
-    if (keep_prev) {
-        allows.push_back(AllowRegion{streaming_.prev_face(), streaming_.prev_center_i(), streaming_.prev_center_j(), streaming_.prev_center_k(), base_span, base_k_down, base_k_up});
-    }
-    prune_chunks_multi(allows);
-}
 }

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <optional>
+#include <memory>
 #include "overlay.h"
 #include "chunk_renderer.h"
 #include "mesh.h"
@@ -13,12 +14,14 @@
 #include "chunk.h"
 #include "chunk_streaming_manager.h"
 #include "world_streaming_subsystem.h"
+#include "world_runtime.h"
 #include "planet.h"
 #include "config_loader.h"
 #include "ui/ui_context.h"
 #include "ui/ui_backend.h"
 #include "window_input.h"
 #include "renderer.h"
+#include "vk_handle.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -56,6 +59,8 @@ private:
     std::size_t find_resolution_index(int width, int height) const;
     int current_brush_dim() const;
     void update_streaming_runtime_settings();
+    void reload_config_from_disk();
+    void save_active_config();
     void flush_dirty_chunk_deltas();
     using VoxelHit = wf::VoxelHit;
     using MeshResult = ChunkStreamingManager::MeshResult;
@@ -65,6 +70,9 @@ private:
     bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim = 1);
     void queue_chunk_remesh(const FaceChunkKey& key);
     void process_pending_remeshes();
+    bool process_runtime_mesh_upload(const wf::MeshUpload& upload);
+    void process_runtime_mesh_release(const FaceChunkKey& key);
+    void apply_runtime_result(const WorldUpdateResult& result);
 
     void recreate_swapchain();
     void rebuild_swapchain_dependents();
@@ -93,29 +101,89 @@ private:
     // Renderer core
     Renderer renderer_;
 
-    VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_triangle_ = VK_NULL_HANDLE;
+    wf::vk::UniquePipelineLayout pipeline_layout_;
+    wf::vk::UniquePipeline pipeline_triangle_;
     // Legacy chunk pipeline removed
 
     // Compute pipeline (no-op dispatch)
-    VkPipelineLayout pipeline_layout_compute_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_compute_ = VK_NULL_HANDLE;
+    wf::vk::UniquePipelineLayout pipeline_layout_compute_;
+    wf::vk::UniquePipeline pipeline_compute_;
     bool compute_enabled_ = false; // gate no-op compute dispatch
 
     struct RenderChunk {
-        // Legacy per-chunk buffers (unused in indirect path)
-        VkBuffer vbuf = VK_NULL_HANDLE;
-        VkDeviceMemory vmem = VK_NULL_HANDLE;
-        VkBuffer ibuf = VK_NULL_HANDLE;
-        VkDeviceMemory imem = VK_NULL_HANDLE;
-        // Draw info
+        wf::vk::UniqueBuffer vbuf;
+        wf::vk::UniqueDeviceMemory vmem;
+        wf::vk::UniqueBuffer ibuf;
+        wf::vk::UniqueDeviceMemory imem;
+
         uint32_t index_count = 0;
-        uint32_t first_index = 0; // indirect path
-        int32_t  base_vertex = 0; // indirect path
-        uint32_t vertex_count = 0; // for pooled free-list reclamation
-        float center[3] = {0,0,0};
+        uint32_t first_index = 0;
+        int32_t  base_vertex = 0;
+        uint32_t vertex_count = 0;
+        float center[3] = {0.0f, 0.0f, 0.0f};
         float radius = 0.0f;
         FaceChunkKey key{0,0,0,0};
+        ChunkRenderer* chunk_renderer = nullptr;
+
+        RenderChunk() = default;
+        ~RenderChunk() { release(); }
+
+        RenderChunk(const RenderChunk&) = delete;
+        RenderChunk& operator=(const RenderChunk&) = delete;
+
+        RenderChunk(RenderChunk&& other) noexcept { move_from(std::move(other)); }
+        RenderChunk& operator=(RenderChunk&& other) noexcept {
+            if (this != &other) {
+                release();
+                move_from(std::move(other));
+            }
+            return *this;
+        }
+
+        void release() {
+            if (chunk_renderer && index_count > 0 && vertex_count > 0 && !vbuf && !ibuf) {
+                chunk_renderer->free_mesh(first_index, index_count, base_vertex, vertex_count);
+            }
+            chunk_renderer = nullptr;
+            index_count = 0;
+            first_index = 0;
+            base_vertex = 0;
+            vertex_count = 0;
+            radius = 0.0f;
+            center[0] = center[1] = center[2] = 0.0f;
+            key = FaceChunkKey{0,0,0,0};
+            vbuf.reset();
+            vmem.reset();
+            ibuf.reset();
+            imem.reset();
+        }
+
+    private:
+        void move_from(RenderChunk&& other) noexcept {
+            vbuf = std::move(other.vbuf);
+            vmem = std::move(other.vmem);
+            ibuf = std::move(other.ibuf);
+            imem = std::move(other.imem);
+            index_count = other.index_count;
+            first_index = other.first_index;
+            base_vertex = other.base_vertex;
+            vertex_count = other.vertex_count;
+            center[0] = other.center[0];
+            center[1] = other.center[1];
+            center[2] = other.center[2];
+            radius = other.radius;
+            key = other.key;
+            chunk_renderer = other.chunk_renderer;
+
+            other.index_count = 0;
+            other.first_index = 0;
+            other.base_vertex = 0;
+            other.vertex_count = 0;
+            other.radius = 0.0f;
+            other.center[0] = other.center[1] = other.center[2] = 0.0f;
+            other.key = FaceChunkKey{0,0,0,0};
+            other.chunk_renderer = nullptr;
+        }
     };
     std::vector<RenderChunk> render_chunks_;
 
@@ -205,11 +273,11 @@ private:
         float pos[3];
         float color[3];
     };
-    VkBuffer debug_axes_vbo_ = VK_NULL_HANDLE;
-    VkDeviceMemory debug_axes_vbo_mem_ = VK_NULL_HANDLE;
+    wf::vk::UniqueBuffer debug_axes_vbo_;
+    wf::vk::UniqueDeviceMemory debug_axes_vbo_mem_;
     uint32_t debug_axes_vertex_count_ = 0;
-    VkPipelineLayout debug_axes_layout_ = VK_NULL_HANDLE;
-    VkPipeline debug_axes_pipeline_ = VK_NULL_HANDLE;
+    wf::vk::UniquePipelineLayout debug_axes_layout_;
+    wf::vk::UniquePipeline debug_axes_pipeline_;
 
     WorldStreamingSubsystem streaming_;
     bool edit_lmb_prev_down_ = false;
@@ -244,15 +312,12 @@ private:
     std::chrono::steady_clock::time_point app_start_tp_{};
     std::mutex          profile_mutex_;
     void profile_append_csv(const std::string& line);
-    void schedule_delete_chunk(const RenderChunk& rc);
+    void schedule_delete_chunk(RenderChunk&& rc);
 
     // Async loading/meshing
     int uploads_per_frame_limit_ = 16;
     int loader_threads_ = 0; // 0 = auto
-    void start_initial_ring_async();
-    uint64_t enqueue_ring_request(int face, int ring_radius, std::int64_t center_i, std::int64_t center_j, std::int64_t center_k, int k_down, int k_up, float fwd_s, float fwd_t);
     void drain_mesh_results();
-    void update_streaming();
     void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);
     // Multi-face/k pruning: keep any chunk that falls within any of the allowed rings and k-range
     struct AllowRegion { int face; std::int64_t ci; std::int64_t cj; std::int64_t ck; int span; int k_down; int k_up; };
@@ -270,6 +335,13 @@ private:
     // Config state
     std::string config_path_override_;
     std::string config_path_used_ = "wanderforge.cfg";
+    std::unique_ptr<AppConfigManager> config_manager_;
+    std::unique_ptr<WorldRuntime> world_runtime_;
+    bool world_runtime_initialized_ = false;
+    bool config_auto_reload_enabled_ = true;
+    double config_watch_accum_ = 0.0;
+    bool key_prev_reload_config_ = false;
+    bool key_prev_save_config_ = false;
 };
 
 } // namespace wf

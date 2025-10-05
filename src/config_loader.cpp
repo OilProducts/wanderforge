@@ -3,9 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <tuple>
 
 namespace wf {
 namespace {
@@ -30,7 +34,7 @@ bool parse_bool(std::string v, bool defv) {
 }
 
 template <typename T, typename Fn>
-void apply_env(const char* key, T& field, Fn&& parse_and_assign) {
+void apply_env_value(const char* key, T& field, Fn&& parse_and_assign) {
     if (const char* s = std::getenv(key)) {
         try {
             parse_and_assign(s);
@@ -48,80 +52,18 @@ void apply_env_bool(const char* key, bool& field) {
     }
 }
 
-} // namespace
-
-AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_config_path) {
-    AppConfig cfg = defaults;
-
-    // Apply CLI override for config path first.
-    if (!cli_config_path.empty()) {
-        cfg.config_path = cli_config_path;
-        std::cout << "[config] config_path=" << cfg.config_path << " (cli)\n";
+bool apply_file_overrides(const std::string& path, AppConfig& cfg) {
+    if (path.empty()) {
+        return false;
     }
 
-    // Environment overrides.
-    apply_env_bool("WF_INVERT_MOUSE_X", cfg.invert_mouse_x);
-    apply_env_bool("WF_INVERT_MOUSE_Y", cfg.invert_mouse_y);
-    apply_env("WF_MOUSE_SENSITIVITY", cfg.cam_sensitivity, [&](const char* s) { cfg.cam_sensitivity = std::stof(s); });
-    apply_env("WF_MOVE_SPEED", cfg.cam_speed, [&](const char* s) { cfg.cam_speed = std::stof(s); });
-    apply_env("WF_FOV_DEG", cfg.fov_deg, [&](const char* s) { cfg.fov_deg = std::stof(s); });
-    apply_env("WF_NEAR_M", cfg.near_m, [&](const char* s) { cfg.near_m = std::stof(s); });
-    apply_env("WF_FAR_M", cfg.far_m, [&](const char* s) { cfg.far_m = std::stof(s); });
-
-    apply_env("WF_TERRAIN_AMP_M", cfg.planet_cfg.terrain_amp_m, [&](const char* s) { cfg.planet_cfg.terrain_amp_m = std::stod(s); });
-    apply_env("WF_TERRAIN_FREQ", cfg.planet_cfg.terrain_freq, [&](const char* s) { cfg.planet_cfg.terrain_freq = std::stof(s); });
-    apply_env("WF_TERRAIN_OCTAVES", cfg.planet_cfg.terrain_octaves, [&](const char* s) { cfg.planet_cfg.terrain_octaves = std::max(1, std::stoi(s)); });
-    apply_env("WF_TERRAIN_LACUNARITY", cfg.planet_cfg.terrain_lacunarity, [&](const char* s) { cfg.planet_cfg.terrain_lacunarity = std::stof(s); });
-    apply_env("WF_TERRAIN_GAIN", cfg.planet_cfg.terrain_gain, [&](const char* s) { cfg.planet_cfg.terrain_gain = std::stof(s); });
-    apply_env("WF_PLANET_SEED", cfg.planet_cfg.seed, [&](const char* s) { cfg.planet_cfg.seed = static_cast<uint32_t>(std::stoul(s)); });
-    apply_env("WF_RADIUS_M", cfg.planet_cfg.radius_m, [&](const char* s) { cfg.planet_cfg.radius_m = std::stod(s); });
-    apply_env("WF_SEA_LEVEL_M", cfg.planet_cfg.sea_level_m, [&](const char* s) { cfg.planet_cfg.sea_level_m = std::stod(s); });
-    apply_env("WF_VOXEL_SIZE_M", cfg.planet_cfg.voxel_size_m, [&](const char* s) { cfg.planet_cfg.voxel_size_m = std::stod(s); });
-
-    apply_env("WF_HUD_SCALE", cfg.hud_scale, [&](const char* s) { cfg.hud_scale = std::stof(s); });
-    apply_env_bool("WF_HUD_SHADOW", cfg.hud_shadow);
-    apply_env("WF_HUD_SHADOW_OFFSET", cfg.hud_shadow_offset_px, [&](const char* s) { cfg.hud_shadow_offset_px = std::stof(s); });
-
-    apply_env_bool("WF_WALK_MODE", cfg.walk_mode);
-    apply_env("WF_EYE_HEIGHT", cfg.eye_height_m, [&](const char* s) { cfg.eye_height_m = std::stof(s); });
-    apply_env("WF_WALK_SPEED", cfg.walk_speed, [&](const char* s) { cfg.walk_speed = std::stof(s); });
-    apply_env("WF_WALK_PITCH_MAX_DEG", cfg.walk_pitch_max_deg, [&](const char* s) { cfg.walk_pitch_max_deg = std::stof(s); });
-
-    apply_env_bool("WF_USE_CHUNK_RENDERER", cfg.use_chunk_renderer);
-    apply_env("WF_RING_RADIUS", cfg.ring_radius, [&](const char* s) { cfg.ring_radius = std::max(0, std::stoi(s)); });
-    apply_env("WF_PRUNE_MARGIN", cfg.prune_margin, [&](const char* s) { cfg.prune_margin = std::max(0, std::stoi(s)); });
-    apply_env_bool("WF_CULL", cfg.cull_enabled);
-    apply_env_bool("WF_DRAW_STATS", cfg.draw_stats_enabled);
-    apply_env_bool("WF_LOG_STREAM", cfg.log_stream);
-    apply_env_bool("WF_LOG_POOL", cfg.log_pool);
-    apply_env_bool("WF_SAVE_CHUNKS", cfg.save_chunks_enabled);
-    apply_env_bool("WF_DEBUG_CHUNK_KEYS", cfg.debug_chunk_keys);
-    apply_env("WF_SURFACE_PUSH_M", cfg.surface_push_m, [&](const char* s) { cfg.surface_push_m = std::stof(s); });
-    apply_env_bool("WF_PROFILE_CSV", cfg.profile_csv_enabled);
-    apply_env("WF_PROFILE_CSV_PATH", cfg.profile_csv_path, [&](const char* s) { cfg.profile_csv_path = s; });
-    apply_env_bool("WF_DEVICE_LOCAL", cfg.device_local_enabled);
-    apply_env("WF_POOL_VTX_MB", cfg.pool_vtx_mb, [&](const char* s) { cfg.pool_vtx_mb = std::max(1, std::stoi(s)); });
-    apply_env("WF_POOL_IDX_MB", cfg.pool_idx_mb, [&](const char* s) { cfg.pool_idx_mb = std::max(1, std::stoi(s)); });
-    apply_env("WF_UPLOADS_PER_FRAME", cfg.uploads_per_frame_limit, [&](const char* s) { cfg.uploads_per_frame_limit = std::max(1, std::stoi(s)); });
-    apply_env("WF_LOADER_THREADS", cfg.loader_threads, [&](const char* s) { cfg.loader_threads = std::max(0, std::stoi(s)); });
-    apply_env("WF_K_DOWN", cfg.k_down, [&](const char* s) { cfg.k_down = std::max(0, std::stoi(s)); });
-    apply_env("WF_K_UP", cfg.k_up, [&](const char* s) { cfg.k_up = std::max(0, std::stoi(s)); });
-    apply_env("WF_K_PRUNE_MARGIN", cfg.k_prune_margin, [&](const char* s) { cfg.k_prune_margin = std::max(0, std::stoi(s)); });
-    apply_env("WF_FACE_KEEP_SEC", cfg.face_keep_time_cfg_s, [&](const char* s) { cfg.face_keep_time_cfg_s = std::max(0.0f, std::stof(s)); });
-    apply_env("WF_REGION_ROOT", cfg.region_root, [&](const char* s) { cfg.region_root = s; });
-
-    if (cfg.config_path.empty()) {
-        std::cout << "[config] config file path disabled; skipping file load\n";
-        return cfg;
-    }
-
-    std::ifstream in(cfg.config_path);
+    std::ifstream in(path);
     if (!in.good()) {
-        std::cout << "[config] config file not found: " << cfg.config_path << " (using defaults/env)\n";
-        return cfg;
+        std::cout << "[config] config file not found: " << path << " (using defaults/env)\n";
+        return false;
     }
 
-    std::cout << "[config] reading " << cfg.config_path << "\n";
+    std::cout << "[config] reading " << path << "\n";
 
     std::string line;
     while (std::getline(in, line)) {
@@ -184,7 +126,287 @@ AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_conf
         }
     }
 
-    return cfg;
+    return true;
+}
+
+void apply_env_overrides(AppConfig& cfg) {
+    apply_env_bool("WF_INVERT_MOUSE_X", cfg.invert_mouse_x);
+    apply_env_bool("WF_INVERT_MOUSE_Y", cfg.invert_mouse_y);
+    apply_env_value("WF_MOUSE_SENSITIVITY", cfg.cam_sensitivity, [&](const char* s) { cfg.cam_sensitivity = std::stof(s); });
+    apply_env_value("WF_MOVE_SPEED", cfg.cam_speed, [&](const char* s) { cfg.cam_speed = std::stof(s); });
+    apply_env_value("WF_FOV_DEG", cfg.fov_deg, [&](const char* s) { cfg.fov_deg = std::stof(s); });
+    apply_env_value("WF_NEAR_M", cfg.near_m, [&](const char* s) { cfg.near_m = std::stof(s); });
+    apply_env_value("WF_FAR_M", cfg.far_m, [&](const char* s) { cfg.far_m = std::stof(s); });
+
+    apply_env_value("WF_TERRAIN_AMP_M", cfg.planet_cfg.terrain_amp_m, [&](const char* s) { cfg.planet_cfg.terrain_amp_m = std::stod(s); });
+    apply_env_value("WF_TERRAIN_FREQ", cfg.planet_cfg.terrain_freq, [&](const char* s) { cfg.planet_cfg.terrain_freq = std::stof(s); });
+    apply_env_value("WF_TERRAIN_OCTAVES", cfg.planet_cfg.terrain_octaves, [&](const char* s) { cfg.planet_cfg.terrain_octaves = std::max(1, std::stoi(s)); });
+    apply_env_value("WF_TERRAIN_LACUNARITY", cfg.planet_cfg.terrain_lacunarity, [&](const char* s) { cfg.planet_cfg.terrain_lacunarity = std::stof(s); });
+    apply_env_value("WF_TERRAIN_GAIN", cfg.planet_cfg.terrain_gain, [&](const char* s) { cfg.planet_cfg.terrain_gain = std::stof(s); });
+    apply_env_value("WF_PLANET_SEED", cfg.planet_cfg.seed, [&](const char* s) { cfg.planet_cfg.seed = static_cast<uint32_t>(std::stoul(s)); });
+    apply_env_value("WF_RADIUS_M", cfg.planet_cfg.radius_m, [&](const char* s) { cfg.planet_cfg.radius_m = std::stod(s); });
+    apply_env_value("WF_SEA_LEVEL_M", cfg.planet_cfg.sea_level_m, [&](const char* s) { cfg.planet_cfg.sea_level_m = std::stod(s); });
+    apply_env_value("WF_VOXEL_SIZE_M", cfg.planet_cfg.voxel_size_m, [&](const char* s) { cfg.planet_cfg.voxel_size_m = std::stod(s); });
+
+    apply_env_value("WF_HUD_SCALE", cfg.hud_scale, [&](const char* s) { cfg.hud_scale = std::stof(s); });
+    apply_env_bool("WF_HUD_SHADOW", cfg.hud_shadow);
+    apply_env_value("WF_HUD_SHADOW_OFFSET", cfg.hud_shadow_offset_px, [&](const char* s) { cfg.hud_shadow_offset_px = std::stof(s); });
+
+    apply_env_bool("WF_WALK_MODE", cfg.walk_mode);
+    apply_env_value("WF_EYE_HEIGHT", cfg.eye_height_m, [&](const char* s) { cfg.eye_height_m = std::stof(s); });
+    apply_env_value("WF_WALK_SPEED", cfg.walk_speed, [&](const char* s) { cfg.walk_speed = std::stof(s); });
+    apply_env_value("WF_WALK_PITCH_MAX_DEG", cfg.walk_pitch_max_deg, [&](const char* s) { cfg.walk_pitch_max_deg = std::stof(s); });
+
+    apply_env_bool("WF_USE_CHUNK_RENDERER", cfg.use_chunk_renderer);
+    apply_env_value("WF_RING_RADIUS", cfg.ring_radius, [&](const char* s) { cfg.ring_radius = std::max(0, std::stoi(s)); });
+    apply_env_value("WF_PRUNE_MARGIN", cfg.prune_margin, [&](const char* s) { cfg.prune_margin = std::max(0, std::stoi(s)); });
+    apply_env_bool("WF_CULL", cfg.cull_enabled);
+    apply_env_bool("WF_DRAW_STATS", cfg.draw_stats_enabled);
+    apply_env_bool("WF_LOG_STREAM", cfg.log_stream);
+    apply_env_bool("WF_LOG_POOL", cfg.log_pool);
+    apply_env_bool("WF_SAVE_CHUNKS", cfg.save_chunks_enabled);
+    apply_env_bool("WF_DEBUG_CHUNK_KEYS", cfg.debug_chunk_keys);
+    apply_env_value("WF_PROFILE_CSV", cfg.profile_csv_enabled, [&](const char* s) { cfg.profile_csv_enabled = parse_bool(s, cfg.profile_csv_enabled); });
+    apply_env_value("WF_PROFILE_CSV_PATH", cfg.profile_csv_path, [&](const char* s) { cfg.profile_csv_path = s; });
+
+    apply_env_bool("WF_DEVICE_LOCAL", cfg.device_local_enabled);
+    apply_env_value("WF_POOL_VTX_MB", cfg.pool_vtx_mb, [&](const char* s) { cfg.pool_vtx_mb = std::max(1, std::stoi(s)); });
+    apply_env_value("WF_POOL_IDX_MB", cfg.pool_idx_mb, [&](const char* s) { cfg.pool_idx_mb = std::max(1, std::stoi(s)); });
+
+    apply_env_value("WF_UPLOADS_PER_FRAME", cfg.uploads_per_frame_limit, [&](const char* s) { cfg.uploads_per_frame_limit = std::max(1, std::stoi(s)); });
+    apply_env_value("WF_LOADER_THREADS", cfg.loader_threads, [&](const char* s) { cfg.loader_threads = std::max(0, std::stoi(s)); });
+    apply_env_value("WF_K_DOWN", cfg.k_down, [&](const char* s) { cfg.k_down = std::max(0, std::stoi(s)); });
+    apply_env_value("WF_K_UP", cfg.k_up, [&](const char* s) { cfg.k_up = std::max(0, std::stoi(s)); });
+    apply_env_value("WF_K_PRUNE_MARGIN", cfg.k_prune_margin, [&](const char* s) { cfg.k_prune_margin = std::max(0, std::stoi(s)); });
+    apply_env_value("WF_FACE_KEEP_SEC", cfg.face_keep_time_cfg_s, [&](const char* s) { cfg.face_keep_time_cfg_s = std::max(0.0f, std::stof(s)); });
+
+    apply_env_value("WF_REGION_ROOT", cfg.region_root, [&](const char* s) { cfg.region_root = s; });
+}
+
+std::string bool_string(bool v) {
+    return v ? "true" : "false";
+}
+
+void write_config_file(std::ostream& out, const AppConfig& cfg) {
+    out << "# Wanderforge configuration\n";
+    out << "# Generated at runtime -- feel free to edit\n\n";
+
+    out << "invert_mouse_x=" << bool_string(cfg.invert_mouse_x) << '\n';
+    out << "invert_mouse_y=" << bool_string(cfg.invert_mouse_y) << '\n';
+    out << "mouse_sensitivity=" << cfg.cam_sensitivity << '\n';
+    out << "move_speed=" << cfg.cam_speed << '\n';
+    out << "fov_deg=" << cfg.fov_deg << '\n';
+    out << "near_m=" << cfg.near_m << '\n';
+    out << "far_m=" << cfg.far_m << '\n';
+    out << "walk_mode=" << bool_string(cfg.walk_mode) << '\n';
+    out << "eye_height=" << cfg.eye_height_m << '\n';
+    out << "walk_speed=" << cfg.walk_speed << '\n';
+    out << "walk_pitch_max_deg=" << cfg.walk_pitch_max_deg << '\n';
+    out << "walk_surface_bias_m=" << cfg.walk_surface_bias_m << '\n';
+    out << "surface_push_m=" << cfg.surface_push_m << '\n';
+
+    out << "terrain_amp_m=" << cfg.planet_cfg.terrain_amp_m << '\n';
+    out << "terrain_freq=" << cfg.planet_cfg.terrain_freq << '\n';
+    out << "terrain_octaves=" << cfg.planet_cfg.terrain_octaves << '\n';
+    out << "terrain_lacunarity=" << cfg.planet_cfg.terrain_lacunarity << '\n';
+    out << "terrain_gain=" << cfg.planet_cfg.terrain_gain << '\n';
+    out << "planet_seed=" << cfg.planet_cfg.seed << '\n';
+    out << "radius_m=" << cfg.planet_cfg.radius_m << '\n';
+    out << "sea_level_m=" << cfg.planet_cfg.sea_level_m << '\n';
+    out << "voxel_size_m=" << cfg.planet_cfg.voxel_size_m << '\n';
+
+    out << "use_chunk_renderer=" << bool_string(cfg.use_chunk_renderer) << '\n';
+    out << "ring_radius=" << cfg.ring_radius << '\n';
+    out << "prune_margin=" << cfg.prune_margin << '\n';
+    out << "cull=" << bool_string(cfg.cull_enabled) << '\n';
+    out << "draw_stats=" << bool_string(cfg.draw_stats_enabled) << '\n';
+
+    out << "hud_scale=" << cfg.hud_scale << '\n';
+    out << "hud_shadow=" << bool_string(cfg.hud_shadow) << '\n';
+    out << "hud_shadow_offset=" << cfg.hud_shadow_offset_px << '\n';
+
+    out << "log_stream=" << bool_string(cfg.log_stream) << '\n';
+    out << "log_pool=" << bool_string(cfg.log_pool) << '\n';
+    out << "save_chunks=" << bool_string(cfg.save_chunks_enabled) << '\n';
+    out << "debug_chunk_keys=" << bool_string(cfg.debug_chunk_keys) << '\n';
+    out << "profile_csv=" << bool_string(cfg.profile_csv_enabled) << '\n';
+    out << "profile_csv_path=" << cfg.profile_csv_path << '\n';
+
+    out << "device_local=" << bool_string(cfg.device_local_enabled) << '\n';
+    out << "pool_vtx_mb=" << cfg.pool_vtx_mb << '\n';
+    out << "pool_idx_mb=" << cfg.pool_idx_mb << '\n';
+
+    out << "uploads_per_frame=" << cfg.uploads_per_frame_limit << '\n';
+    out << "loader_threads=" << cfg.loader_threads << '\n';
+    out << "k_down=" << cfg.k_down << '\n';
+    out << "k_up=" << cfg.k_up << '\n';
+    out << "k_prune_margin=" << cfg.k_prune_margin << '\n';
+    out << "face_keep_sec=" << cfg.face_keep_time_cfg_s << '\n';
+
+    out << "region_root=" << cfg.region_root << '\n';
+}
+
+bool configs_equal(const AppConfig& a, const AppConfig& b) {
+    auto tie_planet = [](const PlanetConfig& p) {
+        return std::tie(p.radius_m,
+                        p.voxel_size_m,
+                        p.sea_level_m,
+                        p.seed,
+                        p.terrain_amp_m,
+                        p.terrain_freq,
+                        p.terrain_octaves,
+                        p.terrain_lacunarity,
+                        p.terrain_gain);
+    };
+
+    if (tie_planet(a.planet_cfg) != tie_planet(b.planet_cfg)) {
+        return false;
+    }
+
+    return std::tie(a.invert_mouse_x, a.invert_mouse_y, a.cam_sensitivity, a.cam_speed,
+                    a.fov_deg, a.near_m, a.far_m, a.walk_mode, a.eye_height_m, a.walk_speed,
+                    a.walk_pitch_max_deg, a.walk_surface_bias_m, a.surface_push_m,
+                    a.use_chunk_renderer, a.ring_radius, a.prune_margin, a.cull_enabled,
+                    a.draw_stats_enabled, a.hud_scale, a.hud_shadow, a.hud_shadow_offset_px,
+                    a.log_stream, a.log_pool, a.save_chunks_enabled, a.debug_chunk_keys,
+                    a.profile_csv_enabled, a.profile_csv_path, a.device_local_enabled,
+                    a.pool_vtx_mb, a.pool_idx_mb, a.uploads_per_frame_limit, a.loader_threads,
+                    a.k_down, a.k_up, a.k_prune_margin, a.face_keep_time_cfg_s,
+                    a.region_root, a.config_path)
+           ==
+           std::tie(b.invert_mouse_x, b.invert_mouse_y, b.cam_sensitivity, b.cam_speed,
+                    b.fov_deg, b.near_m, b.far_m, b.walk_mode, b.eye_height_m, b.walk_speed,
+                    b.walk_pitch_max_deg, b.walk_surface_bias_m, b.surface_push_m,
+                    b.use_chunk_renderer, b.ring_radius, b.prune_margin, b.cull_enabled,
+                    b.draw_stats_enabled, b.hud_scale, b.hud_shadow, b.hud_shadow_offset_px,
+                    b.log_stream, b.log_pool, b.save_chunks_enabled, b.debug_chunk_keys,
+                    b.profile_csv_enabled, b.profile_csv_path, b.device_local_enabled,
+                    b.pool_vtx_mb, b.pool_idx_mb, b.uploads_per_frame_limit, b.loader_threads,
+                    b.k_down, b.k_up, b.k_prune_margin, b.face_keep_time_cfg_s,
+                    b.region_root, b.config_path);
+}
+
+} // namespace
+
+bool operator==(const AppConfig& a, const AppConfig& b) {
+    return configs_equal(a, b);
+}
+
+bool operator!=(const AppConfig& a, const AppConfig& b) {
+    return !configs_equal(a, b);
+}
+
+AppConfigManager::AppConfigManager(AppConfig defaults)
+    : defaults_(std::move(defaults)),
+      after_file_(defaults_),
+      after_env_(defaults_),
+      active_(defaults_) {
+    resolved_config_path_ = defaults_.config_path;
+}
+
+void AppConfigManager::set_cli_config_path(std::string path) {
+    cli_config_path_ = std::move(path);
+}
+
+bool AppConfigManager::apply_file_layer(AppConfig& cfg) {
+    std::string path = resolved_config_path_;
+    if (apply_file_overrides(path, cfg)) {
+        file_layer_loaded_ = true;
+        after_file_ = cfg;
+        update_file_timestamp();
+        return true;
+    }
+    file_layer_loaded_ = false;
+    after_file_ = defaults_;
+    last_write_time_.reset();
+    return false;
+}
+
+void AppConfigManager::apply_env_layer(AppConfig& cfg) {
+    apply_env_overrides(cfg);
+    after_env_ = cfg;
+}
+
+bool AppConfigManager::rebuild_active(const AppConfig& base) {
+    bool changed = (active_ != base);
+    active_ = base;
+    if (changed) {
+        std::cout << "[config] active configuration updated" << '\n';
+    }
+    return changed;
+}
+
+bool AppConfigManager::update_file_timestamp() {
+    if (!file_layer_loaded_) {
+        last_write_time_.reset();
+        return false;
+    }
+    std::error_code ec;
+    auto timestamp = std::filesystem::last_write_time(resolved_config_path_, ec);
+    if (ec) {
+        return false;
+    }
+    last_write_time_ = timestamp;
+    return true;
+}
+
+bool AppConfigManager::reload() {
+    resolved_config_path_ = cli_config_path_.empty() ? defaults_.config_path : cli_config_path_;
+
+    AppConfig merged = defaults_;
+    if (!resolved_config_path_.empty()) {
+        apply_file_layer(merged);
+    } else {
+        file_layer_loaded_ = false;
+        after_file_ = defaults_;
+        last_write_time_.reset();
+    }
+
+    apply_env_layer(merged);
+    merged.config_path = resolved_config_path_.empty() ? defaults_.config_path : resolved_config_path_;
+    return rebuild_active(merged);
+}
+
+bool AppConfigManager::reload_if_file_changed() {
+    if (!file_layer_loaded_ || resolved_config_path_.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    auto current = std::filesystem::last_write_time(resolved_config_path_, ec);
+    if (ec) {
+        return false;
+    }
+    if (!last_write_time_.has_value() || current != *last_write_time_) {
+        return reload();
+    }
+    return false;
+}
+
+bool AppConfigManager::save_active_to_file() {
+    if (resolved_config_path_.empty()) {
+        std::cout << "[config] cannot save: config_path is empty" << '\n';
+        return false;
+    }
+
+    std::ofstream out(resolved_config_path_, std::ios::trunc);
+    if (!out.good()) {
+        std::cout << "[config] failed to write " << resolved_config_path_ << '\n';
+        return false;
+    }
+
+    write_config_file(out, active_);
+    out.flush();
+    file_layer_loaded_ = true;
+    after_file_ = active_;
+    after_env_ = active_;
+    update_file_timestamp();
+    std::cout << "[config] wrote " << resolved_config_path_ << '\n';
+    return true;
+}
+
+void AppConfigManager::adopt_runtime_state(const AppConfig& cfg) {
+    active_ = cfg;
+    after_env_ = cfg;
 }
 
 } // namespace wf

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <chrono>
+#include <filesystem>
+#include <optional>
 #include <string>
 
 #include "planet.h"
@@ -57,6 +60,42 @@ struct AppConfig {
     std::string region_root = "regions";
 };
 
-AppConfig load_app_config(const AppConfig& defaults, const std::string& cli_config_path);
+bool operator==(const AppConfig& a, const AppConfig& b);
+bool operator!=(const AppConfig& a, const AppConfig& b);
+
+class AppConfigManager {
+public:
+    explicit AppConfigManager(AppConfig defaults);
+
+    void set_cli_config_path(std::string path);
+
+    bool reload();
+    bool reload_if_file_changed();
+    bool save_active_to_file();
+    void adopt_runtime_state(const AppConfig& cfg);
+
+    const AppConfig& defaults() const { return defaults_; }
+    const AppConfig& file_layer() const { return after_file_; }
+    const AppConfig& env_layer() const { return after_env_; }
+    const AppConfig& active() const { return active_; }
+    const std::string& config_path() const { return resolved_config_path_; }
+    bool has_config_file() const { return file_layer_loaded_; }
+
+private:
+    bool apply_file_layer(AppConfig& cfg);
+    void apply_env_layer(AppConfig& cfg);
+    bool rebuild_active(const AppConfig& base);
+    bool update_file_timestamp();
+
+    AppConfig defaults_{};
+    AppConfig after_file_{};
+    AppConfig after_env_{};
+    AppConfig active_{};
+
+    std::string cli_config_path_;
+    std::string resolved_config_path_;
+    bool file_layer_loaded_ = false;
+    std::optional<std::filesystem::file_time_type> last_write_time_;
+};
 
 } // namespace wf

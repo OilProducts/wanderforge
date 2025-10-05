@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -8,9 +9,10 @@
 #include <string>
 
 #include "config_loader.h"
+#include "chunk_streaming_manager.h"
+#include "mesh.h"
 #include "planet.h"
 #include "wf_math.h"
-#include "mesh.h"
 
 namespace wf {
 
@@ -158,7 +160,11 @@ public:
 
     void queue_edit(EditCommand edit);
     void clear_pending_edits();
-    void clear_mesh_transfer_queues();
+    void consume_mesh_transfer_queues(std::size_t uploads_processed, std::size_t releases_processed);
+    void sync_camera_state(const wf::Float3& position, float yaw_rad, float pitch_rad, bool walk_mode);
+    void queue_chunk_remesh(const FaceChunkKey& key);
+    bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim);
+    bool process_pending_remeshes(std::size_t max_count = 0);
 
 private:
     struct Impl;
