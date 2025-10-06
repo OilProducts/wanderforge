@@ -61,7 +61,7 @@ static void throw_if_failed(VkResult r, const char* msg) {
 
 VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
-    world_runtime_ = std::make_unique<WorldRuntime>();
+    render_system_.bind({&renderer_, &overlay_, &chunk_renderer_});
     streaming_.configure(planet_cfg_,
                          region_root_,
                          save_chunks_enabled_,
@@ -79,6 +79,20 @@ void VulkanApp::set_config_path(std::string path) {
 
 void VulkanApp::set_platform(PlatformLayer* platform) {
     platform_ = platform;
+}
+
+void VulkanApp::set_world_runtime(WorldRuntime* runtime) {
+    world_runtime_ = runtime;
+    if (!world_runtime_) {
+        world_runtime_initialized_ = false;
+    }
+}
+
+void VulkanApp::shutdown_runtime() {
+    if (world_runtime_initialized_ && world_runtime_) {
+        world_runtime_->shutdown();
+        world_runtime_initialized_ = false;
+    }
 }
 
 void VulkanApp::request_reload_config() {
@@ -118,6 +132,9 @@ void VulkanApp::refresh_runtime_state() {
 }
 
 void VulkanApp::initialize() {
+    if (!world_runtime_) {
+        throw std::runtime_error("WorldRuntime not bound to VulkanApp before initialize");
+    }
     init_window();
     load_config();
     init_vulkan();
@@ -145,16 +162,13 @@ float VulkanApp::advance_time() {
 }
 
 VulkanApp::~VulkanApp() {
-    if (world_runtime_initialized_) {
-        world_runtime_->shutdown();
-        world_runtime_initialized_ = false;
-    }
-    world_runtime_.reset();
+    shutdown_runtime();
+    world_runtime_ = nullptr;
 
     flush_dirty_chunk_deltas();
     streaming_.wait_for_pending_saves();
     streaming_.stop();
-    renderer_.wait_idle();
+    render_system_.wait_idle();
 
     trash_.clear();
     render_chunks_.clear();
@@ -182,59 +196,6 @@ VulkanApp::~VulkanApp() {
 #endif
 
     renderer_.shutdown();
-}
-
-void VulkanApp::run() {
-    PlatformLayer local_platform;
-    bool owns_platform = false;
-    if (!platform_) {
-        PlatformLayer::Config cfg;
-        local_platform.initialize(cfg);
-        set_platform(&local_platform);
-        owns_platform = true;
-    }
-
-    PlatformInputState prev_input{};
-    bool prev_input_valid = false;
-
-    initialize();
-    while (!should_close()) {
-        poll_events();
-        float dt = advance_time();
-        PlatformInputState input = platform_ ? platform_->sample_input() : PlatformInputState{};
-        ControllerActions actions;
-        actions.move_forward = (input.key_w ? 1.0f : 0.0f) - (input.key_s ? 1.0f : 0.0f);
-        actions.move_strafe = (input.key_d ? 1.0f : 0.0f) - (input.key_a ? 1.0f : 0.0f);
-        actions.move_vertical = (input.key_e ? 1.0f : 0.0f) - (input.key_q ? 1.0f : 0.0f);
-        actions.sprint = input.key_shift_left || input.key_shift_right;
-
-        if (prev_input_valid) {
-            bool reload_pressed = input.key_reload && !prev_input.key_reload;
-            if (reload_pressed) {
-                if (actions.sprint) {
-                    request_save_config();
-                } else {
-                    request_reload_config();
-                }
-            }
-            actions.walk_toggle = input.key_walk_toggle && !prev_input.key_walk_toggle;
-            actions.invert_x_toggle = input.key_invert_x && !prev_input.key_invert_x;
-            actions.invert_y_toggle = input.key_invert_y && !prev_input.key_invert_y;
-            actions.place_pressed = input.key_place && !prev_input.key_place;
-            actions.dig_pressed = input.mouse_left && !prev_input.mouse_left;
-        }
-
-        update_input(dt, input, actions);
-        prev_input = input;
-        prev_input_valid = true;
-        update_hud(dt);
-        draw_frame();
-    }
-
-    if (owns_platform) {
-        local_platform.shutdown();
-        set_platform(nullptr);
-    }
 }
 
 void VulkanApp::init_window() {
@@ -279,18 +240,18 @@ void VulkanApp::init_vulkan() {
     Renderer::CreateInfo renderer_info{};
     renderer_info.window = platform_ ? platform_->window_handle() : nullptr;
     renderer_info.enable_validation = enable_validation_;
-    renderer_.initialize(renderer_info);
+    render_system_.initialize_renderer(renderer_info);
 
-    trash_.resize(renderer_.frame_count());
+    trash_.resize(render_system_.frame_count());
 
     create_compute_pipeline();
 
 #ifdef WF_HAVE_VMA
     {
         VmaAllocatorCreateInfo aci{};
-        aci.instance = renderer_.instance();
-        aci.physicalDevice = renderer_.physical_device();
-        aci.device = renderer_.device();
+        aci.instance = render_system_.renderer().instance();
+        aci.physicalDevice = render_system_.renderer().physical_device();
+        aci.device = render_system_.renderer().device();
         aci.vulkanApiVersion = VK_API_VERSION_1_0;
         if (vmaCreateAllocator(&aci, &vma_allocator_) != VK_SUCCESS) {
             std::cerr << "Warning: VMA allocator creation failed; continuing without VMA.\n";
@@ -302,13 +263,13 @@ void VulkanApp::init_vulkan() {
     rebuild_swapchain_dependents();
 
     VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(renderer_.physical_device(), &props);
+    vkGetPhysicalDeviceProperties(render_system_.renderer().physical_device(), &props);
     std::cout << "GPU: " << props.deviceName << " API "
               << VK_API_VERSION_MAJOR(props.apiVersion) << '.'
               << VK_API_VERSION_MINOR(props.apiVersion) << '.'
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
-    std::cout << "Queues: graphics=" << renderer_.graphics_queue_family()
-              << ", present=" << renderer_.present_queue_family() << "\n";
+    std::cout << "Queues: graphics=" << render_system_.renderer().graphics_queue_family()
+              << ", present=" << render_system_.renderer().present_queue_family() << "\n";
 
     // Place camera slightly outside the loaded shell, looking inward (matches previous behavior)
     {
@@ -587,9 +548,22 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
 }
 
-void VulkanApp::update_input(float dt, const PlatformInputState& input, const ControllerActions& actions) {
+void VulkanApp::update_input(const ControllerFrameInput& frame) {
     if (!platform_) {
         return;
+    }
+
+    const PlatformInputState& input = frame.platform;
+    const ControllerActions& actions = frame.actions;
+    float dt = frame.dt;
+
+    set_mouse_capture(frame.mouse_captured);
+
+    if (frame.reload_requested) {
+        request_reload_config();
+    }
+    if (frame.save_requested) {
+        request_save_config();
     }
 
     if (world_runtime_initialized_) {
@@ -599,8 +573,8 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
     if (world_runtime_initialized_) {
         if (config_auto_reload_enabled_) {
             config_watch_accum_ += dt;
-            if (config_watch_accum_ >= 1.0) {
-                config_watch_accum_ = 0.0;
+            if (config_watch_accum_ >= 1.0f) {
+                config_watch_accum_ = 0.0f;
                 if (world_runtime_->reload_config_if_file_changed()) {
                     apply_config_local(world_runtime_->active_config());
                     refresh_runtime_state();
@@ -608,39 +582,12 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
                 }
             }
         } else {
-            config_watch_accum_ = 0.0;
+            config_watch_accum_ = 0.0f;
         }
     }
 
-    if (input.key_escape) {
+    if (frame.request_close) {
         platform_->request_close();
-    }
-
-    double cursor_x = input.mouse_x;
-    double cursor_y = input.mouse_y;
-
-    float look_yaw_delta = 0.0f;
-    float look_pitch_delta = 0.0f;
-
-    bool rmb = input.mouse_right;
-    if (rmb) {
-        if (!rmb_down_) {
-            rmb_down_ = true;
-            set_mouse_capture(true);
-            last_cursor_x_ = cursor_x;
-            last_cursor_y_ = cursor_y;
-        }
-        look_yaw_delta = static_cast<float>(cursor_x - last_cursor_x_);
-        look_pitch_delta = static_cast<float>(cursor_y - last_cursor_y_);
-        last_cursor_x_ = cursor_x;
-        last_cursor_y_ = cursor_y;
-    } else {
-        if (rmb_down_) {
-            rmb_down_ = false;
-            set_mouse_capture(false);
-        }
-        last_cursor_x_ = cursor_x;
-        last_cursor_y_ = cursor_y;
     }
 
     if (actions.walk_toggle || actions.invert_x_toggle || actions.invert_y_toggle) {
@@ -666,7 +613,6 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
                 apply_voxel_edit(empty, edit_place_material_, current_brush_dim());
             }
         }
-
     }
 
     if (world_runtime_initialized_) {
@@ -675,8 +621,8 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
         runtime_input.move.forward = actions.move_forward;
         runtime_input.move.strafe = actions.move_strafe;
         runtime_input.move.vertical = actions.move_vertical;
-        runtime_input.look.yaw_delta = look_yaw_delta;
-        runtime_input.look.pitch_delta = look_pitch_delta;
+        runtime_input.look.yaw_delta = frame.look_yaw_delta;
+        runtime_input.look.pitch_delta = frame.look_pitch_delta;
         runtime_input.walk_mode = runtime_config_.walk_mode;
         runtime_input.sprint = actions.sprint;
         runtime_input.ground_follow = runtime_config_.walk_mode;
@@ -690,10 +636,9 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
         refresh_runtime_state();
     }
 
-    // Feed UI backend
     ui::UIBackend::InputState ui_input{};
-    cursor_x = input.mouse_x;
-    cursor_y = input.mouse_y;
+    double cursor_x = input.mouse_x;
+    double cursor_y = input.mouse_y;
     window_width_ = input.window_width;
     window_height_ = input.window_height;
     int fb_w = input.framebuffer_width;
@@ -704,7 +649,7 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
     }
     double scale_x = 1.0;
     double scale_y = 1.0;
-    VkExtent2D swap_extent = renderer_.swapchain_extent();
+    VkExtent2D swap_extent = render_system_.swapchain_extent();
     if (window_width_ > 0) {
         double ref_width = (swap_extent.width > 0) ? static_cast<double>(swap_extent.width)
                                                   : static_cast<double>(framebuffer_width_);
@@ -722,7 +667,6 @@ void VulkanApp::update_input(float dt, const PlatformInputState& input, const Co
     ui_input.mouse_down[2] = input.mouse_middle;
     ui_input.has_mouse = input.window_focused && !mouse_captured_;
     hud_ui_backend_.begin_frame(ui_input, hud_ui_frame_index_++);
-
 }
 
 void VulkanApp::update_hud(float dt) {
@@ -819,10 +763,10 @@ std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
 }
 
 void VulkanApp::load_config() {
-    AppConfig defaults = snapshot_config();
     if (!world_runtime_) {
-        world_runtime_ = std::make_unique<WorldRuntime>();
+        throw std::runtime_error("WorldRuntime not bound to VulkanApp before load_config");
     }
+    AppConfig defaults = snapshot_config();
     if (!world_runtime_initialized_) {
         WorldRuntime::CreateParams params;
         params.deps.streaming = &streaming_;
@@ -850,6 +794,9 @@ void VulkanApp::load_config() {
 }
 
 void VulkanApp::reload_config_from_disk() {
+    if (!world_runtime_) {
+        return;
+    }
     if (!world_runtime_initialized_) {
         load_config();
         hud_force_refresh_ = true;
@@ -862,7 +809,7 @@ void VulkanApp::reload_config_from_disk() {
 }
 
 void VulkanApp::save_active_config() {
-    if (!world_runtime_initialized_) return;
+    if (!world_runtime_initialized_ || !world_runtime_) return;
     world_runtime_->apply_config(snapshot_config());
     if (world_runtime_->save_active_config()) {
         apply_config_local(world_runtime_->active_config());

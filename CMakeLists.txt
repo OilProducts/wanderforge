@@ -75,6 +75,7 @@ add_executable(wanderforge
   src/overlay.cpp
   src/chunk_renderer.cpp
   src/camera.cpp
+  src/render_system.cpp
   src/platform_layer.cpp
   src/vk_utils.cpp
   src/renderer.cpp

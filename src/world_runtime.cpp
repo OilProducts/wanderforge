@@ -48,6 +48,8 @@ struct WorldRuntime::Impl {
 
     float face_switch_hysteresis_ = 0.05f;
     std::function<void(const std::string&)> profile_sink_;
+    bool camera_initialized_ = false;
+    double last_camera_spawn_radius_m_ = 0.0;
 
     bool initialize(const CreateParams& params) {
         deps_ = params.deps;
@@ -717,6 +719,7 @@ private:
         camera_.apply_settings(camera_settings_);
         camera_.set_planet_config(cfg.planet_cfg);
         camera_.set_aspect_ratio(aspect_ratio_);
+        ensure_camera_spawn(cfg.planet_cfg);
         camera_settings_ = camera_.settings();
         surface_push_m_ = cfg.surface_push_m;
         config_dirty_ = true;
@@ -740,6 +743,59 @@ private:
                                                     std::move(sink),
                                                     start_tp_);
         }
+    }
+
+    void ensure_camera_spawn(const PlanetConfig& planet_cfg) {
+        if (planet_cfg.voxel_size_m <= 0.0) {
+            return;
+        }
+
+        const int N = Chunk64::N;
+        double chunk_m = static_cast<double>(N) * planet_cfg.voxel_size_m;
+        if (chunk_m <= 0.0) {
+            chunk_m = 1.0;
+        }
+        double half_m = chunk_m * 0.5;
+        std::int64_t k0 = static_cast<std::int64_t>(std::floor(std::max(0.0, planet_cfg.radius_m) / chunk_m));
+        if (k0 < 0) k0 = 0;
+        double R0 = static_cast<double>(k0) * chunk_m;
+        double Rc = R0 + half_m;
+        if (Rc <= 0.0) {
+            Rc = half_m;
+        }
+
+        if (camera_initialized_ && std::abs(last_camera_spawn_radius_m_ - planet_cfg.radius_m) < 1e-3) {
+            return;
+        }
+
+        Float3 right, up, forward;
+        face_basis(0, right, up, forward);
+        double Sc = half_m;
+        double Tc = half_m;
+        float cr = static_cast<float>(Sc / Rc);
+        float cu = static_cast<float>(Tc / Rc);
+        float cf = std::sqrt(std::max(0.0f, 1.0f - (cr * cr + cu * cu)));
+        Float3 dirc = wf::normalize(Float3{
+            right.x * cr + up.x * cu + forward.x * cf,
+            right.y * cr + up.y * cu + forward.y * cf,
+            right.z * cr + up.z * cu + forward.z * cf
+        });
+
+        Float3 chunk_center = dirc * static_cast<float>(Rc);
+        float view_back = static_cast<float>(std::max(12.0, chunk_m * 1.5));
+        Float3 eye = dirc * static_cast<float>(Rc + view_back) + up * 2.0f;
+        Float3 look = wf::normalize(chunk_center - eye);
+        float yaw = std::atan2(look.z, look.x);
+        float pitch = std::asin(std::clamp(look.y, -1.0f, 1.0f));
+        double dot = eye.x * dirc.x + eye.y * dirc.y + eye.z * dirc.z;
+        if (Rc > dot) {
+            yaw += 3.14159265f;
+            pitch = -pitch;
+        }
+
+        camera_.sync_state(Float3{eye.x, eye.y, eye.z}, yaw, pitch, camera_settings_.walk_mode);
+        camera_initialized_ = true;
+        last_camera_spawn_radius_m_ = planet_cfg.radius_m;
     }
 };
 

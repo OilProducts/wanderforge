@@ -9,6 +9,7 @@
 #include <memory>
 #include "overlay.h"
 #include "chunk_renderer.h"
+#include "render_system.h"
 #include "mesh.h"
 #include "chunk_delta.h"
 #include "chunk.h"
@@ -42,14 +43,15 @@ public:
     VulkanApp();
     ~VulkanApp();
 
-    void run();
     void set_config_path(std::string path);
     void set_platform(PlatformLayer* platform);
+    void set_world_runtime(WorldRuntime* runtime);
+    void shutdown_runtime();
     void initialize();
     bool should_close() const;
     void poll_events();
     float advance_time();
-    void update_input(float dt, const PlatformInputState& input, const ControllerActions& actions);
+    void update_input(const ControllerFrameInput& frame);
     void update_hud(float dt);
     void draw_frame();
     void request_reload_config();
@@ -115,6 +117,7 @@ private:
 
     // Renderer core
     Renderer renderer_;
+    RenderSystem render_system_;
 
     wf::vk::UniquePipelineLayout pipeline_layout_;
     wf::vk::UniquePipeline pipeline_triangle_;
@@ -345,7 +348,7 @@ private:
     // Config state
     std::string config_path_override_;
     std::string config_path_used_ = "wanderforge.cfg";
-    std::unique_ptr<WorldRuntime> world_runtime_;
+    WorldRuntime* world_runtime_ = nullptr;
     bool world_runtime_initialized_ = false;
     bool config_auto_reload_enabled_ = true;
     double config_watch_accum_ = 0.0;

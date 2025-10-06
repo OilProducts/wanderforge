@@ -44,4 +44,16 @@ struct ControllerActions {
     bool dig_pressed = false;
 };
 
+struct ControllerFrameInput {
+    float dt = 0.0f;
+    PlatformInputState platform{};
+    ControllerActions actions{};
+    float look_yaw_delta = 0.0f;
+    float look_pitch_delta = 0.0f;
+    bool reload_requested = false;
+    bool save_requested = false;
+    bool request_close = false;
+    bool mouse_captured = false;
+};
+
 } // namespace wf
