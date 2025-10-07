@@ -18,8 +18,7 @@
 #include "world_runtime.h"
 #include "planet.h"
 #include "config_loader.h"
-#include "ui/ui_context.h"
-#include "ui/ui_backend.h"
+#include "ui/ui_controller.h"
 #include "window_input.h"
 #include "renderer.h"
 #include "vk_handle.h"
@@ -45,6 +44,7 @@ public:
 
     void set_config_path(std::string path);
     void set_platform(PlatformLayer* platform);
+    void set_render_system(RenderSystem* render_system);
     void set_world_runtime(WorldRuntime* runtime);
     void shutdown_runtime();
     void initialize();
@@ -116,8 +116,7 @@ private:
     ToolSelection selected_tool_ = ToolSelection::None;
 
     // Renderer core
-    Renderer renderer_;
-    RenderSystem render_system_;
+    RenderSystem* render_system_ = nullptr;
 
     wf::vk::UniquePipelineLayout pipeline_layout_;
     wf::vk::UniquePipeline pipeline_triangle_;
@@ -252,10 +251,7 @@ private:
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
     bool overlay_initialized_ = false;
-    ui::UIContext hud_ui_context_;
-    ui::UIBackend hud_ui_backend_;
-    std::uint64_t hud_ui_frame_index_ = 0;
-    ChunkRenderer chunk_renderer_;
+    ui::UiController ui_controller_;
     bool chunk_renderer_initialized_ = false;
     // Reused per-frame container to avoid allocations when building draw items
     std::vector<ChunkDrawItem> chunk_items_tmp_;
@@ -264,7 +260,6 @@ private:
     bool use_chunk_renderer_ = true;
 
     // HUD text management (update at 0.25s cadence, rebuild per-slot on demand)
-    std::string hud_text_;
     bool hud_force_refresh_ = true;
 
     // Rendering controls

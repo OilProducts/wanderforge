@@ -29,9 +29,6 @@
 #include "vk_utils.h"
 #include "platform_layer.h"
 #include "camera.h"
-#include "ui/ui_text.h"
-#include "ui/ui_primitives.h"
-#include "ui/ui_id.h"
 
 namespace wf {
 
@@ -61,7 +58,6 @@ static void throw_if_failed(VkResult r, const char* msg) {
 
 VulkanApp::VulkanApp() {
     enable_validation_ = true; // toggled by build type in future
-    render_system_.bind({&renderer_, &overlay_, &chunk_renderer_});
     streaming_.configure(planet_cfg_,
                          region_root_,
                          save_chunks_enabled_,
@@ -79,6 +75,10 @@ void VulkanApp::set_config_path(std::string path) {
 
 void VulkanApp::set_platform(PlatformLayer* platform) {
     platform_ = platform;
+}
+
+void VulkanApp::set_render_system(RenderSystem* render_system) {
+    render_system_ = render_system;
 }
 
 void VulkanApp::set_world_runtime(WorldRuntime* runtime) {
@@ -135,6 +135,9 @@ void VulkanApp::initialize() {
     if (!world_runtime_) {
         throw std::runtime_error("WorldRuntime not bound to VulkanApp before initialize");
     }
+    if (!render_system_) {
+        throw std::runtime_error("RenderSystem not bound to VulkanApp before initialize");
+    }
     init_window();
     load_config();
     init_vulkan();
@@ -168,16 +171,18 @@ VulkanApp::~VulkanApp() {
     flush_dirty_chunk_deltas();
     streaming_.wait_for_pending_saves();
     streaming_.stop();
-    render_system_.wait_idle();
+    if (render_system_) {
+        render_system_->wait_idle();
+    }
 
     trash_.clear();
     render_chunks_.clear();
 
-    VkDevice device = renderer_.device();
-    if (device) {
-        overlay_.cleanup(device);
+    VkDevice device = render_system_ ? render_system_->device() : VK_NULL_HANDLE;
+    if (device && render_system_) {
+        render_system_->overlay().cleanup(device);
         overlay_initialized_ = false;
-        chunk_renderer_.cleanup(device);
+        render_system_->chunk_renderer().cleanup(device);
         chunk_renderer_initialized_ = false;
     }
 
@@ -195,7 +200,9 @@ VulkanApp::~VulkanApp() {
     }
 #endif
 
-    renderer_.shutdown();
+    if (render_system_) {
+        render_system_->shutdown_renderer();
+    }
 }
 
 void VulkanApp::init_window() {
@@ -240,18 +247,19 @@ void VulkanApp::init_vulkan() {
     Renderer::CreateInfo renderer_info{};
     renderer_info.window = platform_ ? platform_->window_handle() : nullptr;
     renderer_info.enable_validation = enable_validation_;
-    render_system_.initialize_renderer(renderer_info);
+    render_system_->initialize_renderer(renderer_info);
 
-    trash_.resize(render_system_.frame_count());
+    trash_.resize(render_system_->frame_count());
 
     create_compute_pipeline();
 
 #ifdef WF_HAVE_VMA
     {
         VmaAllocatorCreateInfo aci{};
-        aci.instance = render_system_.renderer().instance();
-        aci.physicalDevice = render_system_.renderer().physical_device();
-        aci.device = render_system_.renderer().device();
+        Renderer& renderer = render_system_->renderer();
+        aci.instance = renderer.instance();
+        aci.physicalDevice = renderer.physical_device();
+        aci.device = renderer.device();
         aci.vulkanApiVersion = VK_API_VERSION_1_0;
         if (vmaCreateAllocator(&aci, &vma_allocator_) != VK_SUCCESS) {
             std::cerr << "Warning: VMA allocator creation failed; continuing without VMA.\n";
@@ -263,13 +271,13 @@ void VulkanApp::init_vulkan() {
     rebuild_swapchain_dependents();
 
     VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(render_system_.renderer().physical_device(), &props);
+    vkGetPhysicalDeviceProperties(render_system_->physical_device(), &props);
     std::cout << "GPU: " << props.deviceName << " API "
               << VK_API_VERSION_MAJOR(props.apiVersion) << '.'
               << VK_API_VERSION_MINOR(props.apiVersion) << '.'
               << VK_API_VERSION_PATCH(props.apiVersion) << "\n";
-    std::cout << "Queues: graphics=" << render_system_.renderer().graphics_queue_family()
-              << ", present=" << render_system_.renderer().present_queue_family() << "\n";
+    std::cout << "Queues: graphics=" << render_system_->graphics_queue_family()
+              << ", present=" << render_system_->renderer().present_queue_family() << "\n";
 
     // Place camera slightly outside the loaded shell, looking inward (matches previous behavior)
     {
@@ -315,7 +323,8 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     VkCommandBuffer cmd = ctx.command_buffer;
     const uint32_t imageIndex = ctx.image_index;
 
-    const VkExtent2D swap_extent = renderer_.swapchain_extent();
+    Renderer& renderer = render_system_->renderer();
+    const VkExtent2D swap_extent = renderer.swapchain_extent();
 
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -330,8 +339,8 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     VkClearValue clear{ { {0.02f, 0.02f, 0.06f, 1.0f} } };
     VkRenderPassBeginInfo rbi{};
     rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rbi.renderPass = renderer_.render_pass();
-    rbi.framebuffer = renderer_.framebuffer(imageIndex);
+    rbi.renderPass = renderer.render_pass();
+    rbi.framebuffer = render_system_->framebuffer(imageIndex);
     rbi.renderArea.offset = {0,0};
     rbi.renderArea.extent = swap_extent;
     VkClearValue clears[2];
@@ -413,7 +422,8 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
     auto MVP = wf::mul(P, V);
 
     bool debugTrianglePending = debug_show_test_triangle_ && pipeline_triangle_;
-    bool chunk_ready = chunk_renderer_.is_ready() && !render_chunks_.empty();
+    ChunkRenderer& chunk_renderer = render_system_->chunk_renderer();
+    bool chunk_ready = chunk_renderer.is_ready() && !render_chunks_.empty();
 
     if (chunk_ready) {
         if (debug_chunk_keys_) {
@@ -521,7 +531,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
                 last_draw_indices_ += rc.index_count;
             }
         }
-        chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
+        chunk_renderer.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_.get());
         vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -542,7 +552,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
-    overlay_.record_draw(cmd, overlay_draw_slot_);
+    render_system_->overlay().record_draw(cmd, overlay_draw_slot_);
     vkCmdEndRenderPass(cmd);
 
     throw_if_failed(vkEndCommandBuffer(cmd), "vkEndCommandBuffer failed");
@@ -649,7 +659,7 @@ void VulkanApp::update_input(const ControllerFrameInput& frame) {
     }
     double scale_x = 1.0;
     double scale_y = 1.0;
-    VkExtent2D swap_extent = render_system_.swapchain_extent();
+    VkExtent2D swap_extent = render_system_->swapchain_extent();
     if (window_width_ > 0) {
         double ref_width = (swap_extent.width > 0) ? static_cast<double>(swap_extent.width)
                                                   : static_cast<double>(framebuffer_width_);
@@ -661,12 +671,12 @@ void VulkanApp::update_input(const ControllerFrameInput& frame) {
         scale_y = ref_height / static_cast<double>(window_height_);
     }
     ui_input.mouse_x = cursor_x * scale_x;
-    ui_input.mouse_y = cursor_y * scale_y;
-    ui_input.mouse_down[0] = input.mouse_left;
-    ui_input.mouse_down[1] = input.mouse_right;
-    ui_input.mouse_down[2] = input.mouse_middle;
-    ui_input.has_mouse = input.window_focused && !mouse_captured_;
-    hud_ui_backend_.begin_frame(ui_input, hud_ui_frame_index_++);
+   ui_input.mouse_y = cursor_y * scale_y;
+   ui_input.mouse_down[0] = input.mouse_left;
+   ui_input.mouse_down[1] = input.mouse_right;
+   ui_input.mouse_down[2] = input.mouse_middle;
+   ui_input.has_mouse = input.window_focused && !mouse_captured_;
+    ui_controller_.begin_backend_frame(ui_input);
 }
 
 void VulkanApp::update_hud(float dt) {
@@ -696,9 +706,10 @@ void VulkanApp::update_hud(float dt) {
 
     char hud[768];
     if (draw_stats_enabled_) {
+        ChunkRenderer& chunk_renderer = render_system_->chunk_renderer();
         float tris_m = (float)last_draw_indices_ / 3.0f / 1.0e6f;
         VkDeviceSize v_used=0,v_cap=0,i_used=0,i_cap=0;
-        if (chunk_renderer_.is_ready()) chunk_renderer_.get_pool_usage(v_used, v_cap, i_used, i_cap);
+        if (chunk_renderer.is_ready()) chunk_renderer.get_pool_usage(v_used, v_cap, i_used, i_cap);
         float v_used_mb = (float)v_used / (1024.0f*1024.0f);
         float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         float i_used_mb = (float)i_used / (1024.0f*1024.0f);
@@ -756,10 +767,7 @@ std::snprintf(hud + hud_len, sizeof(hud) - hud_len,
               manager_path.empty() ? "(none)" : manager_path.c_str(),
               auto_reload_text);
 
-    // Only update overlay text if it actually changed
-    if (hud_text_ != hud) {
-        hud_text_.assign(hud);
-    }
+    ui_controller_.set_hud_text(std::string(hud));
 }
 
 void VulkanApp::load_config() {
@@ -895,6 +903,11 @@ void VulkanApp::apply_config_local(const AppConfig& cfg) {
     hud_scale_ = cfg.hud_scale;
     hud_shadow_enabled_ = cfg.hud_shadow;
     hud_shadow_offset_px_ = cfg.hud_shadow_offset_px;
+    ui::UiController::Settings ui_settings{};
+    ui_settings.scale = hud_scale_;
+    ui_settings.shadow_enabled = hud_shadow_enabled_;
+    ui_settings.shadow_offset_px = hud_shadow_offset_px_;
+    ui_controller_.set_settings(ui_settings);
 
     log_stream_ = cfg.log_stream;
     log_pool_ = cfg.log_pool;
@@ -1140,15 +1153,16 @@ void VulkanApp::apply_runtime_result(const WorldUpdateResult& result) {
 }
 
 bool VulkanApp::process_runtime_mesh_upload(const MeshUpload& upload) {
+    ChunkRenderer& chunk_renderer = render_system_->chunk_renderer();
     RenderChunk rc;
-    rc.chunk_renderer = &chunk_renderer_;
+    rc.chunk_renderer = &chunk_renderer;
     rc.index_count = static_cast<uint32_t>(upload.mesh.indices.size());
     rc.vertex_count = static_cast<uint32_t>(upload.mesh.vertices.size());
     if (rc.vertex_count == 0 || rc.index_count == 0) {
         return false;
     }
 
-    bool ok_upload = chunk_renderer_.upload_mesh(upload.mesh.vertices.data(), upload.mesh.vertices.size(),
+    bool ok_upload = chunk_renderer.upload_mesh(upload.mesh.vertices.data(), upload.mesh.vertices.size(),
                                                 upload.mesh.indices.data(), upload.mesh.indices.size(),
                                                 rc.first_index, rc.base_vertex);
     if (!ok_upload) {
@@ -1233,210 +1247,132 @@ void VulkanApp::process_runtime_mesh_release(const FaceChunkKey& key) {
 }
 
 void VulkanApp::draw_frame() {
-    Renderer::FrameContext ctx = renderer_.begin_frame();
-    if (trash_.size() != renderer_.frame_count()) {
-        trash_.resize(renderer_.frame_count());
-    }
+    bool runtime_config_dirty = false;
+    bool backend_frame_ended = false;
+    ui::UiController::FrameOutput ui_actions{};
 
-    if (!ctx.acquired) {
-        hud_ui_backend_.end_frame();
-        if (renderer_.swapchain_needs_recreate()) {
-            renderer_.recreate_swapchain();
+    auto frame_rendered = render_system_->render_frame({
+        .record = [&](Renderer::FrameContext& ctx) {
+            if (trash_.size() != render_system_->frame_count()) {
+                trash_.resize(render_system_->frame_count());
+            }
+
+            const size_t frame_index = ctx.frame_index % render_system_->frame_count();
+            auto& deferred = trash_[frame_index];
+            deferred.clear();
+
+            process_pending_remeshes();
+            drain_mesh_results();
+
+            overlay_draw_slot_ = frame_index;
+            const VkExtent2D swap_extent = render_system_->swapchain_extent();
+
+            std::array<std::string_view, kResolutionOptions.size()> resolution_labels{};
+            for (std::size_t i = 0; i < kResolutionOptions.size(); ++i) {
+                resolution_labels[i] = kResolutionOptions[i].label;
+            }
+
+            std::array<ui::UiController::ToolButton, 2> tool_buttons{{
+                {"Small\nShovel", selected_tool_ == ToolSelection::SmallShovel},
+                {"Big\nShovel", selected_tool_ == ToolSelection::LargeShovel}
+            }};
+
+            ui::UiController::FrameInput ui_frame_input;
+            ui_frame_input.screen_width = static_cast<int>(swap_extent.width);
+            ui_frame_input.screen_height = static_cast<int>(swap_extent.height);
+            ui_frame_input.cull_enabled = cull_enabled_;
+            ui_frame_input.debug_show_axes = debug_show_axes_;
+            ui_frame_input.debug_show_test_triangle = debug_show_test_triangle_;
+            ui_frame_input.config_auto_reload_enabled = config_auto_reload_enabled_;
+            if (!resolution_labels.empty()) {
+                ui_frame_input.resolution_labels = std::span<const std::string_view>(resolution_labels.data(), resolution_labels.size());
+                ui_frame_input.resolution_index = std::min(hud_resolution_index_, resolution_labels.size() - 1);
+            }
+            ui_frame_input.tool_buttons = std::span<const ui::UiController::ToolButton>(tool_buttons.data(), tool_buttons.size());
+
+            ui_actions = ui_controller_.build_frame(ui_frame_input);
+            render_system_->overlay().upload_draw_data(overlay_draw_slot_, ui_controller_.draw_data());
+
+            vkResetCommandBuffer(ctx.command_buffer, 0);
+            record_command_buffer(ctx);
+        },
+        .on_not_acquired = [&]() {
+            ui_controller_.end_backend_frame();
+            backend_frame_ended = true;
+        },
+        .on_swapchain_recreated = [&]() {
             rebuild_swapchain_dependents();
         }
+    });
+
+    if (!backend_frame_ended) {
+        ui_controller_.end_backend_frame();
+    }
+
+    if (!frame_rendered) {
         return;
     }
 
-    const size_t frame_index = ctx.frame_index % renderer_.frame_count();
-    auto& deferred = trash_[frame_index];
-    deferred.clear();
-
-    process_pending_remeshes();
-    drain_mesh_results();
-
-    overlay_draw_slot_ = frame_index;
-    const VkExtent2D swap_extent = renderer_.swapchain_extent();
-    ui::ContextParams ui_params;
-    ui_params.screen_width = static_cast<int>(swap_extent.width);
-    ui_params.screen_height = static_cast<int>(swap_extent.height);
-    ui_params.style.scale = hud_scale_;
-    ui_params.style.enable_shadow = hud_shadow_enabled_;
-    ui_params.style.shadow_offset_px = hud_shadow_offset_px_;
-    ui_params.style.shadow_color = ui::Color{0.0f, 0.0f, 0.0f, 0.6f};
-    hud_ui_context_.begin(ui_params);
-    bool runtime_config_dirty = false;
-
-    ui::TextDrawParams text_params;
-    text_params.scale = 1.0f;
-    text_params.color = ui::Color{1.0f, 1.0f, 1.0f, 1.0f};
-    text_params.line_spacing_px = 4.0f;
-    float text_height = 0.0f;
-    if (!hud_text_.empty()) {
-        text_height = ui::add_text_block(hud_ui_context_, hud_text_.c_str(), ui_params.screen_width, text_params);
-    }
-
-    ui::ButtonStyle button_style;
-    button_style.text_scale = 1.0f;
-    float button_y = text_params.origin_px.y + text_height + 8.0f;
-    const float button_height = 18.0f;
-    const float button_width = 136.0f;
-    const float button_spacing = 4.0f;
-
-    auto button_rect_at = [&](float y) {
-        return ui::Rect{6.0f, y, button_width, button_height};
-    };
-
-    std::string button_label = std::string("Cull: ") + (cull_enabled_ ? "ON" : "OFF");
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.cull"), button_rect_at(button_y), button_label, button_style)) {
+    if (ui_actions.toggle_cull) {
         cull_enabled_ = !cull_enabled_;
         hud_force_refresh_ = true;
         runtime_config_dirty = true;
     }
-    button_y += button_height + button_spacing;
-
-    std::string axes_label = std::string("Axes: ") + (debug_show_axes_ ? "ON" : "OFF");
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.axes"), button_rect_at(button_y), axes_label, button_style)) {
+    if (ui_actions.toggle_debug_axes) {
         debug_show_axes_ = !debug_show_axes_;
         hud_force_refresh_ = true;
     }
-    button_y += button_height + button_spacing;
-
-    std::string tri_label = std::string("Tri: ") + (debug_show_test_triangle_ ? "ON" : "OFF");
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.triangle"), button_rect_at(button_y), tri_label, button_style)) {
+    if (ui_actions.toggle_debug_triangle) {
         debug_show_test_triangle_ = !debug_show_test_triangle_;
         hud_force_refresh_ = true;
     }
-    button_y += button_height + button_spacing;
-
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.reload_config"), button_rect_at(button_y), "Reload Config", button_style)) {
+    if (ui_actions.request_reload) {
         reload_config_from_disk();
     }
-    button_y += button_height + button_spacing;
-
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.save_config"), button_rect_at(button_y), "Save Config", button_style)) {
+    if (ui_actions.request_save) {
         save_active_config();
     }
-    button_y += button_height + button_spacing;
-
-    std::string auto_label = std::string("Auto Reload: ") + (config_auto_reload_enabled_ ? "ON" : "OFF");
-    if (ui::button(hud_ui_context_, hud_ui_backend_, ui::hash_id("hud.auto_reload"), button_rect_at(button_y), auto_label, button_style)) {
+    if (ui_actions.toggle_auto_reload) {
         config_auto_reload_enabled_ = !config_auto_reload_enabled_;
         hud_force_refresh_ = true;
     }
-    button_y += button_height + button_spacing;
-
-    std::array<std::string_view, kResolutionOptions.size()> resolution_labels{};
-    for (std::size_t i = 0; i < kResolutionOptions.size(); ++i) {
-        resolution_labels[i] = kResolutionOptions[i].label;
+    hud_resolution_index_ = std::min(ui_actions.resolution_index, kResolutionOptions.size() - 1);
+    if (ui_actions.resolution_changed) {
+        apply_resolution_option(ui_actions.resolution_index);
     }
-
-    ui::Rect dropdown_rect{6.0f, button_y, button_width, button_height};
-    ui::DropdownResult resolution_dropdown = ui::dropdown(
-        hud_ui_context_,
-        hud_ui_backend_,
-        ui::hash_id("hud.resolution"),
-        dropdown_rect,
-        std::span<const std::string_view>(resolution_labels.data(), resolution_labels.size()),
-        std::min(hud_resolution_index_, kResolutionOptions.size() - 1));
-
-    if (resolution_dropdown.selection_changed) {
-        apply_resolution_option(resolution_dropdown.selected_index);
-    } else {
-        hud_resolution_index_ = std::min(resolution_dropdown.selected_index, kResolutionOptions.size() - 1);
+    if (ui_actions.tool_clicked.has_value()) {
+        const std::array<ToolSelection, 2> tool_mapping{{ToolSelection::SmallShovel, ToolSelection::LargeShovel}};
+        std::size_t tool_index = *ui_actions.tool_clicked;
+        if (tool_index < tool_mapping.size()) {
+            ToolSelection clicked = tool_mapping[tool_index];
+            selected_tool_ = (selected_tool_ == clicked) ? ToolSelection::None : clicked;
+            hud_force_refresh_ = true;
+        }
     }
-
-    const float hud_scale = (ui_params.style.scale > 0.0f) ? ui_params.style.scale : 1.0f;
-    auto unscale = [&](float px) { return px / hud_scale; };
-
-    const float tool_slot_px = 72.0f;
-    const float tool_slot_spacing_px = 16.0f;
-    const float tool_bottom_margin_px = 32.0f;
-    const float tool_total_width_px = tool_slot_px * 2.0f + tool_slot_spacing_px;
-    const float tool_start_x_px = (ui_params.screen_width - tool_total_width_px) * 0.5f;
-    const float tool_y_px = std::max(0.0f, ui_params.screen_height - tool_bottom_margin_px - tool_slot_px);
-
-    ui::SelectableStyle tool_style;
-    tool_style.text_scale = 0.9f;
-    tool_style.padding_px = 8.0f;
-
-    auto tool_rect_at = [&](int index) {
-        float x_px = tool_start_x_px + static_cast<float>(index) * (tool_slot_px + tool_slot_spacing_px);
-        return ui::Rect{unscale(x_px), unscale(tool_y_px), unscale(tool_slot_px), unscale(tool_slot_px)};
-    };
-
-    bool small_selected = (selected_tool_ == ToolSelection::SmallShovel);
-    bool clicked_small = ui::selectable(hud_ui_context_,
-                                        hud_ui_backend_,
-                                        ui::hash_id("hud.tool.small"),
-                                        tool_rect_at(0),
-                                        "Small\nShovel",
-                                        small_selected,
-                                        tool_style);
-    if (clicked_small) {
-        selected_tool_ = small_selected ? ToolSelection::None : ToolSelection::SmallShovel;
-        hud_force_refresh_ = true;
-    }
-
-    bool large_selected = (selected_tool_ == ToolSelection::LargeShovel);
-    bool clicked_large = ui::selectable(hud_ui_context_,
-                                        hud_ui_backend_,
-                                        ui::hash_id("hud.tool.large"),
-                                        tool_rect_at(1),
-                                        "Big\nShovel",
-                                        large_selected,
-                                        tool_style);
-    if (clicked_large) {
-        selected_tool_ = large_selected ? ToolSelection::None : ToolSelection::LargeShovel;
-        hud_force_refresh_ = true;
-    }
-
-    ui::Vec2 crosshair_center{ui_params.screen_width * 0.5f, ui_params.screen_height * 0.5f};
-    ui::CrosshairStyle crosshair_style;
-    crosshair_style.color = ui::Color{1.0f, 1.0f, 1.0f, 0.9f};
-    crosshair_style.arm_length_px = 9.0f;
-    crosshair_style.center_gap_px = 6.0f;
-    crosshair_style.arm_thickness_px = 2.0f;
-    ui::crosshair(hud_ui_context_, crosshair_center, crosshair_style);
-
-    ui::UIDrawData draw_data = hud_ui_context_.end();
-    overlay_.upload_draw_data(overlay_draw_slot_, draw_data);
-
-    vkResetCommandBuffer(ctx.command_buffer, 0);
-    record_command_buffer(ctx);
-
-    renderer_.submit_frame(ctx);
-    renderer_.present_frame(ctx);
-
-    hud_ui_backend_.end_frame();
 
     if (world_runtime_initialized_ && runtime_config_dirty) {
         world_runtime_->apply_config(snapshot_config());
     }
-
-    if (renderer_.swapchain_needs_recreate()) {
-        renderer_.recreate_swapchain();
-        rebuild_swapchain_dependents();
-    }
 }
 
 void VulkanApp::recreate_swapchain() {
-    renderer_.wait_idle();
-    renderer_.recreate_swapchain();
+    render_system_->wait_idle();
+    render_system_->recreate_swapchain();
     rebuild_swapchain_dependents();
 }
 
 void VulkanApp::rebuild_swapchain_dependents() {
-    VkDevice device = renderer_.device();
+    VkDevice device = render_system_->device();
     if (!device) {
         return;
     }
 
-    trash_.resize(renderer_.frame_count());
+    trash_.resize(render_system_->frame_count());
 
 #include "wf_config.h"
-    const VkPhysicalDevice physical = renderer_.physical_device();
-    const VkRenderPass render_pass = renderer_.render_pass();
-    const VkExtent2D extent = renderer_.swapchain_extent();
+    const VkPhysicalDevice physical = render_system_->physical_device();
+    const VkRenderPass render_pass = render_system_->render_pass();
+    const VkExtent2D extent = render_system_->swapchain_extent();
 
     framebuffer_width_ = static_cast<int>(extent.width);
     framebuffer_height_ = static_cast<int>(extent.height);
@@ -1446,24 +1382,26 @@ void VulkanApp::rebuild_swapchain_dependents() {
     pipeline_layout_.reset();
     destroy_debug_axes_pipeline();
 
+    OverlayRenderer& overlay = render_system_->overlay();
     if (!overlay_initialized_) {
-        overlay_.init(physical, device, render_pass, extent, WF_SHADER_DIR);
+        overlay.init(physical, device, render_pass, extent, WF_SHADER_DIR);
         overlay_initialized_ = true;
     } else {
-        overlay_.recreate_swapchain(render_pass, extent, WF_SHADER_DIR);
+        overlay.recreate_swapchain(render_pass, extent, WF_SHADER_DIR);
     }
 
+    ChunkRenderer& chunk_renderer = render_system_->chunk_renderer();
     if (!chunk_renderer_initialized_) {
-        chunk_renderer_.init(physical, device, render_pass, extent, WF_SHADER_DIR);
+        chunk_renderer.init(physical, device, render_pass, extent, WF_SHADER_DIR);
         chunk_renderer_initialized_ = true;
     } else {
-        chunk_renderer_.recreate(render_pass, extent, WF_SHADER_DIR);
+        chunk_renderer.recreate(render_pass, extent, WF_SHADER_DIR);
     }
-    chunk_renderer_.set_device_local(device_local_enabled_);
-    chunk_renderer_.set_transfer_context(renderer_.graphics_queue_family(), renderer_.graphics_queue());
-    chunk_renderer_.set_pool_caps_bytes(static_cast<VkDeviceSize>(pool_vtx_mb_) * 1024ull * 1024ull,
-                                        static_cast<VkDeviceSize>(pool_idx_mb_) * 1024ull * 1024ull);
-    chunk_renderer_.set_logging(log_pool_);
+    chunk_renderer.set_device_local(device_local_enabled_);
+    chunk_renderer.set_transfer_context(render_system_->graphics_queue_family(), render_system_->graphics_queue());
+    chunk_renderer.set_pool_caps_bytes(static_cast<VkDeviceSize>(pool_vtx_mb_) * 1024ull * 1024ull,
+                                       static_cast<VkDeviceSize>(pool_idx_mb_) * 1024ull * 1024ull);
+    chunk_renderer.set_logging(log_pool_);
 
     create_graphics_pipeline();
     hud_force_refresh_ = true;
@@ -1477,7 +1415,7 @@ VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
         std::string("shaders/") + base,
         std::string("shaders_build/") + base
     };
-    VkDevice device = renderer_.device();
+    VkDevice device = render_system_->device();
     if (!device) {
         return VK_NULL_HANDLE;
     }
@@ -1485,15 +1423,15 @@ VkShaderModule VulkanApp::load_shader_module(const std::string& path) {
 }
 
 void VulkanApp::create_graphics_pipeline() {
-    VkDevice device = renderer_.device();
+    VkDevice device = render_system_->device();
     if (!device) {
         return;
     }
-    VkRenderPass render_pass = renderer_.render_pass();
+    VkRenderPass render_pass = render_system_->render_pass();
     if (render_pass == VK_NULL_HANDLE) {
         return;
     }
-    const VkExtent2D swap_extent = renderer_.swapchain_extent();
+    const VkExtent2D swap_extent = render_system_->swapchain_extent();
 
 #include "wf_config.h"
     pipeline_triangle_.reset();
@@ -1599,8 +1537,8 @@ void VulkanApp::create_graphics_pipeline() {
 
 void VulkanApp::create_debug_axes_buffer() {
     if (debug_axes_vbo_) return;
-    VkDevice device = renderer_.device();
-    VkPhysicalDevice physical = renderer_.physical_device();
+    VkDevice device = render_system_->device();
+    VkPhysicalDevice physical = render_system_->physical_device();
     if (!device || physical == VK_NULL_HANDLE) return;
     const float axis_len = 1500.0f;
     const DebugAxisVertex verts[] = {
@@ -1632,8 +1570,8 @@ void VulkanApp::destroy_debug_axes_buffer() {
 
 void VulkanApp::create_debug_axes_pipeline() {
     destroy_debug_axes_pipeline();
-    VkDevice device = renderer_.device();
-    VkRenderPass render_pass = renderer_.render_pass();
+    VkDevice device = render_system_->device();
+    VkRenderPass render_pass = render_system_->render_pass();
     if (!device || render_pass == VK_NULL_HANDLE) return;
     create_debug_axes_buffer();
 
@@ -1682,7 +1620,7 @@ void VulkanApp::create_debug_axes_pipeline() {
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
 
-    const VkExtent2D swap_extent = renderer_.swapchain_extent();
+    const VkExtent2D swap_extent = render_system_->swapchain_extent();
     VkViewport vp{};
     vp.x = 0.0f;
     vp.y = static_cast<float>(swap_extent.height);
@@ -1769,7 +1707,7 @@ void VulkanApp::destroy_debug_axes_pipeline() {
 }
 
 void VulkanApp::create_compute_pipeline() {
-    VkDevice device = renderer_.device();
+    VkDevice device = render_system_->device();
     if (!device) return;
     // Load no-op compute shader
     const std::string base = std::string(WF_SHADER_DIR);
@@ -1823,11 +1761,11 @@ void VulkanApp::profile_append_csv(const std::string& line) {
 
 void VulkanApp::schedule_delete_chunk(RenderChunk&& rc) {
     // Defer destruction to the next frame slot to guarantee GPU is done using previous submissions.
-    size_t frame_count = renderer_.frame_count();
+    size_t frame_count = render_system_->frame_count();
     if (trash_.size() != frame_count) {
         trash_.resize(frame_count);
     }
-    size_t slot = (renderer_.current_frame() + 1) % frame_count;
+    size_t slot = (render_system_->current_frame() + 1) % frame_count;
     trash_[slot].push_back(std::move(rc));
 }
 

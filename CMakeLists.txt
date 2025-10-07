@@ -17,6 +17,26 @@ else()
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# Vulkan SDK hints for macOS (CLion doesn't inherit shell env vars)
+if (APPLE)
+  set(WF_VULKAN_SDK_PATH "/Users/chris/VulkanSDK/1.4.321.0/macOS")
+  if (EXISTS "${WF_VULKAN_SDK_PATH}")
+    set(ENV{VULKAN_SDK} "${WF_VULKAN_SDK_PATH}")
+    set(ENV{VK_ICD_FILENAMES} "${WF_VULKAN_SDK_PATH}/share/vulkan/icd.d/MoltenVK_icd.json")
+    set(ENV{VK_LAYER_PATH} "${WF_VULKAN_SDK_PATH}/share/vulkan/explicit_layer.d")
+    if (NOT ("$ENV{PATH}" MATCHES "^${WF_VULKAN_SDK_PATH}/bin"))
+      set(ENV{PATH} "${WF_VULKAN_SDK_PATH}/bin:$ENV{PATH}")
+    endif()
+    if (DEFINED ENV{DYLD_LIBRARY_PATH})
+      set(ENV{DYLD_LIBRARY_PATH} "${WF_VULKAN_SDK_PATH}/lib:$ENV{DYLD_LIBRARY_PATH}")
+    else()
+      set(ENV{DYLD_LIBRARY_PATH} "${WF_VULKAN_SDK_PATH}/lib")
+    endif()
+    set(Vulkan_INCLUDE_DIR "${WF_VULKAN_SDK_PATH}/include" CACHE PATH "Vulkan include directory" FORCE)
+    set(Vulkan_LIBRARY "${WF_VULKAN_SDK_PATH}/lib/libvulkan.dylib" CACHE FILEPATH "Vulkan library" FORCE)
+  endif()
+endif()
+
 # Find Vulkan SDK or system Vulkan
 find_package(Vulkan REQUIRED)
 
@@ -59,6 +79,7 @@ add_library(wf_core STATIC
   src/ui/ui_context.cpp
   src/ui/ui_primitives.cpp
   src/ui/ui_text.cpp
+  src/ui/ui_controller.cpp
 )
 
 target_include_directories(wf_core

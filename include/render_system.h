@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <vulkan/vulkan.h>
 
 #include "renderer.h"
@@ -11,15 +12,7 @@ namespace wf {
 
 class RenderSystem {
 public:
-    struct Bindings {
-        Renderer* renderer = nullptr;
-        OverlayRenderer* overlay = nullptr;
-        ChunkRenderer* chunk_renderer = nullptr;
-    };
-
     RenderSystem() = default;
-
-    void bind(const Bindings& bindings);
 
     void initialize_renderer(const Renderer::CreateInfo& info);
     void shutdown_renderer();
@@ -38,6 +31,14 @@ public:
     void submit_frame(const Renderer::FrameContext& ctx);
     void present_frame(const Renderer::FrameContext& ctx);
 
+    struct FrameCallbacks {
+        std::function<void(Renderer::FrameContext&)> record;
+        std::function<void()> on_not_acquired;
+        std::function<void()> on_swapchain_recreated;
+    };
+
+    bool render_frame(const FrameCallbacks& callbacks);
+
     bool swapchain_needs_recreate() const;
     void recreate_swapchain();
 
@@ -54,10 +55,9 @@ public:
     VkQueue graphics_queue() const;
 
 private:
-    Renderer* renderer_ = nullptr;
-    OverlayRenderer* overlay_ = nullptr;
-    ChunkRenderer* chunk_renderer_ = nullptr;
+    Renderer renderer_{};
+    OverlayRenderer overlay_{};
+    ChunkRenderer chunk_renderer_{};
 };
 
 } // namespace wf
-

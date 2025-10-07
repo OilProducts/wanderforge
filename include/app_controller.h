@@ -5,6 +5,7 @@
 
 #include "vk_app.h"
 #include "platform_layer.h"
+#include "render_system.h"
 
 namespace wf {
 
@@ -25,6 +26,7 @@ private:
     bool rmb_down_ = false;
     bool mouse_captured_ = false;
     std::unique_ptr<WorldRuntime> world_runtime_;
+    RenderSystem render_system_;
     VulkanApp app_;
 };
 
