@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -18,12 +19,6 @@ namespace wf {
 
 class RenderSystem {
 public:
-    struct Bindings {
-        Renderer* renderer = nullptr;
-        OverlayRenderer* overlay = nullptr;
-        ChunkRenderer* chunk_renderer = nullptr;
-    };
-
     struct ChunkMeshData {
         FaceChunkKey key{};
         const Vertex* vertices = nullptr;
@@ -121,8 +116,6 @@ public:
 
     RenderSystem() = default;
 
-    void bind(const Bindings& bindings);
-
     void initialize_renderer(const Renderer::CreateInfo& info);
     void shutdown_renderer();
     void wait_idle() const;
@@ -139,6 +132,14 @@ public:
     Renderer::FrameContext begin_frame();
     void submit_frame(const Renderer::FrameContext& ctx);
     void present_frame(const Renderer::FrameContext& ctx);
+
+    struct FrameCallbacks {
+        std::function<void(Renderer::FrameContext&)> record;
+        std::function<void()> on_not_acquired;
+        std::function<void()> on_swapchain_recreated;
+    };
+
+    bool render_frame(const FrameCallbacks& callbacks);
 
     bool swapchain_needs_recreate() const;
     void recreate_swapchain();
@@ -180,9 +181,9 @@ private:
     void ensure_trash_capacity(std::size_t frame_count);
     void schedule_delete_chunk(ChunkInstance&& chunk);
 
-    Renderer* renderer_ = nullptr;
-    OverlayRenderer* overlay_ = nullptr;
-    ChunkRenderer* chunk_renderer_ = nullptr;
+    Renderer renderer_{};
+    OverlayRenderer overlay_{};
+    ChunkRenderer chunk_renderer_{};
 
     std::vector<ChunkInstance> chunks_;
     std::vector<std::vector<ChunkInstance>> trash_;

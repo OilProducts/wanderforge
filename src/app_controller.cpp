@@ -11,6 +11,7 @@ int AppController::run() {
     PlatformLayer::Config platform_cfg;
     platform_.initialize(platform_cfg);
     app_.set_platform(&platform_);
+    app_.set_render_system(&render_system_);
     if (!world_runtime_) {
         world_runtime_ = std::make_unique<WorldRuntime>();
     }
