@@ -83,8 +83,6 @@ private:
     bool apply_voxel_edit(const VoxelHit& target, uint16_t new_material, int brush_dim = 1);
     void queue_chunk_remesh(const FaceChunkKey& key);
     void process_pending_remeshes();
-    bool process_runtime_mesh_upload(const wf::MeshUpload& upload);
-    void process_runtime_mesh_release(const FaceChunkKey& key);
     void apply_runtime_result(const WorldUpdateResult& result);
     void refresh_runtime_state();
 
@@ -127,83 +125,6 @@ private:
     wf::vk::UniquePipelineLayout pipeline_layout_compute_;
     wf::vk::UniquePipeline pipeline_compute_;
     bool compute_enabled_ = false; // gate no-op compute dispatch
-
-    struct RenderChunk {
-        wf::vk::UniqueBuffer vbuf;
-        wf::vk::UniqueDeviceMemory vmem;
-        wf::vk::UniqueBuffer ibuf;
-        wf::vk::UniqueDeviceMemory imem;
-
-        uint32_t index_count = 0;
-        uint32_t first_index = 0;
-        int32_t  base_vertex = 0;
-        uint32_t vertex_count = 0;
-        float center[3] = {0.0f, 0.0f, 0.0f};
-        float radius = 0.0f;
-        FaceChunkKey key{0,0,0,0};
-        ChunkRenderer* chunk_renderer = nullptr;
-
-        RenderChunk() = default;
-        ~RenderChunk() { release(); }
-
-        RenderChunk(const RenderChunk&) = delete;
-        RenderChunk& operator=(const RenderChunk&) = delete;
-
-        RenderChunk(RenderChunk&& other) noexcept { move_from(std::move(other)); }
-        RenderChunk& operator=(RenderChunk&& other) noexcept {
-            if (this != &other) {
-                release();
-                move_from(std::move(other));
-            }
-            return *this;
-        }
-
-        void release() {
-            if (chunk_renderer && index_count > 0 && vertex_count > 0 && !vbuf && !ibuf) {
-                chunk_renderer->free_mesh(first_index, index_count, base_vertex, vertex_count);
-            }
-            chunk_renderer = nullptr;
-            index_count = 0;
-            first_index = 0;
-            base_vertex = 0;
-            vertex_count = 0;
-            radius = 0.0f;
-            center[0] = center[1] = center[2] = 0.0f;
-            key = FaceChunkKey{0,0,0,0};
-            vbuf.reset();
-            vmem.reset();
-            ibuf.reset();
-            imem.reset();
-        }
-
-    private:
-        void move_from(RenderChunk&& other) noexcept {
-            vbuf = std::move(other.vbuf);
-            vmem = std::move(other.vmem);
-            ibuf = std::move(other.ibuf);
-            imem = std::move(other.imem);
-            index_count = other.index_count;
-            first_index = other.first_index;
-            base_vertex = other.base_vertex;
-            vertex_count = other.vertex_count;
-            center[0] = other.center[0];
-            center[1] = other.center[1];
-            center[2] = other.center[2];
-            radius = other.radius;
-            key = other.key;
-            chunk_renderer = other.chunk_renderer;
-
-            other.index_count = 0;
-            other.first_index = 0;
-            other.base_vertex = 0;
-            other.vertex_count = 0;
-            other.radius = 0.0f;
-            other.center[0] = other.center[1] = other.center[2] = 0.0f;
-            other.key = FaceChunkKey{0,0,0,0};
-            other.chunk_renderer = nullptr;
-        }
-    };
-    std::vector<RenderChunk> render_chunks_;
 
     // Settings
     bool enable_validation_ = false;
@@ -251,12 +172,10 @@ private:
 
     size_t overlay_draw_slot_ = 0;
     OverlayRenderer overlay_;
-    bool overlay_initialized_ = false;
     ui::UIContext hud_ui_context_;
     ui::UIBackend hud_ui_backend_;
     std::uint64_t hud_ui_frame_index_ = 0;
     ChunkRenderer chunk_renderer_;
-    bool chunk_renderer_initialized_ = false;
     // Reused per-frame container to avoid allocations when building draw items
     std::vector<ChunkDrawItem> chunk_items_tmp_;
 
@@ -300,9 +219,6 @@ private:
     std::optional<VoxelHit> edit_last_empty_;
     std::optional<VoxelHit> edit_last_solid_;
 
-    // Deferred GPU resource destruction to avoid device-lost
-    std::vector<std::vector<RenderChunk>> trash_;
-
     // Input helpers
     void set_mouse_capture(bool capture);
 
@@ -325,16 +241,11 @@ private:
     std::chrono::steady_clock::time_point app_start_tp_{};
     std::mutex          profile_mutex_;
     void profile_append_csv(const std::string& line);
-    void schedule_delete_chunk(RenderChunk&& rc);
 
     // Async loading/meshing
     int uploads_per_frame_limit_ = 16;
     int loader_threads_ = 0; // 0 = auto
     void drain_mesh_results();
-    void prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span);
-    // Multi-face/k pruning: keep any chunk that falls within any of the allowed rings and k-range
-    struct AllowRegion { int face; std::int64_t ci; std::int64_t cj; std::int64_t ck; int span; int k_down; int k_up; };
-    void prune_chunks_multi(const std::vector<AllowRegion>& allows);
 
     // Streaming state: current face and ring center
     float face_switch_hysteresis_ = 0.05f;

@@ -169,17 +169,7 @@ VulkanApp::~VulkanApp() {
     streaming_.wait_for_pending_saves();
     streaming_.stop();
     render_system_.wait_idle();
-
-    trash_.clear();
-    render_chunks_.clear();
-
-    VkDevice device = renderer_.device();
-    if (device) {
-        overlay_.cleanup(device);
-        overlay_initialized_ = false;
-        chunk_renderer_.cleanup(device);
-        chunk_renderer_initialized_ = false;
-    }
+    render_system_.cleanup_swapchain_dependents();
 
     destroy_debug_axes_pipeline();
     destroy_debug_axes_buffer();
@@ -241,8 +231,6 @@ void VulkanApp::init_vulkan() {
     renderer_info.window = platform_ ? platform_->window_handle() : nullptr;
     renderer_info.enable_validation = enable_validation_;
     render_system_.initialize_renderer(renderer_info);
-
-    trash_.resize(render_system_.frame_count());
 
     create_compute_pipeline();
 
@@ -412,8 +400,11 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
 
     auto MVP = wf::mul(P, V);
 
+    auto chunks = render_system_.chunk_instances();
+    ChunkRenderer& chunk_renderer = render_system_.chunk_renderer();
+
     bool debugTrianglePending = debug_show_test_triangle_ && pipeline_triangle_;
-    bool chunk_ready = chunk_renderer_.is_ready() && !render_chunks_.empty();
+    bool chunk_ready = chunk_renderer.is_ready() && !chunks.empty();
 
     if (chunk_ready) {
         if (debug_chunk_keys_) {
@@ -427,8 +418,8 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
                               << MVP.at(r, 2) << ", "
                               << MVP.at(r, 3) << "]\n";
                 }
-                if (!render_chunks_.empty()) {
-                    const auto& rc0 = render_chunks_[0];
+                if (!chunks.empty()) {
+                    const auto& rc0 = chunks[0];
                     wf::Vec4 c0{rc0.center[0], rc0.center[1], rc0.center[2], 1.0f};
                     wf::Vec4 view = wf::mul(V, c0);
                     auto clip = wf::mul(P, view);
@@ -450,8 +441,8 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
 
         // Prepare preallocated container and compute draw stats
         chunk_items_tmp_.clear();
-        chunk_items_tmp_.reserve(render_chunks_.size());
-        last_draw_total_ = (int)render_chunks_.size();
+        chunk_items_tmp_.reserve(chunks.size());
+        last_draw_total_ = static_cast<int>(chunks.size());
         last_draw_visible_ = 0;
         last_draw_indices_ = 0;
 
@@ -480,7 +471,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
             float plane_side_norm = wf::length(plane_right);
             float plane_vert_norm = wf::length(plane_top);
 
-            for (const auto& rc : render_chunks_) {
+            for (const auto& rc : chunks) {
                 float dx = rc.center[0] - eye.x;
                 float dy = rc.center[1] - eye.y;
                 float dz = rc.center[2] - eye.z;
@@ -509,7 +500,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
                 last_draw_indices_ += rc.index_count;
             }
         } else {
-            for (const auto& rc : render_chunks_) {
+            for (const auto& rc : chunks) {
                 ChunkDrawItem item{};
                 item.vbuf = rc.vbuf.get(); item.ibuf = rc.ibuf.get(); item.index_count = rc.index_count;
                 item.first_index = rc.first_index; item.base_vertex = rc.base_vertex;
@@ -521,7 +512,7 @@ void VulkanApp::record_command_buffer(const Renderer::FrameContext& ctx) {
                 last_draw_indices_ += rc.index_count;
             }
         }
-        chunk_renderer_.record(cmd, MVP.data(), chunk_items_tmp_);
+        chunk_renderer.record(cmd, MVP.data(), chunk_items_tmp_);
     } else if (pipeline_triangle_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle_.get());
         vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -698,7 +689,8 @@ void VulkanApp::update_hud(float dt) {
     if (draw_stats_enabled_) {
         float tris_m = (float)last_draw_indices_ / 3.0f / 1.0e6f;
         VkDeviceSize v_used=0,v_cap=0,i_used=0,i_cap=0;
-        if (chunk_renderer_.is_ready()) chunk_renderer_.get_pool_usage(v_used, v_cap, i_used, i_cap);
+        ChunkRenderer& chunk_renderer = render_system_.chunk_renderer();
+        if (chunk_renderer.is_ready()) chunk_renderer.get_pool_usage(v_used, v_cap, i_used, i_cap);
         float v_used_mb = (float)v_used / (1024.0f*1024.0f);
         float v_cap_mb  = (float)(v_cap ? v_cap : (VkDeviceSize)1) / (1024.0f*1024.0f);
         float i_used_mb = (float)i_used / (1024.0f*1024.0f);
@@ -1138,124 +1130,27 @@ void VulkanApp::apply_runtime_result(const WorldUpdateResult& result) {
         hud_force_refresh_ = true;
     }
 }
-
-bool VulkanApp::process_runtime_mesh_upload(const MeshUpload& upload) {
-    RenderChunk rc;
-    rc.chunk_renderer = &chunk_renderer_;
-    rc.index_count = static_cast<uint32_t>(upload.mesh.indices.size());
-    rc.vertex_count = static_cast<uint32_t>(upload.mesh.vertices.size());
-    if (rc.vertex_count == 0 || rc.index_count == 0) {
-        return false;
-    }
-
-    bool ok_upload = chunk_renderer_.upload_mesh(upload.mesh.vertices.data(), upload.mesh.vertices.size(),
-                                                upload.mesh.indices.data(), upload.mesh.indices.size(),
-                                                rc.first_index, rc.base_vertex);
-    if (!ok_upload) {
-        if (log_stream_) {
-            std::cerr << "[stream] skip upload (pool full): face=" << upload.key.face
-                      << " i=" << upload.key.i << " j=" << upload.key.j << " k=" << upload.key.k
-                      << " vtx=" << upload.mesh.vertices.size() << " idx=" << upload.mesh.indices.size() << "\n";
-        }
-        return false;
-    }
-
-    rc.center[0] = upload.center[0];
-    rc.center[1] = upload.center[1];
-    rc.center[2] = upload.center[2];
-    rc.radius = upload.radius;
-    rc.key = upload.key;
-
-    if (debug_chunk_keys_) {
-        if (!upload.mesh.vertices.empty()) {
-            const auto& v0 = upload.mesh.vertices.front();
-            std::cout << "[mesh] key face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                      << " v0=(" << v0.x << "," << v0.y << "," << v0.z << ")" << std::endl;
-        }
-        std::cout << "[mesh] center=(" << rc.center[0] << "," << rc.center[1] << "," << rc.center[2]
-                  << ") radius=" << rc.radius << " idx=" << rc.index_count << " vtx=" << rc.vertex_count << std::endl;
-    }
-
-    bool replaced = false;
-    RenderChunk* inserted_chunk = nullptr;
-    for (size_t i = 0; i < render_chunks_.size(); ++i) {
-        if (render_chunks_[i].key.face == rc.key.face &&
-            render_chunks_[i].key.i == rc.key.i &&
-            render_chunks_[i].key.j == rc.key.j &&
-            render_chunks_[i].key.k == rc.key.k) {
-            schedule_delete_chunk(std::move(render_chunks_[i]));
-            render_chunks_[i] = std::move(rc);
-            inserted_chunk = &render_chunks_[i];
-            replaced = true;
-            if (log_stream_) {
-                std::cout << "[stream] replace: face=" << inserted_chunk->key.face
-                          << " i=" << inserted_chunk->key.i << " j=" << inserted_chunk->key.j << " k=" << inserted_chunk->key.k
-                          << " idx_count=" << inserted_chunk->index_count << " vtx_count=" << inserted_chunk->vertex_count
-                          << " first_index=" << inserted_chunk->first_index << " base_vertex=" << inserted_chunk->base_vertex << "\n";
-            }
-            break;
-        }
-    }
-    if (!replaced) {
-        render_chunks_.push_back(std::move(rc));
-        inserted_chunk = &render_chunks_.back();
-        if (log_stream_) {
-            std::cout << "[stream] add: face=" << inserted_chunk->key.face
-                      << " i=" << inserted_chunk->key.i << " j=" << inserted_chunk->key.j << " k=" << inserted_chunk->key.k
-                      << " idx_count=" << inserted_chunk->index_count << " vtx_count=" << inserted_chunk->vertex_count
-                      << " first_index=" << inserted_chunk->first_index << " base_vertex=" << inserted_chunk->base_vertex << "\n";
-        }
-    }
-
-    if (debug_chunk_keys_ && !debug_auto_aim_done_ && inserted_chunk) {
-        Float3 eye{(float)cam_pos_[0], (float)cam_pos_[1], (float)cam_pos_[2]};
-        Float3 center{inserted_chunk->center[0], inserted_chunk->center[1], inserted_chunk->center[2]};
-        Float3 dir = wf::normalize(center - eye);
-        cam_yaw_ = std::atan2(dir.z, dir.x);
-        cam_pitch_ = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
-        debug_auto_aim_done_ = true;
-        std::cout << "[debug-aim] yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
-    }
-
-    return true;
-}
-
-void VulkanApp::process_runtime_mesh_release(const FaceChunkKey& key) {
-    for (size_t i = 0; i < render_chunks_.size(); ++i) {
-        const auto& rc_key = render_chunks_[i].key;
-        if (rc_key.face == key.face && rc_key.i == key.i && rc_key.j == key.j && rc_key.k == key.k) {
-            streaming_.erase_chunk(rc_key);
-            schedule_delete_chunk(std::move(render_chunks_[i]));
-            render_chunks_.erase(render_chunks_.begin() + i);
-            return;
-        }
-    }
-}
-
 void VulkanApp::draw_frame() {
-    Renderer::FrameContext ctx = renderer_.begin_frame();
-    if (trash_.size() != renderer_.frame_count()) {
-        trash_.resize(renderer_.frame_count());
-    }
+    Renderer::FrameContext ctx = render_system_.begin_frame();
 
     if (!ctx.acquired) {
         hud_ui_backend_.end_frame();
-        if (renderer_.swapchain_needs_recreate()) {
-            renderer_.recreate_swapchain();
+        if (render_system_.swapchain_needs_recreate()) {
+            render_system_.recreate_swapchain();
             rebuild_swapchain_dependents();
         }
         return;
     }
 
-    const size_t frame_index = ctx.frame_index % renderer_.frame_count();
-    auto& deferred = trash_[frame_index];
-    deferred.clear();
+    const size_t frame_index = render_system_.frame_count() > 0
+                                   ? (ctx.frame_index % render_system_.frame_count())
+                                   : 0;
 
     process_pending_remeshes();
     drain_mesh_results();
 
     overlay_draw_slot_ = frame_index;
-    const VkExtent2D swap_extent = renderer_.swapchain_extent();
+    const VkExtent2D swap_extent = render_system_.swapchain_extent();
     ui::ContextParams ui_params;
     ui_params.screen_width = static_cast<int>(swap_extent.width);
     ui_params.screen_height = static_cast<int>(swap_extent.height);
@@ -1404,8 +1299,8 @@ void VulkanApp::draw_frame() {
     vkResetCommandBuffer(ctx.command_buffer, 0);
     record_command_buffer(ctx);
 
-    renderer_.submit_frame(ctx);
-    renderer_.present_frame(ctx);
+    render_system_.submit_frame(ctx);
+    render_system_.present_frame(ctx);
 
     hud_ui_backend_.end_frame();
 
@@ -1413,15 +1308,15 @@ void VulkanApp::draw_frame() {
         world_runtime_->apply_config(snapshot_config());
     }
 
-    if (renderer_.swapchain_needs_recreate()) {
-        renderer_.recreate_swapchain();
+    if (render_system_.swapchain_needs_recreate()) {
+        render_system_.recreate_swapchain();
         rebuild_swapchain_dependents();
     }
 }
 
 void VulkanApp::recreate_swapchain() {
-    renderer_.wait_idle();
-    renderer_.recreate_swapchain();
+    render_system_.wait_idle();
+    render_system_.recreate_swapchain();
     rebuild_swapchain_dependents();
 }
 
@@ -1431,11 +1326,8 @@ void VulkanApp::rebuild_swapchain_dependents() {
         return;
     }
 
-    trash_.resize(renderer_.frame_count());
-
+    
 #include "wf_config.h"
-    const VkPhysicalDevice physical = renderer_.physical_device();
-    const VkRenderPass render_pass = renderer_.render_pass();
     const VkExtent2D extent = renderer_.swapchain_extent();
 
     framebuffer_width_ = static_cast<int>(extent.width);
@@ -1446,24 +1338,11 @@ void VulkanApp::rebuild_swapchain_dependents() {
     pipeline_layout_.reset();
     destroy_debug_axes_pipeline();
 
-    if (!overlay_initialized_) {
-        overlay_.init(physical, device, render_pass, extent, WF_SHADER_DIR);
-        overlay_initialized_ = true;
-    } else {
-        overlay_.recreate_swapchain(render_pass, extent, WF_SHADER_DIR);
-    }
-
-    if (!chunk_renderer_initialized_) {
-        chunk_renderer_.init(physical, device, render_pass, extent, WF_SHADER_DIR);
-        chunk_renderer_initialized_ = true;
-    } else {
-        chunk_renderer_.recreate(render_pass, extent, WF_SHADER_DIR);
-    }
-    chunk_renderer_.set_device_local(device_local_enabled_);
-    chunk_renderer_.set_transfer_context(renderer_.graphics_queue_family(), renderer_.graphics_queue());
-    chunk_renderer_.set_pool_caps_bytes(static_cast<VkDeviceSize>(pool_vtx_mb_) * 1024ull * 1024ull,
-                                        static_cast<VkDeviceSize>(pool_idx_mb_) * 1024ull * 1024ull);
-    chunk_renderer_.set_logging(log_pool_);
+    render_system_.rebuild_swapchain_dependents(WF_SHADER_DIR,
+                                                device_local_enabled_,
+                                                static_cast<VkDeviceSize>(pool_vtx_mb_) * 1024ull * 1024ull,
+                                                static_cast<VkDeviceSize>(pool_idx_mb_) * 1024ull * 1024ull,
+                                                log_pool_);
 
     create_graphics_pipeline();
     hud_force_refresh_ = true;
@@ -1821,17 +1700,6 @@ void VulkanApp::profile_append_csv(const std::string& line) {
     out << line;
 }
 
-void VulkanApp::schedule_delete_chunk(RenderChunk&& rc) {
-    // Defer destruction to the next frame slot to guarantee GPU is done using previous submissions.
-    size_t frame_count = renderer_.frame_count();
-    if (trash_.size() != frame_count) {
-        trash_.resize(frame_count);
-    }
-    size_t slot = (renderer_.current_frame() + 1) % frame_count;
-    trash_[slot].push_back(std::move(rc));
-}
-
-
 void VulkanApp::drain_mesh_results() {
     if (!world_runtime_initialized_) {
         return;
@@ -1848,26 +1716,80 @@ void VulkanApp::drain_mesh_results() {
                                   ? static_cast<std::size_t>(uploads_per_frame_limit_)
                                   : uploads.size();
     for (; uploads_processed < uploads.size() && uploads_processed < max_uploads; ++uploads_processed) {
-        if (process_runtime_mesh_upload(uploads[uploads_processed])) {
-            ++uploaded;
+        const MeshUpload& upload = uploads[uploads_processed];
+        RenderSystem::ChunkMeshData mesh_data{};
+        mesh_data.key = upload.key;
+        mesh_data.vertices = upload.mesh.vertices.data();
+        mesh_data.vertex_count = upload.mesh.vertices.size();
+        mesh_data.indices = upload.mesh.indices.data();
+        mesh_data.index_count = upload.mesh.indices.size();
+        mesh_data.center[0] = upload.center[0];
+        mesh_data.center[1] = upload.center[1];
+        mesh_data.center[2] = upload.center[2];
+        mesh_data.radius = upload.radius;
+
+        bool accepted = render_system_.upload_chunk_mesh(mesh_data, log_stream_);
+        if (!accepted) {
+            continue;
+        }
+
+        ++uploaded;
+
+        if (debug_chunk_keys_) {
+            if (!upload.mesh.vertices.empty()) {
+                const auto& v0 = upload.mesh.vertices.front();
+                std::cout << "[mesh] key face=" << mesh_data.key.face
+                          << " i=" << mesh_data.key.i
+                          << " j=" << mesh_data.key.j
+                          << " k=" << mesh_data.key.k
+                          << " v0=(" << v0.x << "," << v0.y << "," << v0.z << ")" << std::endl;
+            }
+            std::cout << "[mesh] center=(" << mesh_data.center[0] << "," << mesh_data.center[1] << "," << mesh_data.center[2]
+                      << ") radius=" << mesh_data.radius
+                      << " idx=" << mesh_data.index_count
+                      << " vtx=" << mesh_data.vertex_count << std::endl;
+        }
+
+        if (debug_chunk_keys_ && !debug_auto_aim_done_) {
+            Float3 eye{static_cast<float>(cam_pos_[0]), static_cast<float>(cam_pos_[1]), static_cast<float>(cam_pos_[2])};
+            Float3 center{mesh_data.center[0], mesh_data.center[1], mesh_data.center[2]};
+            Float3 dir = wf::normalize(center - eye);
+            cam_yaw_ = std::atan2(dir.z, dir.x);
+            cam_pitch_ = std::asin(std::clamp(dir.y, -1.0f, 1.0f));
+            debug_auto_aim_done_ = true;
+            std::cout << "[debug-aim] yaw=" << cam_yaw_ << " pitch=" << cam_pitch_ << "\n";
         }
     }
 
     std::size_t releases_processed = releases.size();
     for (const auto& key : releases) {
-        process_runtime_mesh_release(key);
+        if (render_system_.release_chunk(key, log_stream_)) {
+            streaming_.erase_chunk(key);
+        }
     }
 
     world_runtime_->consume_mesh_transfer_queues(uploads_processed, releases_processed);
 
     auto runtime_allows = world_runtime_->active_allow_regions();
     if (!runtime_allows.empty()) {
-        std::vector<AllowRegion> allows;
+        std::vector<RenderSystem::AllowRegion> allows;
         allows.reserve(runtime_allows.size());
         for (const auto& region : runtime_allows) {
-            allows.push_back(AllowRegion{region.face, region.ci, region.cj, region.ck, region.span, region.k_down, region.k_up});
+            RenderSystem::AllowRegion a;
+            a.face = region.face;
+            a.ci = region.ci;
+            a.cj = region.cj;
+            a.ck = region.ck;
+            a.span = region.span;
+            a.k_down = region.k_down;
+            a.k_up = region.k_up;
+            allows.push_back(a);
         }
-        prune_chunks_multi(allows);
+        std::vector<FaceChunkKey> removed_keys;
+        render_system_.prune_chunks_multi(allows, log_stream_, removed_keys);
+        for (const auto& key : removed_keys) {
+            streaming_.erase_chunk(key);
+        }
     }
 
     auto t1 = std::chrono::steady_clock::now();
@@ -1888,59 +1810,6 @@ void VulkanApp::drain_mesh_results() {
     } else {
         last_upload_count_ = 0;
         last_upload_ms_ = 0.0;
-    }
-}
-
-void VulkanApp::prune_chunks_outside(int face, std::int64_t ci, std::int64_t cj, int span) {
-    for (size_t i = 0; i < render_chunks_.size();) {
-        const auto& rk = render_chunks_[i].key;
-        if (rk.face != face || std::llabs(rk.i - ci) > span || std::llabs(rk.j - cj) > span) {
-            if (log_stream_) {
-                std::cout << "[stream] prune: face=" << rk.face << " i=" << rk.i << " j=" << rk.j << " k=" << rk.k
-                          << " first_index=" << render_chunks_[i].first_index
-                          << " base_vertex=" << render_chunks_[i].base_vertex
-                          << " idx_count=" << render_chunks_[i].index_count
-                          << " vtx_count=" << render_chunks_[i].vertex_count << "\n";
-            }
-            streaming_.erase_chunk(rk);
-            // Defer deletion/free; chunk might still be referenced by commands submitted last frame
-            schedule_delete_chunk(std::move(render_chunks_[i]));
-            render_chunks_.erase(render_chunks_.begin() + i);
-        } else {
-            ++i;
-        }
-    }
-}
-
-void VulkanApp::prune_chunks_multi(const std::vector<AllowRegion>& allows) {
-    auto inside_any = [&](const FaceChunkKey& k) -> bool {
-        for (const auto& a : allows) {
-            if (k.face != a.face) continue;
-            if (std::llabs(k.i - a.ci) > a.span) continue;
-            if (std::llabs(k.j - a.cj) > a.span) continue;
-            std::int64_t kmin = a.ck - a.k_down;
-            std::int64_t kmax = a.ck + a.k_up;
-            if (k.k < kmin || k.k > kmax) continue;
-            return true;
-        }
-        return false;
-    };
-    for (size_t i = 0; i < render_chunks_.size();) {
-        auto& rc = render_chunks_[i];
-        if (!inside_any(rc.key)) {
-            if (log_stream_) {
-                std::cout << "[stream] prune: face=" << rc.key.face << " i=" << rc.key.i << " j=" << rc.key.j << " k=" << rc.key.k
-                          << " first_index=" << rc.first_index
-                          << " base_vertex=" << rc.base_vertex
-                          << " idx_count=" << rc.index_count
-                          << " vtx_count=" << rc.vertex_count << "\n";
-            }
-            streaming_.erase_chunk(rc.key);
-            schedule_delete_chunk(std::move(rc));
-            render_chunks_.erase(render_chunks_.begin() + i);
-        } else {
-            ++i;
-        }
     }
 }
 
